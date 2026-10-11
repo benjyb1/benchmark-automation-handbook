@@ -1,3 +1,5 @@
+> **Not used since 11 Oct 2026.** Step briefs are no longer shown in the page: the few things that need the owner show on the chat button's badge, and missing documents on the Grid. `hb deck` and this file stay only for the code that still reads them; do not write briefs.
+
 # Writing the step brief
 
 At the end of every step (set-up, documents, scores, results) you leave the owner a short brief at the top of that step in the viewer: the Set-up tab, the Documents tab, the Grid, the Results tab. It is how you show them your process, so they can follow and correct it. Three parts, the same whatever the size of the benchmark:

@@ -89,7 +89,7 @@ If ArtifactData cannot read `report`, drafts saved in the page do not reach you.
 
 ## Take in documents the owner sent from the page
 
-Each step's brief (at the top of its tab) asks the owner to help where something blocks you (a document you couldn't keep, a weak source, something not found). Its Send button writes one document to the `supplied` collection: `{id, rows, pattern, replaces, what, file, asset, link, note, by, at}`. `asset` is an uploaded file's id, `link` a web address; either may be null, not both.
+The Grid's "missing" button by each company asks the owner to help where something blocks you (a document you couldn't keep, something not found), and the comparison can ask for a better copy of a weak source. Its Send button writes one document to the `supplied` collection: `{id, rows, pattern, replaces, what, file, asset, link, note, by, at}`. `asset` is an uploaded file's id, `link` a web address; either may be null, not both.
 
 At the start of every turn while the project has a `viewer_url`, after reading pending edits:
 

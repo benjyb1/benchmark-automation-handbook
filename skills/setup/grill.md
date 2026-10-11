@@ -134,4 +134,4 @@ call: take the wording back to the owner as a question edit.
 
 Rules found later, by the trial or the run, are raised by those skills and handled the same way.
 
-**The set-up brief.** When the grill is the last set-up step, the hand-off in `SKILL.md` writes the set-up brief, rules included. After a grill on added scope, write it again for the new part (`hb deck --step setup --again`), and say in chat each rule decided or skipped, in a line, with the points it settles.
+**Afterwards.** Say in chat each rule decided or skipped, in a line, with the points it settles. Rules left open that govern many answers show on the chat button's badge by themselves.

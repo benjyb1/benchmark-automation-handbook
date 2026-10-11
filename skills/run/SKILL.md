@@ -22,7 +22,7 @@ Two phases. Phase 1 finds the documents for every row in scope and stops there i
 3. **Scores change only through commands.** Never edit `answers/`, `checks/` or `runs/` by hand, and never alter a value a scorer gave.
 4. **No confidence.** Never give, ask for or describe how sure anyone is. A scorer's `unsure` says why an answer is a best guess (a rule or a document); it is followed up, not reported as a measure.
 5. Plain UK English in chat. Say "missing data" for what the owner has to supply. One line of progress per row.
-6. **When something blocks you, ask whether the owner can unblock it.** A download fails, a page is gone or behind a login, a document is named but nowhere to be found: say so in that row's progress line with the link, and ask whether they can download it or send it. Carry on with the other rows meanwhile. The step's brief gathers these at the end of the phase with a Send button on each; what they send is filed as `host/claude.md` says ("Take in documents the owner sent from the page").
+6. **When something blocks you, ask whether the owner can unblock it.** A download fails, a page is gone or behind a login, a document is named but nowhere to be found: say so in that row's progress line with the link, and ask whether they can download it or send it. Carry on with the other rows meanwhile. The Grid shows them by each company (its "missing" button, with a Send button on each) and the chat button's badge points to them; what they send is filed as `host/claude.md` says ("Take in documents the owner sent from the page").
 
 ## Start or resume
 
@@ -89,7 +89,7 @@ Take the rows from `todo --find --json` once, in the order from "Start or resume
 
 ### End of Phase 1
 
-**Write the documents brief**, as `deck.md` says (`--step documents`). It sits at the top of the Documents tab: how you searched, the documents you marked weak, copies from other sites and documents used for several rows, the open rules with most at stake, and what needs their eye (documents found but not kept, anything expected that was not found). Then ask in chat whether to carry on to scoring or stop here to check the sources in the Documents tab, where they can download them; the run bar offers the same.
+**Tell the owner in two or three lines** how many documents you found and how many you could not get or find (each company's "missing" button on the Grid lists them, with Send). Then ask whether to carry on to scoring or stop here; the run bar offers the same.
 
 Run control check. If `stop_after` is `find`, stop here: tell the owner the documents are found for every row in scope, that they can review and download the sources before anything is scored, and that they say "carry on" (or choose "carry on to the end" in the viewer) to start scoring.
 
@@ -154,7 +154,7 @@ Read `answers/ROW.json` for cells whose `unsure.why` is `rule` and whose `handle
 
 When `todo --json` lists nothing (every row and question in scope is done), clear what is left of the second searches and second reads, then `python3 "<lib>/hb.py" check --project "<project>"`.
 
-**Write the scores brief**, as `deck.md` says (`--step scores`). It sits at the top of the Grid: how you scored, the answers resting on your own reading and no rule, the open rules most answers rest on, and the answers carrying flags worth the owner's eye (weak source, quote not found, group answered differently, after the cut-off, reads disagree). Then ask in chat whether to carry on to the results or stop here; every answer can be opened on the Grid and downloaded.
+**Tell the owner in two or three lines** how scoring went and the flags worth their eye (weak source, quote not found, group answered differently, after the cut-off, reads disagree). The open rules most answers rest on show on the chat button's badge by themselves. Then ask whether to carry on to the results or stop here; every answer can be opened on the Grid and downloaded.
 
 Run control check. If `stop_after` is `score`, stop here: the run stays open. Tell the owner the rows in scope are scored and they can check them before anything else happens.
 

@@ -208,7 +208,7 @@ round. Push to settle every rule; accept a skip. Refresh after every round.
 
 When `status` says the next step is the trial, set-up is complete.
 
-**Write the set-up brief**, as `../run/deck.md` says (`--step setup`): it sits at the top of the Set-up tab, with what you held back, the cut-off and where the row list came from, the open rules with most at stake, and the data still missing. In the lines on how you did it, say what you proposed rather than took from their material (drafted questions, a rebuilt score sheet, a fit for an unusual shape). Ask in chat whether it looks right. They can stop here: the set-up is saved in the project folder and on the page.
+**Tell the owner in a few lines** what you held back, the cut-off and where the row list came from, and what you proposed rather than took from their material (drafted questions, a rebuilt score sheet, a fit for an unusual shape). Do not list everything open: the rules with most at stake and the data still missing show on the chat button's badge by themselves. Ask whether it looks right. They can stop here: the set-up is saved in the project folder and on the page.
 
 In the same message, offer the trial, with its purpose: one question on about ten rows, run
 exactly as the full run will be, to give a cost estimate for the full run and an early check of

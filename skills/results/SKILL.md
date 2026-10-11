@@ -31,7 +31,7 @@ Turn scored answers into a one-page report and, when last edition's results were
 4. **Write the facts.** Run `facts`. Read `report/facts.json` once, in full.
 5. **Write the report** to `report/report.md` as `report.md` says.
 6. **Check it.** Run `check-report`. It lists every number in the report that is not in the facts. Fix each, run it again, and repeat until it passes. Do not go on before it passes.
-7. **Write the results brief** as `../run/deck.md` says (`--step results`): it sits at the top of the Results tab, with the rules behind the biggest moves and the big moves since last edition as what needs their eye. Then build and publish: run `build`, then publish as `host/claude.md` says.
+7. **Build and publish:** run `build`, then publish as `host/claude.md` says.
 8. **Tell the owner in chat.** Coverage first, then the main results in two or three plain sentences using numbers from the facts, then what is open: rules waiting for a decision, missing data, disagreements left unexplained. Say where to look: the Results tab, and the Comparison view when there is one.
 
 ## Big moves
