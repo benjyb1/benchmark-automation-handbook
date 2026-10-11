@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from .folder import HandbookError, Project, read_json
+from .folder import HandbookError, Project, read_json, write_json
 from .scoresheet import round_half_up, row_totals
 from .shapes import REASONS, check_compare, check_held_back, is_date
 
@@ -159,6 +159,40 @@ def _reason(project: Project, row: str, qids: list[str], cells: dict, rules: dic
     if not project.found(row).get("documents"):
         return "missing_document", "No documents were found for this row."
     return "unexplained", None
+
+
+CLAUDE_REASONS = ("missing_document", "different_document", "document_date", "rule_reading", "unexplained")
+
+
+def fill_reason(project: Project, fill: dict) -> str:
+    """Record the reason the owner accepted for one difference (`Use this as the reason` in the
+    page): `fill` is {row, key, ours, theirs, reason, note, cells}. As skills/results/reasons.md
+    writes them: a reason other than `unexplained` becomes Claude's reading (`by: "claude"`, kept
+    by later comparisons while the figures stand); `unexplained` keeps its reason and only gains
+    the note. Raises HandbookError when the difference is not there or its figures have moved."""
+    reason, note = fill.get("reason"), str(fill.get("note") or "").strip()
+    if reason not in CLAUDE_REASONS:
+        raise HandbookError(f"A reason must be one of {', '.join(CLAUDE_REASONS)}, not {reason!r}.")
+    if not note:
+        raise HandbookError("A reason needs its note: one sentence on what the answers show.")
+    path = project.file("compare/compare")
+    data = read_json(path) or {}
+    for d in data.get("disagreements") or []:
+        if d.get("row") != fill.get("row") or d.get("key") != fill.get("key"):
+            continue
+        if not (_agree(d.get("ours"), fill.get("ours")) and _agree(d.get("theirs"), fill.get("theirs"))):
+            raise HandbookError("The figures have changed since Claude suggested this reason. Ask Claude again.")
+        if d.get("by") == "files" and d.get("reason") != "unexplained":
+            raise HandbookError("The files already explain this difference, so its reason stays.")
+        cells = fill.get("cells")
+        d["note"] = note
+        if isinstance(cells, list) and cells and all(isinstance(c, str) for c in cells):
+            d["cells"] = cells
+        if reason != "unexplained":
+            d["reason"], d["by"] = reason, "claude"
+        write_json(path, data)
+        return reason
+    raise HandbookError(f"There is no difference for {fill.get('row')} at {fill.get('key')} in the comparison.")
 
 
 def _kept(previous, ours: dict, theirs: dict) -> dict:

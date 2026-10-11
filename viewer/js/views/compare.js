@@ -161,6 +161,128 @@
 
   const levelLong = (key) => parts().keyName(key);
 
+  /* ---- Ask Claude why: a short reason for an unexplained difference, in place -------------- */
+
+  const why = { sample: undefined, answers: new Map() };   // answers: "row|key" -> {phase, text}
+
+  /** Whether the page may ask Claude; looks once (the `sample` capability), then remembers. */
+  function canAsk() {
+    if (why.sample === undefined) {
+      why.sample = null;
+      const c = typeof window !== "undefined" ? window.claude : null;
+      if (c && typeof c.use === "function") {
+        Promise.resolve(c.use("sample")).then((s) => { why.sample = typeof s === "function" ? s : false; }, () => { why.sample = false; });
+      } else why.sample = false;
+    }
+    return why.sample !== false;
+  }
+
+  const clip = (t, n) => { const x = String(t || "").replace(/\s+/g, " ").trim(); return x.length > n ? x.slice(0, n - 1) + "\u2026" : x; };
+
+  /** What Claude is told: the figure both ways, and this edition's answers and quotes behind it. */
+  function whyPrompt(rowId, d) {
+    const b = bundle();
+    const unit = (b.units || []).find((u) => u && u.id === rowId) || {};
+    const was = /^\d{4}$/.test(them) ? "the " + them + " edition" : "last year's edition";
+    const lines = [
+      "A benchmark compares this edition's scores with those published for " + was + ". One figure differs and nobody has explained why yet.",
+      "Organisation: " + (unit.name || rowId) + ". Figure: " + levelLong(d.key) + ". Published for " + was + ": " + d.theirs +
+        "; this edition gives " + d.ours + ".",
+      "This edition's answers behind it (question, answer, flags, a quote):",
+    ];
+    (Array.isArray(d.cells) ? d.cells : []).forEach((qid) => {
+      const c = HB.data.cell(rowId, qid) || {};
+      const q = HB.data.questionFor(rowId, qid) || {};
+      const level = ((q.answer || {}).levels || []).find((l) => l.value === c.value);
+      const ev = (c.evidence || []).find((e) => e && (e.quote_en || e.quote)) || null;
+      const quote = ev ? ev.quote_en || ev.quote : null;
+      const doc = ev && ev.doc ? (b.documents || {})[ev.doc] : null;
+      const from = doc ? " (from " + clip(doc.title || ev.doc, 60) + (doc.date ? ", dated " + doc.date : "") + ")" : "";
+      lines.push("- " + qid + " " + clip(q.text, 140) + ": " + (c.value == null ? "no answer" : c.value) +
+        (level ? " (" + clip(level.label, 70) + ")" : "") + (c.flags && c.flags.length ? "; flagged: " + c.flags.map((f) => ((HB.flagKinds || {}).words || {})[f] || f).join(", ") : "") +
+        (quote ? '; quote: "' + clip(quote, 180) + '"' + from : ""));
+    });
+    lines.push("Pick the first of these the answers support: missing_document (an answer has no evidence, or a document the " +
+      "question needs was not found); different_document (we cite a different document on the subject, such as a group " +
+      "policy instead of a national page); document_date (a cited document is dated after " + was + "); rule_reading (a " +
+      "decided rule's reading decides the answer and the quote supports the other reading too); unexplained (the answers " +
+      "do not show a cause).");
+    lines.push("Reply in exactly two lines. Line 1: REASON: and one of those words. Line 2: NOTE: one sentence under 35 words " +
+      "stating what this edition's answers show and naming the question, then at most a short \u201cso\u201d. Use " +
+      "document titles and dates, not ids. Never say what last year's assessor saw or did. Plain UK English, no em dashes.");
+    return lines.join("\n");
+  }
+
+  const WHY_REASONS = ["missing_document", "different_document", "document_date", "rule_reading", "unexplained"];
+
+  /** {reason, note} from Claude's two lines; a reply in another shape is kept whole as the note. */
+  function readWhy(text) {
+    const t = String(text || "").trim();
+    const r = /REASON:\s*([a-z_]+)/i.exec(t);
+    const n = /NOTE:\s*([\s\S]+)/i.exec(t);
+    const reason = r && WHY_REASONS.includes(r[1].toLowerCase()) ? r[1].toLowerCase() : "unexplained";
+    return { reason, note: (n ? n[1] : t.replace(/REASON:[^\n]*\n?/i, "")).trim() };
+  }
+
+  /** The "Ask Claude why" box for one unexplained difference; keeps its answer for the visit. */
+  function askWhy(rowId, d) {
+    const id = rowId + "|" + d.key;
+    const box = h("div", { class: "cmp-ask", "aria-live": "polite" });
+    const paint = () => {
+      const a = why.answers.get(id);
+      if (!canAsk()) return box.replaceChildren(h("p", { class: "muted" }, "Not explained yet."));
+      if (!a) {
+        return box.replaceChildren(h("p", { class: "muted" }, "Not explained yet. ",
+          h("button", { type: "button", class: "btn btn--small btn--primary", onclick: ask }, "Ask Claude why")));
+      }
+      if (a.phase === "thinking") return box.replaceChildren(h("p", { class: "muted" }, "Claude is reading the answers\u2026"));
+      if (a.phase === "failed") {
+        return box.replaceChildren(h("p", { class: "muted" }, a.text + " ",
+          h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: ask }, "Try again")));
+      }
+      const canKeep = Boolean(HB.local) && HB.edits && HB.edits.ready && typeof HB.edits.save === "function";
+      box.replaceChildren(
+        h("p", { class: "cmp-ask__text" }, a.reason !== "unexplained" ? h("strong", null, "Probably: " + (REASON_WORDS[a.reason] || a.reason) + ". ") : null, a.text),
+        a.phase === "saved" ? h("p", { class: "small" }, "Saved as the reason. Next time you open this panel it shows as Claude's reading.")
+          : a.phase === "saving" ? h("p", { class: "small muted" }, "Saving\u2026")
+          : canKeep ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary", onclick: keep }, "Use this as the reason"),
+            a.saveError ? h("span", { class: "small" }, " " + a.saveError) : null) : null,
+        h("p", { class: "small muted" }, "Claude's suggestion from this edition's answers; check it before relying on it. ",
+          h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: ask }, "Ask again"),
+          HB.chat && typeof HB.chat.open === "function"
+            ? h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => HB.chat.open() }, "Ask a follow-up") : null));
+    };
+    async function ask() {
+      if (!why.sample) { why.answers.set(id, { phase: "failed", text: "Claude can't be asked from this page just now." }); return paint(); }
+      why.answers.set(id, { phase: "thinking" });
+      paint();
+      try {
+        const res = await why.sample(whyPrompt(rowId, d), { modelTier: "default", cache: false });
+        const got = readWhy(res && res.text);
+        why.answers.set(id, { phase: "done", reason: got.reason, text: got.note || "Claude had nothing to add." });
+      } catch (e) {
+        why.answers.set(id, { phase: "failed", text: "Claude couldn't answer just now." });
+      }
+      paint();
+    }
+    async function keep() {
+      const a = why.answers.get(id);
+      if (!a || a.phase !== "done") return;
+      why.answers.set(id, Object.assign({}, a, { phase: "saving", saveError: null }));
+      paint();
+      try {
+        await HB.edits.save("reasons", { row: rowId, key: d.key, ours: d.ours, theirs: d.theirs, reason: a.reason,
+          note: a.text, cells: Array.isArray(d.cells) ? d.cells : [], at: new Date().toISOString() });
+        why.answers.set(id, Object.assign({}, a, { phase: "saved" }));
+      } catch (e) {
+        why.answers.set(id, Object.assign({}, a, { phase: "done", saveError: "The reason could not be saved just now. Try again." }));
+      }
+      paint();
+    }
+    paint();
+    return box;
+  }
+
   /** The cells of a row that a key covers, as [row, qid] pairs. */
   function cellsUnder(row, key) {
     const qs = bundle().questions || [];
@@ -451,7 +573,7 @@
         h("p", { class: "cmp-why__line" }, h("span", { class: "cmp-reason" }, glyph(d.reason), h("strong", null, reasonWord(d))),
           byWord(d) ? HB.statusChip("neutral", byWord(d), { icon: d.by === "files" ? "tick" : "person" }) : null),
         rules ? rules.map((x) => h("p", null, x)) : d.note ? h("p", null, d.note)
-          : h("p", { class: "muted" }, d.reason === "unexplained" ? "Not explained yet. Ask Claude about it with the button in the corner." : "No note yet."),
+          : d.reason === "unexplained" ? askWhy(rowId, d) : h("p", { class: "muted" }, "No note yet."),
         h("p", { class: "small" }, "Cells: ", cellLinks(rowId, Array.isArray(d.cells) ? d.cells : [], ctx)));
     });
     const all = cellsUnder(rowId, "overall");
@@ -1353,7 +1475,7 @@
         (tiered.length ? ` Same ${v.sc.word}: ${fmtInt(tiered.filter((a) => a.tierSame).length)} of ${fmtInt(tiered.length)}.` : "") +
         (missing ? ` ${plural(missing, nouns.one, nouns.many)} without a figure in both years.` : "")),
       unexplained ? h("p", { class: "small muted" },
-        `${plural(unexplained, "difference", "differences")} at this level ${unexplained === 1 ? "is" : "are"} not explained yet. Ask Claude about ${unexplained === 1 ? "it" : "them"} with the button in the corner.`) : null);
+        `${plural(unexplained, "difference", "differences")} at this level ${unexplained === 1 ? "is" : "are"} not explained yet. Open ${unexplained === 1 ? "it" : "one"} below and press Ask Claude why.`) : null);
   }
 
   function notCompared(c) {

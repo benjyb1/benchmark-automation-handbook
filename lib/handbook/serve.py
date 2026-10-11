@@ -18,7 +18,8 @@ What happens when the owner saves something (the Worker):
 - edits and rule decisions: `apply-edits`; run bar requests: `control apply`; corrections:
   `apply-corrections`; documents sent from a step's brief: `add-document` or `fetch`, then
   `prepare`; a report saved in the page: `facts`, written to report/report.md, `check-report`; a
-  chart confirmed in the corner chat: `chart add` (or `chart remove`).
+  chart confirmed in the corner chat: `chart add` (or `chart remove`); a reason accepted under Ask
+  Claude why: `compare.fill_reason`.
   Then `build`, and the page refreshes its data.
 - a re-run request (`{action: "rerun", rule, rows, questions}`): one background job. For each row,
   `kit --questions`, `score` (a clean headless scorer on the owner's plan), `run usage`,
@@ -56,7 +57,7 @@ HB = Path(__file__).resolve().parents[1] / "hb.py"
 LOCAL_JS = VIEWER_SRC / "js" / "local.js"
 PAGE_CLAUDE = Path(__file__).resolve().parents[2] / "guide" / "page-claude.md"
 DATA_TAG = '<script type="application/json" id="hb-data">'
-WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts")
+WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons")
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
@@ -298,6 +299,8 @@ class Worker:
                 rebuild = self._adopt_report(docs["report"]) or rebuild
             if "charts" in docs and self._new("charts", docs["charts"]):
                 rebuild = self._take_charts(docs["charts"]) or rebuild
+            if "reasons" in docs and self._new("reasons", docs["reasons"]):
+                rebuild = self._take_reasons(docs["reasons"]) or rebuild
             if rebuild:
                 self.build()
         self._queue_reruns()
@@ -409,6 +412,21 @@ class Worker:
                 changed = True
             else:
                 self.note("The chart could not be added.", "warning", out[-800:] or None)
+        return changed
+
+    def _take_reasons(self, docs: list[dict]) -> bool:
+        """A reason the owner accepted under Ask Claude why: recorded in compare/compare.json by
+        `compare.fill_reason`. Each document is deleted once handled."""
+        from .compare import fill_reason
+        changed = False
+        for d in sorted(docs, key=lambda x: str(x.get("at") or "")):
+            try:
+                fill_reason(self.project, d)
+                self.note("The reason is saved.", "good")
+                changed = True
+            except HandbookError as e:
+                self.note("The reason could not be saved.", "warning", str(e))
+            self.store.delete("reasons", d["id"])
         return changed
 
     def _adopt_report(self, docs: list[dict]) -> bool:
