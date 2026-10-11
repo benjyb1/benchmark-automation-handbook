@@ -1,0 +1,31 @@
+<title>{{TITLE}}</title>
+<style>
+{{STYLE}}
+</style>
+<div class="hb" lang="en-GB">
+  <a class="skip-link" href="#main">Skip to the content</a>
+  <div class="hb-top" role="banner">
+    <div class="hb-head" id="hb-head"></div>
+    <nav class="tabs hb-tabs" id="hb-tabs" aria-label="Tabs"></nav>
+    <div class="hb-theme" id="hb-theme"></div>
+  </div>
+  <div class="hb-banner" id="hb-banner" role="status" hidden></div>
+  <main class="hb-main" id="main" tabindex="-1">
+    <noscript><p class="notice" data-tone="warning">This page needs JavaScript to show the benchmark.</p></noscript>
+  </main>
+  <dialog class="drawer" id="drawer" aria-labelledby="drawer-title">
+    <div class="drawer__head">
+      <div class="drawer__heading">
+        <p class="drawer__kicker" id="drawer-kicker" hidden></p>
+        <h2 class="drawer__title" id="drawer-title"></h2>
+      </div>
+      <button class="btn btn--quiet drawer__close" type="button" data-drawer-close>Close</button>
+    </div>
+    <div class="drawer__body" id="drawer-body"></div>
+  </dialog>
+  <div class="hb-chat" id="hb-chat"></div>
+</div>
+<script type="application/json" id="hb-data">{{DATA}}</script>
+<script>
+{{SCRIPT}}
+</script>

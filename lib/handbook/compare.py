@@ -1,0 +1,455 @@
+"""Our results beside last edition's held-back results, row by row and key by key.
+
+`compare(project)` scores every row from its answers with the score sheet (`row_totals`), lines
+the figures up against the held-back ones and works out, from the files alone, why a pair differs
+where it can. It reads the held-back folder and nothing else outside the project's own files, and
+it never changes an answer or a score.
+
+It is the only reader of the past editions in the held-back folder: `results.json` is the latest
+(what the comparison is against), `history/<edition>.json` the older ones, in the same shape. They
+reach the viewer only through compare.json's `history` (each past edition's figures per row and
+key, with this run's) and `big_moves` (large differences from the latest edition that the files do
+not explain, each with the row's trend). Nothing from them goes into a kit, a prompt or a rule.
+
+A key is a question id (only when the held-back results go down to question level), a section id,
+`overall` or `band:<of>`. At question level the held-back figure is the question's points, the
+same reading `rebuild_check` uses.
+"""
+from __future__ import annotations
+import re
+from datetime import date
+
+from .folder import HandbookError, Project, read_json
+from .scoresheet import round_half_up, row_totals
+from .shapes import REASONS, check_compare, check_held_back, is_date
+
+# A big move is a disagreement with the latest edition whose reason is in BIG_MOVE_REASONS and that
+# is large: a gap of at least BIG_GAP_SHARE of the key's range (100 for a percentage, else its most
+# points); bands BAND_JUMP or more apart; or ours zero or without evidence where theirs was at least
+# NOTHING_FOUND_SHARE of the most it could be. Its trend says whether ours falls outside the row's
+# range over every past edition, once there are TREND_MIN_EDITIONS past figures or more.
+BIG_GAP_SHARE = 0.25
+BAND_JUMP = 2
+NOTHING_FOUND_SHARE = 0.5
+TREND_MIN_EDITIONS = 2
+BIG_MOVE_REASONS = ("unexplained", "missing_document")
+LATEST = "last edition"                  # the latest edition's name when results.json gives none
+NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven", 8: "eight",
+                9: "nine", 10: "ten"}
+
+SCORED = ("answered", "no_evidence")
+UNDECIDED = ("open", "skipped")
+NOT_COMPARED_TEXT = {
+    "not_scored": "None of its questions have been scored yet.",
+    "partial": "Some of its questions have not been scored, so its totals were not compared.",
+    "not_in_last_edition": "It is not in last edition's results.",
+    "not_in_units": "It is in last edition's results but not among this edition's rows.",
+}
+
+
+def read_held_back(project: Project) -> dict:
+    """The held-back results.json, checked. Raises HandbookError when it is missing or invalid."""
+    path = project.held_back / "results.json"
+    results = read_json(path)
+    if not results:
+        raise HandbookError(f"There are no held-back results at {path}, so there is nothing to "
+                            "compare with. Run hold-back with last edition's results first.")
+    problems = check_held_back(results)
+    if problems:
+        raise HandbookError("The held-back results.json has problems:\n- " + "\n- ".join(problems))
+    return results
+
+
+def edition_key(edition) -> tuple:
+    """A sort key for edition names: the numbers in the name, in order ("2022/23" after "2022" and
+    before "2023"), then the name itself."""
+    return tuple(int(x) for x in re.findall(r"\d+", str(edition))), str(edition)
+
+
+def read_history(project: Project) -> list[dict]:
+    """The older editions in the held-back `history/` folder, checked, oldest first ([] when there
+    are none). Raises HandbookError naming the file when one is invalid."""
+    out = []
+    for path in sorted((project.held_back / "history").glob("*.json")):
+        data = read_json(path)
+        problems = check_held_back(data, history=True)
+        if problems:
+            raise HandbookError(f"The held-back history/{path.name} has problems:\n- "
+                                + "\n- ".join(problems))
+        out.append(data)
+    return sorted(out, key=lambda d: edition_key(d["edition"]))
+
+
+def _agree(ours, theirs) -> bool:
+    if isinstance(ours, (int, float)) and isinstance(theirs, (int, float)) \
+            and not isinstance(ours, bool) and not isinstance(theirs, bool):
+        return abs(ours - theirs) < 1e-9
+    return ours == theirs
+
+
+def _points(question: dict, cell: dict):
+    """The points a scored cell adds, as `row_totals` reads them."""
+    if cell.get("points") is not None:
+        return cell["points"]
+    value = cell.get("value") if cell.get("state") == "answered" else question.get("no_evidence_value")
+    for level in (question.get("answer") or {}).get("levels") or []:
+        if level.get("value") == value:
+            return level.get("points") or 0
+    return 0
+
+
+def _section_figure(section: dict, entry: dict):
+    """The figure a section is published as: its percent, or its points when `percent` is false."""
+    if section.get("percent", True):
+        return entry["percent"]
+    return round_half_up(entry["points"], section.get("rounding"))
+
+
+def _ours(project: Project, unit: dict, cells: dict, level: str, sheet: dict) -> tuple[dict, bool]:
+    """Every key we can give for the row, in a fixed order, and whether the row is partial."""
+    totals = row_totals(project, unit, cells)
+    out = {}
+    if level == "question":
+        for q in project.questions_for(unit):
+            cell = cells.get(q["id"])
+            if isinstance(cell, dict) and cell.get("state") in SCORED:
+                out[q["id"]] = _points(q, cell)
+    if totals["partial"]:
+        return out, True
+    for section in sheet.get("sections") or []:
+        out[section["id"]] = _section_figure(section, totals["sections"][section["id"]])
+    out["overall"] = totals["overall"]
+    for of, name in totals["bands"].items():
+        out[f"band:{of}"] = name
+    return out, False
+
+
+def _qids_under(key: str, scored: list[dict], sections: set) -> list[str]:
+    """The scored questions (`{"id", "section"}`, in question order) a key covers."""
+    if key in sections:
+        return [q["id"] for q in scored if q.get("section") == key]
+    if key == "overall":
+        return [q["id"] for q in scored]
+    if key.startswith("band:"):
+        of = key[len("band:"):]
+        return _qids_under(of, scored, sections) if of in sections else [q["id"] for q in scored]
+    return [q["id"] for q in scored if q["id"] == key]
+
+
+def _reason(project: Project, row: str, qids: list[str], cells: dict, rules: dict, docs: dict,
+            cutoff: str | None) -> tuple[str, str | None]:
+    """The first reason the files prove for the cells under a key, and a plain note (or None)."""
+    stuck = {rid: [] for q in qids for rid in cells[q].get("rules") or []
+             if (rules.get(rid) or {}).get("status") in UNDECIDED}
+    for q in qids:
+        for rid in cells[q].get("rules") or []:
+            if rid in stuck:
+                stuck[rid].append(q)
+    if stuck:
+        parts = [f"{rid} ({', '.join(qs)})" for rid, qs in stuck.items()]
+        return "open_rule", "Rests on a rule that is not decided: " + ", ".join(parts) + "."
+    if cutoff:
+        for q in qids:
+            for e in cells[q].get("evidence") or []:
+                meta = docs.get(e.get("doc")) if isinstance(e, dict) else None
+                if meta and is_date(meta.get("date")) and \
+                        date.fromisoformat(meta["date"]) > date.fromisoformat(cutoff):
+                    return "document_date", (f"Cites {e['doc']}, dated {meta['date']}, after the "
+                                             f"cut-off of {cutoff}.")
+    if not project.found(row).get("documents"):
+        return "missing_document", "No documents were found for this row."
+    return "unexplained", None
+
+
+def _kept(previous, ours: dict, theirs: dict) -> dict:
+    """`{(row, key): disagreement}` for the reasons Claude filled, whose figures have not moved."""
+    kept = {}
+    for d in (previous or {}).get("disagreements") or []:
+        if not (isinstance(d, dict) and d.get("by") == "claude" and d.get("reason") in REASONS):
+            continue
+        row, key = d.get("row"), d.get("key")
+        if key in ours.get(row, {}) and _agree(d.get("ours"), ours[row][key]) \
+                and _agree(d.get("theirs"), theirs[row][key]):
+            kept[(row, key)] = d
+    return kept
+
+
+# --- past editions and big moves --------------------------------------------------------------
+
+def _number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _history(project: Project, latest: dict, units: list[dict], sheet: dict, this_run: dict) -> dict:
+    """compare.json's `history`: for this edition's rows, every past edition's figure at each key
+    our score sheet gives (`{row: {key: {edition: figure}}}`), the editions oldest first with the
+    latest last, each edition's level, and this run's figure for those keys (`this_run`)."""
+    name = latest.get("edition") or LATEST
+    editions = [e for e in read_history(project) if e["edition"] != name] + [dict(latest, edition=name)]
+    sections = [s.get("id") for s in sheet.get("sections") or []]
+    bands = [f"band:{b.get('of')}" for b in sheet.get("bands") or []]
+    rows = {}
+    for unit in units:
+        row = unit.get("id")
+        keys = {}
+        for key in [q["id"] for q in project.questions_for(unit)] + sections + ["overall"] + bands:
+            values = {e["edition"]: e["rows"][row][key] for e in editions
+                      if ((e.get("rows") or {}).get(row) or {}).get(key) is not None}
+            if values:
+                keys[key] = values
+        if keys:
+            rows[row] = keys
+    ours = {row: {k: v for k, v in this_run.get(row, {}).items() if k in keys and v is not None}
+            for row, keys in rows.items()}
+    return {"editions": [e["edition"] for e in editions],
+            "levels": {e["edition"]: e["level"] for e in editions},
+            "rows": rows, "this_run": {row: keys for row, keys in ours.items() if keys}}
+
+
+def _band_names(sheet: dict, of: str) -> list[str]:
+    """The names of the bands of `of`, best (highest `min`) first."""
+    for group in sheet.get("bands") or []:
+        if group.get("of") == of:
+            ordered = sorted(group.get("bands") or [], key=lambda b: b.get("min") or 0, reverse=True)
+            return [b.get("name") for b in ordered]
+    return []
+
+
+def _band_word(names: list[str]) -> str:
+    """The word the band names share ("Tier 1", "Tier 2" give "tier"), else "band"."""
+    firsts = {str(n).split()[0] if str(n).split() else "" for n in names}
+    word = firsts.pop() if len(firsts) == 1 else ""
+    return word.lower() if word.isalpha() and len(word) >= 3 else "band"
+
+
+def _is_percent(key: str, sheet: dict) -> bool:
+    for section in sheet.get("sections") or []:
+        if section.get("id") == key:
+            return section.get("percent", True)
+    overall = sheet.get("overall") or {}
+    return key == "overall" and (overall.get("method") != "sum_points" or bool(overall.get("percent")))
+
+
+def _most(key: str, question: dict | None, totals: dict | None, sheet: dict):
+    """The most a key can be for a row: 100 for a percentage, else its most points (None when the
+    row's totals are not known)."""
+    if question is not None:
+        return max((lvl.get("points") or 0 for lvl in (question.get("answer") or {}).get("levels") or []),
+                   default=0)
+    if _is_percent(key, sheet):
+        return 100
+    sections = (totals or {}).get("sections") or {}
+    if key in sections:
+        return sections[key]["max"]
+    return sum(e["max"] for e in sections.values()) if key == "overall" and sections else None
+
+
+def _what(key: str, sheet: dict) -> str:
+    """The key in words, to start a sentence: "The overall score", "Commitments (P1)"."""
+    if key == "overall":
+        return "The overall score"
+    if key.startswith("band:"):
+        of = key[len("band:"):]
+        word = _band_word(_band_names(sheet, of))
+        return f"The overall {word}" if of == "overall" else f"The {word} for {_what(of, sheet)}"
+    for section in sheet.get("sections") or []:
+        if section.get("id") == key:
+            return f"{section['name']} ({key})" if section.get("name") else str(key)
+    return f"Question {key}"
+
+
+def _shown(v, key: str, sheet: dict) -> str:
+    """A figure as the sentence says it: "71%", "5 points", "Tier 1"."""
+    if not _number(v):
+        return str(v)
+    n = str(int(v)) if float(v).is_integer() else str(round(v, 1))
+    return f"{n}%" if _is_percent(key, sheet) else f"{n} point{'' if n == '1' else 's'}"
+
+
+def _trend(past: dict, ours, rank) -> tuple:
+    """("breaks" | "within" | "too_short", lowest, highest): whether ours falls outside the range of
+    the past figures, as ranked by `rank` (None for a figure it cannot place)."""
+    placed = [(rank(v), v) for v in past.values() if rank(v) is not None]
+    if len(placed) < TREND_MIN_EDITIONS or rank(ours) is None:
+        return "too_short", None, None
+    lo, hi = min(placed, key=lambda x: x[0]), max(placed, key=lambda x: x[0])
+    return ("breaks" if not lo[0] <= rank(ours) <= hi[0] else "within"), lo[1], hi[1]
+
+
+def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool, span: tuple) -> str:
+    """The big move in one plain sentence."""
+    key, ours, theirs = m["key"], m["ours"], m["theirs"]
+    what, show = _what(key, sheet), (lambda v: _shown(v, key, sheet))
+    if m["why"] == "band_jump":
+        word = _band_word(_band_names(sheet, key[len("band:"):]))
+        text = (f"{what} moved from {theirs} in {edition} to {ours} in this run, "
+                f"{NUMBER_WORDS.get(apart, apart)} {word}s apart")
+    elif m["why"] == "nothing_found":
+        text = (f"{what} was {show(theirs)} in {edition}, but this run found no evidence for it "
+                f"and gives {show(ours)}" if no_evidence
+                else f"{what} was {show(theirs)} in {edition} and scores nothing in this run")
+    else:
+        gap = abs(ours - theirs)
+        gap = str(int(gap)) if float(gap).is_integer() else str(round(gap, 1))
+        points = "points" if _is_percent(key, sheet) or gap != "1" else "point"
+        text = (f"{what} went from {show(theirs)} in {edition} to {show(ours)} in this run, "
+                f"{gap} {points} {'lower' if ours < theirs else 'higher'}")
+    if m["trend"] != "too_short":
+        first, last, lo, hi = span
+        where = "outside" if m["trend"] == "breaks" else "within"
+        what_range = (f"the {_band_word(_band_names(sheet, key[len('band:'):]))}s it had"
+                      if key.startswith("band:") else "its range")
+        both = show(lo) if lo == hi else f"{show(lo)} to {show(hi)}"
+        text += f", {where} {what_range} over {first} to {last} ({both})"
+    return text + "."
+
+
+def _big_moves(project: Project, disagreements: list[dict], history: dict, cells_by_row: dict,
+               unit_by_id: dict, sheet: dict, questions: dict) -> list[dict]:
+    """compare.json's `big_moves`, in the order of the disagreements they come from."""
+    edition = history["editions"][-1]
+    out = []
+    for d in disagreements:
+        if d.get("reason") not in BIG_MOVE_REASONS:
+            continue
+        row, key, ours, theirs = d["row"], d["key"], d["ours"], d["theirs"]
+        cells = cells_by_row[row]
+        qids = [q for q in d.get("cells") or [] if q in cells]
+        no_evidence = bool(qids) and all(cells[q].get("state") == "no_evidence" for q in qids)
+        apart = 0
+        if key.startswith("band:"):
+            names = _band_names(sheet, key[len("band:"):])
+            rank = (lambda v, names=names: names.index(v) if v in names else None)
+            if rank(ours) is None or rank(theirs) is None:
+                continue
+            apart = abs(rank(ours) - rank(theirs))
+            if apart < BAND_JUMP:
+                continue
+            why = "band_jump"
+        else:
+            if not (_number(ours) and _number(theirs)):
+                continue
+            unit = unit_by_id[row]
+            question = next((q for q in project.questions_for(unit) if q["id"] == key), None) \
+                if key in questions else None
+            most = _most(key, question, None if question else row_totals(project, unit, cells), sheet)
+            if not most:
+                continue
+            if theirs >= NOTHING_FOUND_SHARE * most and ours < theirs and (ours == 0 or no_evidence):
+                why = "nothing_found"
+            elif abs(ours - theirs) >= BIG_GAP_SHARE * most - 1e-9:
+                why = "big_change"
+            else:
+                continue
+            rank = (lambda v: v if _number(v) else None)
+        past = (history["rows"].get(row) or {}).get(key) or {}
+        trend, lo, hi = _trend(past, ours, rank)
+        span = [ed for ed in history["editions"] if ed in past]
+        m = {"row": row, "key": key, "ours": ours, "theirs": theirs, "why": why,
+             "reason": d["reason"], "trend": trend}
+        m["text"] = _move_text(m, sheet, edition, apart, no_evidence,
+                               (span[0], span[-1], lo, hi) if span else (None, None, lo, hi))
+        out.append(m)
+    return out
+
+
+def compare(project: Project) -> dict:
+    """The compare.json object for the project (not written). See Shapes in the plan; `summary`
+    also has `of` (rows compared per key) and `not_compared` (`[{"row", "why", "text"}]`).
+    Raises HandbookError when there are no valid held-back results or no usable score sheet."""
+    results = read_held_back(project)
+    sheet = project.read("scoresheet")
+    if not sheet or sheet.get("computable") is False:
+        raise HandbookError("There is no computable score sheet, so our results cannot be worked "
+                            "out to compare.")
+    level = results["level"]
+    held = results.get("rows") or {}
+    units = [u for u in project.read("units").get("units", []) if isinstance(u, dict)]
+    unit_by_id = {u.get("id"): u for u in units}
+    questions = project.read("questions").get("questions", [])
+    sections = {s.get("id") for s in sheet.get("sections") or []}
+    rules = {r.get("id"): r for r in project.read("rules").get("rules", []) if isinstance(r, dict)}
+    docs = project.documents()
+    cutoff = project.read("project").get("cutoff")
+    cutoff = cutoff if is_date(cutoff) else None
+    try:
+        previous = read_json(project.file("compare/compare"))
+    except HandbookError:
+        previous = None                              # an unreadable old file is simply replaced
+
+    rows, not_compared = [], []
+    ours_by_row, theirs_by_row, cells_by_row = {}, {}, {}
+    this_run = {}                                    # every key we give, per scored row (history)
+    question_ids = {q.get("id") for q in questions}
+    for unit in units:
+        row = unit.get("id")
+        cells = {q: c for q, c in (project.answers(row).get("cells") or {}).items()
+                 if isinstance(c, dict)}
+        if not any(c.get("state") in SCORED for c in cells.values()):
+            if row in held:
+                not_compared.append({"row": row, "why": "not_scored"})
+            continue
+        this_run[row], partial = _ours(project, unit, cells, "question", sheet)
+        if row not in held:
+            not_compared.append({"row": row, "why": "not_in_last_edition"})
+            continue
+        ours_all = {k: v for k, v in this_run[row].items()
+                    if level == "question" or k not in question_ids}
+        theirs_row = held[row]
+        keys = [k for k in ours_all if theirs_row.get(k) is not None]
+        if partial:
+            not_compared.append({"row": row, "why": "partial"})
+        if not keys:
+            continue
+        ours_by_row[row] = {k: ours_all[k] for k in keys}
+        theirs_by_row[row] = {k: theirs_row[k] for k in keys}
+        cells_by_row[row] = cells
+    for row in held:
+        if row not in unit_by_id:
+            not_compared.append({"row": row, "why": "not_in_units"})
+    for n in not_compared:
+        n["text"] = NOT_COMPARED_TEXT[n["why"]]
+
+    keep = _kept(previous, ours_by_row, theirs_by_row)
+    disagreements, agree_counts, of_counts = [], {}, {}
+    for unit in units:
+        row = unit.get("id")
+        if row not in ours_by_row:
+            continue
+        cells = cells_by_row[row]
+        scored = [q for q in project.questions_for(unit)
+                  if isinstance(cells.get(q["id"]), dict) and cells[q["id"]].get("state") in SCORED]
+        ours, theirs = ours_by_row[row], theirs_by_row[row]
+        agree = {k: _agree(ours[k], theirs[k]) for k in ours}
+        rows.append({"row": row, "ours": ours, "theirs": theirs, "agree": agree})
+        for key, ok in agree.items():
+            of_counts[key] = of_counts.get(key, 0) + 1
+            agree_counts[key] = agree_counts.get(key, 0) + ok
+            if ok:
+                continue
+            qids = _qids_under(key, scored, sections)
+            if (row, key) in keep:
+                d = {**keep[(row, key)], "row": row, "key": key, "ours": ours[key],
+                     "theirs": theirs[key]}
+                d.setdefault("cells", qids)
+            else:
+                reason, note = _reason(project, row, qids, cells, rules, docs, cutoff)
+                d = {"row": row, "key": key, "ours": ours[key], "theirs": theirs[key],
+                     "reason": reason, "by": "files", "note": note, "cells": qids}
+            disagreements.append(d)
+
+    order = [q["id"] for q in questions] + [s["id"] for s in sheet.get("sections") or []] + ["overall"]
+    key_order = sorted(of_counts, key=lambda k: order.index(k) if k in order else len(order))
+    history = _history(project, results, units, sheet, this_run)
+    out = {"level": level, "edition": results.get("edition"), "rows": rows, "disagreements": disagreements,
+           "summary": {"rows": len(rows),
+                       "agree": {k: agree_counts[k] for k in key_order},
+                       "of": {k: of_counts[k] for k in key_order},
+                       "not_compared": not_compared},
+           "history": history,
+           "big_moves": _big_moves(project, disagreements, history, cells_by_row, unit_by_id, sheet,
+                                   {q.get("id"): q for q in questions})}
+    problems = check_compare(out)
+    if problems:
+        raise HandbookError("The comparison would not be valid:\n- " + "\n- ".join(problems))
+    return out

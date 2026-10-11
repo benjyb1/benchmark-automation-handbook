@@ -1,0 +1,20 @@
+#!/bin/sh
+# The benchmark tool's launcher: `hb <command> [args]`, the same commands as `python3 hb.py`.
+# It runs hb.py with its own Python and libraries (listed at the top of hb.py), which uv fetches
+# into the home folder the first time: no Homebrew, no Apple developer tools, no password.
+here=$(cd "$(dirname "$0")" && pwd)
+
+# A double-clicked launcher or a background server starts with a bare PATH; the installers for uv
+# and for Claude Code's command line both put their programs in ~/.local/bin.
+PATH="$HOME/.local/bin:$PATH:/opt/homebrew/bin:/usr/local/bin"
+export PATH
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "The benchmark tool needs uv, a small program that fetches its Python. Install it with:" >&2
+  echo "  curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  exit 1
+fi
+
+# Only uv's own Python, never the Mac's python3: without Apple's developer tools that one opens a
+# 1-2 GB install dialog.
+UV_PYTHON_PREFERENCE=only-managed exec uv run --quiet --script "$here/hb.py" "$@"

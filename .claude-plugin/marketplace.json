@@ -1,0 +1,14 @@
+{
+  "name": "handbook-local",
+  "description": "The handbook plugin, installed from this folder.",
+  "owner": {
+    "name": "The handbook"
+  },
+  "plugins": [
+    {
+      "name": "handbook",
+      "source": "./",
+      "description": "Set up, score and report a benchmark from your own documents, with a live viewer beside the chat."
+    }
+  ]
+}

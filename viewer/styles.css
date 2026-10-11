@@ -1,0 +1,2043 @@
+/* =============================================================================
+   Handbook viewer: tokens, type scale, layout and shared components.
+   Copied from frontend/src/styles.css (the shell, rail, receipt, ask box, step
+   chips and flow chart left out; system fonts in place of web fonts), with the
+   handbook's own shell at the end.
+
+   Every colour is a token in the three blocks at the top (and the chart-only
+   tokens in the Charts section, same pattern); nothing below uses a colour that
+   reads in one theme only.
+
+   Component classes (components.js and charts.js build them; views use them):
+   Status icon  svg.status-icon viewBox="0 0 16 16"
+   Chip         span.chip[data-tone=good|warning|serious|critical|neutral] >
+                svg.status-icon + span.chip__word
+   Tones        [data-tone=...] sets --tone and --on-tone on any element
+   Buttons      .btn .btn--primary .btn--quiet .btn--small, [aria-pressed="true"];
+                div.segmented > .btn; div.tabs[role=tablist] > button.tabs__tab[aria-selected]
+                (+ span.tabs__count); nav.tabs > a.tabs__tab[aria-current="page"]
+   Table        section.table-block > div.table-block__head (p.table-block__count,
+                div.table-block__tools) + div.table-scroll[role=region][tabindex="0"] >
+                table.table (+ .table--freeze-first); td.num, .mono, .table__wide
+   Drawer       dialog.drawer#drawer > div.drawer__head + div.drawer__tools +
+                div.drawer__body (modal: bottom sheet on phones, right panel from
+                40rem; from 64rem docked, not modal: .drawer--docked, and .hb.has-dock
+                makes room for it); in flow: section.drawer.drawer--inflow
+   Help         details.help > summary "How to read this" + div.help__body
+   Copy result  span.visually-hidden[role=status]; div.copy-manual when refused
+   Page         header.page-head > p.eyebrow + h1 + p.lede; section.section >
+                div.section__head; div.stats > div.stat > .stat__value .stat__label .stat__note
+   Notice       div.notice[data-tone] > svg.status-icon + div.notice__text
+   Charts       figure.figure > div.figure__head + div.chart + figcaption.figure__caption;
+                ul.legend > li.legend__item > span.swatch
+   Forms        .field > label.field__label + .input
+   Utilities    .stack .stack--tight .stack--loose .cluster .prose .lede .eyebrow .muted
+                .small .mono .num .visually-hidden .skip-link
+   Shell        div.hb > a.skip-link, div.hb-top[role=banner] > (div#hb-head, nav.tabs#hb-tabs,
+                div#hb-theme), div#hb-banner,
+                main#main.hb-main, dialog#drawer (see the end of this file), div#hb-chat
+                (the corner chat, styled in views/chat.js)
+   ========================================================================== */
+
+
+/* Palette check, dataviz validate_palette.js (light on #ffffff, dark on #191e1b), 2 Oct 2026: series pair PASS both modes; ordinal ramp PASS both (light end 2.11:1 light, 2.08:1 dark); status set FAILs the categorical lightness band (warning; warning and serious in dark) and warning vs serious is ΔE 13.6 < 15: kept as the skill's fixed status steps, so status always ships with an icon and a word. */
+
+:root {
+  /* Layout: a header with the benchmark's name and counts, a row of tabs, then
+     the tab's screen in one column up to --page-max; a drawer on the right for a
+     cell, a bottom sheet on phones. Wide grids scroll inside their own card. */
+
+  /* Colour: ground, ink, rules, one accent */
+  --paper: #f4f6f2;          /* page ground */
+  --surface: #ffffff;        /* tables, charts, receipts */
+  --ink: #16201c;
+  --ink-2: #4b5752;          /* secondary text, labels */
+  --rule: #d7dcd5;           /* hairlines */
+  --rule-strong: #7d8983;    /* control borders, table head rule, chart baselines (>= 3:1 on paper and surface) */
+  --accent: #1d5c4f;         /* links, current step, focus */
+  --accent-soft: #e1ede8;    /* current step, model note */
+  --on-accent: #ffffff;      /* text on an accent fill */
+  --focus: var(--accent);
+  --shadow: rgb(22 32 28 / 0.14);
+  --scrim: rgb(22 32 28 / 0.4);
+
+  /* Data: two series and an ordinal ramp for 0 to 3 scores (one hue, light to dark) */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --ordinal-0: #86b6ef;
+  --ordinal-1: #5598e7;
+  --ordinal-2: #2a78d6;
+  --ordinal-3: #184f95;
+
+  /* The grid's shading: the accent in four steps by share of a question's top
+     points. Text on steps 1 to 3 is --ink, on step 4 --on-accent (AA in both
+     themes; dark mode uses gentler middle steps so its light ink still passes). */
+  --shade-1: color-mix(in srgb, var(--accent) 14%, var(--surface));
+  --shade-2: color-mix(in srgb, var(--accent) 30%, var(--surface));
+  --shade-3: color-mix(in srgb, var(--accent) 55%, var(--surface));
+  --shade-4: var(--accent);
+
+  /* Status: the same four steps in both themes, never shown without an icon and a word */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+  --neutral: var(--ink-2);
+  --on-good: #ffffff;        /* glyph on a status disc: each pair is at least 3:1 */
+  --on-warning: #16201c;
+  --on-serious: #16201c;
+  --on-critical: #ffffff;
+  --on-neutral: var(--surface);
+
+  /* Type: system faces only (no web fonts). A book serif for headings and the big
+     numbers, with restraint; the system sans for body and tables; the system mono
+     for row ids, question ids and file names. */
+  --serif: "Iowan Old Style", Charter, "Sitka Text", Cambria, Georgia, "Noto Serif", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  --fs-12: 0.75rem;
+  --fs-14: 0.875rem;
+  --fs-16: 1rem;
+  --fs-20: 1.25rem;
+  --fs-26: 1.625rem;
+  --fs-34: 2.125rem;
+
+  /* Space, measure, shape, motion */
+  --s1: 0.25rem;
+  --s2: 0.5rem;
+  --s3: 0.75rem;
+  --s4: 1rem;
+  --s5: 1.5rem;
+  --s6: 2rem;
+  --s7: 3rem;
+  --gutter: 16px;
+  --gutter-start: max(var(--gutter), env(safe-area-inset-left, 0px));
+  --gutter-end: max(var(--gutter), env(safe-area-inset-right, 0px));
+  --page-max: 86rem;
+  --measure: 65ch;
+  --drawer-w: 34rem;
+  --radius: 4px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 220ms;
+
+  color-scheme: light;
+  /* The Artifact skeleton pads :root by the safe-area insets; the preview matches it. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #111513;
+    --surface: #191e1b;
+    --ink: #e8eee9;
+    --ink-2: #a7b2ac;
+    --rule: #2b332f;
+    --rule-strong: #6a756f;
+    --accent: #62b8a2;
+    --accent-soft: #1d3631;
+    --on-accent: #111513;
+    --shadow: rgb(0 0 0 / 0.5);
+    --scrim: rgb(0 0 0 / 0.6);
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --shade-1: color-mix(in srgb, var(--accent) 16%, var(--surface));
+    --shade-2: color-mix(in srgb, var(--accent) 30%, var(--surface));
+    --shade-3: color-mix(in srgb, var(--accent) 44%, var(--surface));
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper: #111513;
+  --surface: #191e1b;
+  --ink: #e8eee9;
+  --ink-2: #a7b2ac;
+  --rule: #2b332f;
+  --rule-strong: #6a756f;
+  --accent: #62b8a2;
+  --accent-soft: #1d3631;
+  --on-accent: #111513;
+  --shadow: rgb(0 0 0 / 0.5);
+  --scrim: rgb(0 0 0 / 0.6);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --shade-1: color-mix(in srgb, var(--accent) 16%, var(--surface));
+  --shade-2: color-mix(in srgb, var(--accent) 30%, var(--surface));
+  --shade-3: color-mix(in srgb, var(--accent) 44%, var(--surface));
+  color-scheme: dark;
+}
+
+@media (width >= 40rem) {
+  :root { --gutter: 24px; }
+}
+
+@media (width >= 60rem) {
+  :root { --gutter: 32px; }
+}
+
+/* ---- Base ---------------------------------------------------------------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html:has(.drawer:modal) {
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: var(--fs-16);
+  line-height: 1.55;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+h1, h2, h3, h4, p, ul, ol, dl, dd, figure, blockquote {
+  margin: 0;
+}
+
+img,
+video {
+  max-width: 100%;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+}
+
+a:hover {
+  text-decoration-thickness: 2px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 24%, var(--surface));
+  color: var(--ink);
+}
+
+/* ---- Type ---------------------------------------------------------------- */
+
+h1, h2, h3,
+.h1, .h2, .h3 {
+  font-family: var(--serif);
+  font-weight: 500;
+  text-wrap: balance;
+}
+
+h1, .h1 {
+  font-size: var(--fs-26);
+  line-height: 1.2;
+}
+
+h2, .h2 {
+  font-size: var(--fs-20);
+  line-height: 1.25;
+}
+
+h3, .h3 {
+  font-size: var(--fs-20);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+h4, .h4,
+.figure__title {
+  font-family: var(--sans);
+  font-size: var(--fs-16);
+  font-weight: 600;
+  line-height: 1.4;
+  text-wrap: balance;
+}
+
+@media (width >= 40rem) {
+  h1, .h1 {
+    font-size: var(--fs-34);
+    line-height: 1.15;
+    letter-spacing: -0.005em;
+  }
+
+  h2, .h2 {
+    font-size: var(--fs-26);
+    line-height: 1.2;
+  }
+}
+
+.eyebrow {
+  font-family: var(--sans);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 1.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.lede {
+  max-width: var(--measure);
+  font-size: var(--fs-16);
+  color: var(--ink-2);
+  text-wrap: pretty;
+}
+
+@media (width >= 40rem) {
+  .lede {
+    font-size: var(--fs-20);
+    line-height: 1.45;
+  }
+}
+
+.prose {
+  max-width: var(--measure);
+  text-wrap: pretty;
+}
+
+.prose > * + * {
+  margin-top: 0.75em;
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.25em;
+}
+
+.muted { color: var(--ink-2); }
+.small { font-size: var(--fs-14); }
+.mono, code, kbd, samp { font-family: var(--mono); }
+
+.num {
+  text-align: right;
+  font-variant-numeric: lining-nums tabular-nums;
+  white-space: nowrap;
+}
+
+.visually-hidden,
+.skip-link:not(:focus) {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: absolute;
+  z-index: 40;
+  top: calc(env(safe-area-inset-top, 0px) + var(--s2));
+  left: var(--gutter-start);
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* ---- Layout helpers ------------------------------------------------------ */
+
+.stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s3);
+}
+
+.stack--tight { gap: var(--s2); }
+.stack--loose { gap: var(--s5); }
+
+.cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s2) var(--s3);
+}
+
+/* Flex children that hold text may shrink below their longest word, so a long
+   unbroken string wraps (body sets overflow-wrap) instead of widening the page. */
+.cluster > *,
+.section__head > *,
+.figure__head > * {
+  min-width: 0;
+}
+
+/* Lists used as controls (legend): no bullets or indent. */
+.legend {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+
+/* ---- Status: tones, icons, chips, step chips ------------------------------ */
+
+:where(.chip, .notice) {
+  --tone: var(--neutral);
+  --on-tone: var(--on-neutral);
+}
+
+[data-tone="good"]     { --tone: var(--good);     --on-tone: var(--on-good); }
+[data-tone="warning"]  { --tone: var(--warning);  --on-tone: var(--on-warning); }
+[data-tone="serious"]  { --tone: var(--serious);  --on-tone: var(--on-serious); }
+[data-tone="critical"] { --tone: var(--critical); --on-tone: var(--on-critical); }
+[data-tone="neutral"]  { --tone: var(--neutral);  --on-tone: var(--on-neutral); }
+
+.status-icon {
+  display: block;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  overflow: visible;
+}
+
+.status-icon__disc {
+  fill: var(--tone, var(--neutral));
+}
+
+.status-icon__glyph {
+  fill: none;
+  stroke: var(--on-tone, var(--on-neutral));
+  stroke-width: 1.75;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.status-icon__dot {
+  fill: var(--on-tone, var(--on-neutral));
+  stroke: none;
+}
+
+/* A chip is never wider than its column: a long word wraps inside it. Tables
+   scroll sideways on their own, so there a status stays on one line. */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  max-width: 100%;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.chip__word {
+  min-width: 0;
+}
+
+.table .chip {
+  white-space: nowrap;
+}
+
+.chip {
+  padding: 0.1875rem 0.625rem 0.1875rem 0.25rem;
+  border: 1px solid color-mix(in srgb, var(--tone) 50%, var(--surface));
+  border-radius: 0.75rem;   /* a full pill on one line, a rounded box when the word wraps */
+  background: color-mix(in srgb, var(--tone) 12%, var(--surface));
+  vertical-align: middle;
+}
+
+.chip--lg {
+  gap: var(--s2);
+  padding: var(--s1) var(--s4) var(--s1) var(--s1);
+  border-radius: 1rem;
+  font-size: var(--fs-16);
+}
+
+.chip--lg .status-icon {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+/* ---- Buttons, segmented control, tabs ------------------------------------ */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 2.25rem;
+  padding: 0.375rem 0.875rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-14);
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.btn:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+}
+
+.btn:active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+.btn--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn--primary:hover {
+  border-color: color-mix(in srgb, var(--accent) 85%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 85%, var(--ink));
+}
+
+.btn--primary:active {
+  border-color: color-mix(in srgb, var(--accent) 72%, var(--ink));
+  background: color-mix(in srgb, var(--accent) 72%, var(--ink));
+}
+
+.btn--quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--accent);
+}
+
+.btn--quiet:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.btn--quiet:active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--small {
+  min-height: 1.75rem;
+  padding: 0.1875rem 0.625rem;
+  font-size: var(--fs-12);
+}
+
+@media (pointer: coarse) {
+  .btn { min-height: 2.75rem; }
+  .btn--small { min-height: 2.25rem; }
+}
+
+.segmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.segmented > .btn {
+  min-height: 2rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.segmented > .btn:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.segmented > .btn:active {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.segmented > .btn[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tabs {
+  display: flex;
+  gap: var(--s5);
+  overflow-x: auto;
+  box-shadow: inset 0 -1px 0 var(--rule);
+  scrollbar-width: thin;
+}
+
+.tabs__tab {
+  flex: none;
+  padding: var(--s2) 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--ink-2);
+  font-size: var(--fs-14);
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.tabs__tab:hover {
+  color: var(--ink);
+}
+
+.tabs__tab:focus-visible {
+  outline-offset: -2px;   /* the scrolling tab row would clip an outer ring */
+}
+
+.tabs__tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+.tabs__count {
+  margin-left: var(--s1);
+  color: var(--ink-2);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Counted table -------------------------------------------------------- */
+
+.table-block {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s2);
+}
+
+.table-block__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+}
+
+.table-block__count {
+  min-width: 0;
+  max-width: var(--measure);
+  color: var(--ink-2);
+  font-size: var(--fs-14);
+  font-variant-numeric: tabular-nums;
+}
+
+.table-block__count strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.table-block__tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+/* position: the box must hold its own visually hidden text (a link's "opens in a
+   new tab"); without one, that text is placed against the page and a wide table
+   pushes the whole page sideways (by 358px at phone width in the Task 12 check).
+   Any other overflow box with such text inside needs the same. */
+.table-scroll {
+  position: relative;
+  max-height: min(70vh, 44rem);
+  overflow: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.table {
+  width: 100%;
+  border-collapse: separate;   /* keeps the sticky header's rule in place */
+  border-spacing: 0;
+  font-size: var(--fs-14);
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: var(--s2) var(--s3);
+  border-bottom: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: top;
+}
+
+.table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  border-bottom-color: var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.table td:not(.num, .mono) {
+  min-width: 7rem;   /* in a narrow column the table scrolls sideways before text stacks a word per line */
+}
+
+.table tbody th {
+  font-weight: 600;
+}
+
+.table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+
+.table tbody tr:hover > * {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+
+.table .num {
+  text-align: right;
+}
+
+.table--freeze-first :is(th, td):first-child {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset -1px 0 0 var(--rule);
+}
+
+.table--freeze-first thead th:first-child {
+  z-index: 3;
+}
+
+.table__sort {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline dotted var(--rule-strong);
+  text-underline-offset: 0.25em;
+}
+
+.table__sort:hover {
+  color: var(--ink);
+}
+
+.table__sort::after {
+  content: "";
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+
+[aria-sort="ascending"] > .table__sort::after {
+  border-bottom: 5px solid currentColor;
+}
+
+[aria-sort="descending"] > .table__sort::after {
+  border-top: 5px solid currentColor;
+}
+
+
+/* ---- Drawer: right panel, bottom sheet on phones, or in-flow panel -------- */
+
+.drawer {
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.drawer[open],
+.drawer--inflow {
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer::backdrop {
+  background: var(--scrim);
+  animation: fade-in var(--dur) var(--ease);
+}
+
+.drawer[open]:not(.drawer--inflow) {
+  position: fixed;
+  inset: auto 0 0 0;
+  width: 100%;
+  height: auto;
+  max-height: min(85vh, 100% - 3rem);
+  max-height: min(85dvh, 100% - 3rem);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+  border-top: 1px solid var(--rule);
+  border-radius: 0.75rem 0.75rem 0 0;
+  box-shadow: 0 -0.5rem 2rem var(--shadow);
+  animation: sheet-in var(--dur) var(--ease);
+}
+
+@media (width >= 40rem) {
+  .drawer[open]:not(.drawer--inflow) {
+    inset: 0 0 0 auto;
+    width: min(var(--drawer-w), 100% - 2.5rem);
+    height: 100%;
+    max-height: none;
+    padding-top: env(safe-area-inset-top, 0px);
+    border-top: 0;
+    border-left: 1px solid var(--rule);
+    border-radius: 0;
+    box-shadow: -0.75rem 0 2.5rem var(--shadow);
+    animation-name: drawer-in;
+  }
+}
+
+/* Docked (from 64rem, components.js opens it with show(), not modal): fixed to the
+   right edge at full height, no backdrop, and .hb.has-dock pads the page by the
+   same width so the grid beside it stays in view and clickable. */
+:root {
+  --dock-w: clamp(26rem, 36vw, var(--drawer-w));
+}
+
+@media (width >= 64rem) {
+  .drawer.drawer--docked[open] {
+    z-index: 35;
+    inset: 0 0 0 auto;
+    width: var(--dock-w);
+    height: 100%;
+    border-left: 1px solid var(--rule-strong);
+    box-shadow: -0.75rem 0 1.5rem -1rem var(--shadow);
+  }
+
+  .hb.has-dock {
+    max-width: calc(var(--page-max) + var(--dock-w));
+    padding-right: calc(var(--gutter-end) + var(--dock-w));
+  }
+}
+
+.drawer--inflow {
+  position: relative;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.drawer__head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4) var(--s2);
+}
+
+.drawer__heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.drawer__kicker {
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  font-weight: 600;
+}
+
+.drawer__title {
+  font-family: var(--serif);
+  font-size: var(--fs-20);
+  font-weight: 600;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.drawer__close {
+  flex: none;
+  margin: calc(-1 * var(--s1)) calc(-1 * var(--s2)) 0 0;
+}
+
+/* Controls under the title (content marked data-drawer-tools): they stay put
+   while the body scrolls. */
+.drawer__tools {
+  flex: none;
+  padding: 0 var(--s4) var(--s2);
+}
+
+.drawer__body {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s5);
+  min-height: 0;
+  padding: var(--s4);
+  border-top: 1px solid var(--rule);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (width >= 40rem) {
+  .drawer__head { padding: var(--s4) var(--s5) var(--s2); }
+  .drawer__tools { padding: 0 var(--s5) var(--s3); }
+  .drawer__body { padding: var(--s4) var(--s5) var(--s5); }
+}
+
+/* ---- Help ("How to read this") ---------------------------------------------- */
+
+.help {
+  max-width: var(--measure);
+  font-size: var(--fs-14);
+}
+
+.help > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  border-radius: var(--radius);
+  color: var(--accent);
+  font-weight: 600;
+  list-style: none;
+  cursor: pointer;
+}
+
+.help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.help > summary::before {
+  content: "?";
+  display: inline-grid;
+  place-items: center;
+  width: 1.125rem;
+  height: 1.125rem;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: var(--fs-12);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.help__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s2);
+  margin-top: var(--s2);
+  padding-left: var(--s4);
+  border-left: 1px solid var(--rule-strong);
+  color: var(--ink-2);
+  overflow-wrap: anywhere;
+}
+
+
+/* ---- Components (Task 12): additions for util.js and components.js -------- */
+
+/* A column of long text (notes, quotes, titles): countedTable's wide: true. */
+.table :is(td, th).table__wide {
+  min-width: 18rem;
+}
+
+/* copyText's box when the browser refuses the clipboard: the text, selected, in a
+   read-only box on a line of its own (flex-basis 100% in a wrapping row), with
+   how to copy it by keyboard or by touch. The textarea is an .input: 16px, so a
+   phone doesn't zoom, and full width. */
+.copy-manual {
+  flex: 1 0 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s1);
+  width: 100%;
+  min-width: 0;
+}
+
+.copy-manual__hint {
+  color: var(--ink);
+  font-size: var(--fs-14);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+/* ---- Page structure: page head, sections, headline figures, notices ------- */
+
+.page-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s2);
+  max-width: 52rem;
+  overflow-wrap: anywhere;
+}
+
+.section {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s4);
+}
+
+.section + .section {
+  padding-top: var(--s6);
+  border-top: 1px solid var(--rule);
+}
+
+.section__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+}
+
+/* Headline figures sit in ruled ledger cells; the negative margins tuck the
+   first row's and first column's rules under the container's edge. */
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  overflow: hidden;
+  border-block: 1px solid var(--rule);
+}
+
+.stat {
+  flex: 1 1 9rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s1);
+  min-width: 0;
+  margin: -1px 0 0 -1px;
+  padding: var(--s4);
+  border-top: 1px solid var(--rule);
+  border-left: 1px solid var(--rule);
+  overflow-wrap: anywhere;
+}
+
+.stat__value {
+  font-family: var(--serif);
+  font-size: var(--fs-34);
+  font-weight: 500;
+  line-height: 1.1;
+  font-variant-numeric: lining-nums;
+}
+
+.stat__label {
+  font-size: var(--fs-14);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.stat__note {
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  line-height: 1.4;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  max-width: 52rem;
+  padding: var(--s3) var(--s4);
+  border: 1px solid color-mix(in srgb, var(--tone) 45%, var(--paper));
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--tone) 9%, var(--paper));
+  color: var(--ink);
+  font-size: var(--fs-14);
+}
+
+.notice > .status-icon {
+  margin-top: 0.125rem;
+}
+
+.notice__text {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Chart chrome (marks and their CSS belong to charts.js, Task 13) ------ */
+
+.figure {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s3);
+}
+
+.figure__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2) var(--s4);
+}
+
+.figure__caption {
+  max-width: var(--measure);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+}
+
+.chart {
+  overflow-x: auto;
+  padding: var(--s4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.chart svg {
+  display: block;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+}
+
+.legend__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.swatch {
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 3px;
+  background: var(--swatch, var(--series-1));
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 30;
+  max-width: 18rem;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 0.25rem 1rem var(--shadow);
+  color: var(--ink);
+  font-size: var(--fs-12);
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.tooltip__title {
+  font-size: var(--fs-14);
+  font-weight: 600;
+}
+
+/* ---- Forms --------------------------------------------------------------- */
+
+.field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--s1);
+  overflow-wrap: anywhere;
+}
+
+.field__label {
+  font-size: var(--fs-14);
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  min-height: 2.5rem;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: var(--fs-16);   /* 16px stops phones zooming on focus */
+  line-height: 1.4;
+}
+
+textarea.input {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+/* ---- Motion -------------------------------------------------------------- */
+
+@keyframes drawer-in {
+  from { transform: translateX(1.5rem); }
+}
+
+@keyframes sheet-in {
+  from { transform: translateY(1.5rem); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 0ms;
+    --dur: 0ms;
+  }
+
+  *,
+  *::before,
+  *::after,
+  ::backdrop {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---- Forced colours (Windows contrast themes) ----------------------------- */
+
+@media (forced-colors: active) {
+  .chip,
+  .notice {
+    border: 1px solid CanvasText;
+  }
+
+  .status-icon__disc { fill: CanvasText; }
+  .status-icon__glyph { stroke: Canvas; }
+  .status-icon__dot { fill: Canvas; }
+
+  .tabs__tab[aria-selected="true"],
+  .tabs__tab[aria-current="page"],
+  .btn[aria-pressed="true"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+
+  .table__sort::after {
+    forced-color-adjust: none;   /* keeps the side borders transparent, so the arrow still points */
+  }
+}
+
+
+/* =============================================================================
+   Charts: the marks inside the four charts that charts.js builds.
+   The chart chrome above (.figure, .chart, .legend, .swatch, .tooltip) wraps
+   them. Every colour is a token; the few defined here are chart-only and follow
+   the same three-block theme pattern as the tokens at the top.
+
+   Palette check, validate_palette.js, 2 Oct 2026 (Task 13 re-run, chart
+   surfaces #ffffff light and #191e1b dark): series pair PASS both modes;
+   ordinal ramp PASS both (light end 2.11:1 light, 2.08:1 dark); status set
+   FAILs the categorical band and its warning/serious pair is ΔE 13.6 < 15, the
+   expected verdict for a fixed status scale, so status keeps its icon and word.
+   WCAG text contrast for the score printed in an ordinal cell (contrast() from
+   the same script): black on the three lighter steps 9.95, 7.03 and 4.76:1,
+   white on the darkest 8.10:1. On #2a78d6 ink reaches only 3.78:1 and white
+   4.42:1, hence black there. No chart mixes status and series colours: the
+   grids' "couldn't tell" is a neutral hatch.
+   ========================================================================== */
+
+:root {
+  /* Text on each ordinal fill: the same in both themes, as the fills are */
+  --on-ordinal-0: #000000;
+  --on-ordinal-1: #000000;
+  --on-ordinal-2: #000000;
+  --on-ordinal-3: #ffffff;
+
+  /* A score grid's four steps, lowest to highest: light to dark on a light surface */
+  --step-0: var(--ordinal-0);
+  --step-1: var(--ordinal-1);
+  --step-2: var(--ordinal-2);
+  --step-3: var(--ordinal-3);
+  --on-step-0: var(--on-ordinal-0);
+  --on-step-1: var(--on-ordinal-1);
+  --on-step-2: var(--on-ordinal-2);
+  --on-step-3: var(--on-ordinal-3);
+}
+
+/* Dark: the ramp's anchor flips (dataviz colour formula), so the highest score is
+   the brightest step against the dark surface and the lowest sits nearest it. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --step-0: var(--ordinal-3);
+    --step-1: var(--ordinal-2);
+    --step-2: var(--ordinal-1);
+    --step-3: var(--ordinal-0);
+    --on-step-0: var(--on-ordinal-3);
+    --on-step-1: var(--on-ordinal-2);
+    --on-step-2: var(--on-ordinal-1);
+    --on-step-3: var(--on-ordinal-0);
+  }
+}
+
+:root[data-theme="dark"] {
+  --step-0: var(--ordinal-3);
+  --step-1: var(--ordinal-2);
+  --step-2: var(--ordinal-1);
+  --step-3: var(--ordinal-0);
+  --on-step-0: var(--on-ordinal-3);
+  --on-step-1: var(--on-ordinal-2);
+  --on-step-2: var(--on-ordinal-1);
+  --on-step-3: var(--on-ordinal-0);
+}
+
+/* ---- Figure parts: toggle row, notes, empty state, tooltip insides ------- */
+
+/* Every chart wrapper and scroller is a containing block, so visually hidden
+   text inside a wide chart or table cannot escape it and widen the page. */
+.chart--bars,
+.chart--scatter,
+.chart--grid,
+.grid-scroll,
+.chart-twin .table-scroll {
+  position: relative;
+}
+
+.chart-twin .table tbody th {   /* row names stay readable beside the 7rem data columns */
+  min-width: 9rem;
+}
+
+.chart-twin__sub {   /* a column's scale, on its own line under the header */
+  display: block;
+  font-weight: 400;
+}
+
+.chart-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.chart-note {
+  max-width: var(--measure);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+}
+
+.chart-empty {
+  padding: var(--s4);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius);
+  color: var(--ink-2);
+  font-size: var(--fs-14);
+}
+
+.chart-tip {
+  display: grid;
+  gap: 2px;
+}
+
+.chart-tip__row {
+  color: var(--ink-2);
+}
+
+.chart-tip__row strong {   /* values lead in ink, labels follow in ink-2 */
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.chart-tip__hint {
+  margin-top: var(--s1);
+  color: var(--ink-2);
+}
+
+.chart-key {
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+  overflow: visible;
+}
+
+/* ---- Bars: horizontal, single hue, value at the bar end ------------------ */
+
+.chart--bars {
+  container-type: inline-size;
+}
+
+.bars {
+  --bars-room: 3.5rem;   /* room after a full-length bar for its value */
+  display: grid;
+  grid-template-columns: fit-content(40%) minmax(0, 1fr);
+  column-gap: var(--s3);
+  font-size: var(--fs-14);
+  line-height: 1.35;
+}
+
+.bars__grid,
+.bars__axis {
+  grid-column: 2;
+  position: relative;
+  margin-right: var(--bars-room);
+}
+
+.bars__grid > span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--rule);
+}
+
+.bars__grid > .bars__base {
+  background: var(--rule-strong);
+}
+
+.bars__row {   /* the whole row is the hover and focus target, wider than its bar */
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  align-items: center;
+  min-height: 2rem;
+  padding-block: 0.1875rem;
+  border-radius: var(--radius);
+  transition: background-color var(--dur-fast) var(--ease);
+}
+
+.bars__row:hover,
+.bars__row:focus-visible {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.bars__row:focus-visible {
+  outline-offset: 0;
+}
+
+.bars__label {
+  min-width: 0;
+  padding-left: var(--s2);
+  color: var(--ink);
+  text-wrap: pretty;
+}
+
+.bars__track {
+  position: relative;
+  align-self: stretch;
+  min-height: 1rem;
+  margin-right: var(--bars-room);
+}
+
+.bars__bar {   /* 14px thick, square at the baseline, a 4px rounded data end */
+  position: absolute;
+  top: 50%;
+  left: 0;
+  height: 0.875rem;
+  border-radius: 0 4px 4px 0;
+  background: var(--series-1);
+  transform: translateY(-50%);
+}
+
+.bars__row:hover .bars__bar,
+.bars__row:focus-visible .bars__bar {
+  background: color-mix(in srgb, var(--series-1) 78%, var(--ink));
+}
+
+.bars__value {
+  position: absolute;
+  top: 50%;
+  margin-left: 0.375rem;
+  color: var(--ink);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+.bars__axis {
+  height: 1.25rem;
+  margin-top: var(--s1);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.bars__axis > span {
+  position: absolute;
+  top: 0;
+  white-space: nowrap;
+  transform: translateX(-50%);
+}
+
+.bars__axis > span:first-child {
+  transform: none;
+}
+
+/* Narrow: each label sits over its bar; every bar carries its value, so the
+   gridlines and axis go. */
+@container (width < 28rem) {
+  .bars {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bars__grid,
+  .bars__axis {
+    display: none;
+  }
+
+  .bars__row {
+    row-gap: 0.125rem;
+    padding-block: var(--s1);
+  }
+
+  .bars__label {
+    padding-left: 0;
+  }
+
+  .bars__track {
+    min-height: 1.25rem;
+    box-shadow: inset 1px 0 0 var(--rule-strong);
+  }
+}
+
+/* ---- Scatter with ranges: drawn at the chart's real width ----------------- */
+
+.sc {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+  font-family: var(--sans);
+  font-size: var(--fs-12);
+}
+
+.sc text {
+  fill: var(--ink-2);
+}
+
+.sc__ytitle {   /* the y title's own row above the plot; a long one wraps */
+  margin-bottom: var(--s1);
+  color: var(--ink-2);
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sc__gridline {
+  stroke: var(--rule);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.sc__axis {
+  stroke: var(--rule-strong);
+  stroke-width: 1;
+  shape-rendering: crispEdges;
+}
+
+.sc__tick {
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.sc__title {
+  font-weight: 600;
+}
+
+.sc__diag line {   /* a reference line, so dashed; gridlines stay solid */
+  stroke: var(--ink-2);
+  stroke-width: 1.25;
+  stroke-dasharray: 5 4;
+}
+
+.sc .sc__diag text {
+  font-size: 0.6875rem;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.sc__range {
+  stroke: var(--series-1);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-opacity: 0.45;
+}
+
+.sc__range.is-muted {
+  stroke: var(--rule-strong);
+}
+
+.sc__dot {   /* r 5 with a 2px surface stroke: an 8px marker inside a 2px ring */
+  fill: var(--series-1);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.sc__pt.is-muted .sc__dot {
+  fill: var(--rule-strong);
+}
+
+.sc__pt:focus {
+  outline: none;   /* the halo shows focus */
+}
+
+.sc .sc__label {
+  fill: var(--ink);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--surface);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+/* Two rings, two states: the halo follows the pointer; the focus ring stays on
+   the focused point and shows for keyboard focus, the way :focus-visible does. */
+.sc__halo,
+.sc__focus {
+  fill: none;
+  pointer-events: none;
+}
+
+.sc__halo {
+  stroke: var(--ink);
+  stroke-width: 1.5;
+}
+
+.sc__focus {
+  display: none;
+  stroke: var(--focus);
+  stroke-width: 2;
+}
+
+.sc:has(.sc__pt:focus-visible) .sc__focus {
+  display: inline;
+}
+
+.sc__hit {
+  fill: transparent;
+}
+
+.sc--pick.is-over .sc__hit {
+  cursor: pointer;
+}
+
+/* ---- State and score grids ------------------------------------------------ */
+
+.chart--grid {
+  padding: 0;
+  overflow: hidden;   /* the grid scrolls inside its own scroller */
+}
+
+.grid-scroll {
+  max-height: min(70vh, 40rem);
+  overflow: auto;
+  overscroll-behavior-x: contain;
+}
+
+.grid {
+  --cell-w: 1.75rem;
+  --cell-h: 1.375rem;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--fs-12);
+  line-height: 1.2;
+}
+
+.grid--ordinal {
+  --cell-w: 2rem;
+  --cell-h: 1.5rem;
+}
+
+.grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: var(--s2) 0 var(--s1);
+  border-bottom: 1px solid var(--rule-strong);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-weight: 500;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+.grid__colhead {
+  font-family: var(--mono);
+  text-align: center;
+}
+
+.grid--ordinal .grid__colhead {   /* the column's name over its scale; the padding keeps neighbouring scales apart */
+  padding-inline: var(--s1);
+  color: var(--ink);
+}
+
+.grid__scale {
+  display: block;
+  margin-top: 1px;
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.grid .grid__corner {
+  left: 0;
+  z-index: 4;
+  padding-inline: var(--s3);
+  box-shadow: inset -1px 0 0 var(--rule);
+  font-family: var(--sans);
+  font-weight: 600;
+  text-align: left;
+}
+
+.grid__rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  padding: 0 var(--s3);
+  background: var(--surface);
+  box-shadow: inset -1px 0 0 var(--rule);
+  color: var(--ink);
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.grid__code {
+  margin-right: var(--s2);
+  color: var(--ink-2);
+  font-family: var(--mono);
+}
+
+.grid__name {
+  display: inline-block;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+@media (width < 40rem) {
+  .grid__name {
+    max-width: 7rem;
+  }
+}
+
+.grid__cell {   /* a 1px transparent border around a padding-box fill: the 2px surface gap */
+  position: relative;
+  width: var(--cell-w);
+  min-width: var(--cell-w);
+  height: var(--cell-h);
+  padding: 0;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.grid.is-pickable .grid__cell {
+  cursor: pointer;
+}
+
+.grid__cell:hover {
+  box-shadow: inset 0 0 0 2px var(--ink);
+}
+
+.grid__cell:focus {
+  outline: none;
+}
+
+.grid__cell:focus-visible {
+  z-index: 1;
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.grid-key {   /* legend keys wear the cells' own classes */
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 1.375rem;
+  height: 1.125rem;
+  border-radius: 2px;
+  font-size: var(--fs-12);
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+.grid-key.is-na,
+.grid-key.is-diff {
+  box-shadow: inset 0 0 0 1px var(--rule-strong);
+}
+
+.grid-ramp {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.legend__word {   /* a ramp's end words stay whole beside it */
+  flex: none;
+}
+
+:is(.grid__cell, .grid-key).is-yes {
+  background-color: var(--series-1);
+}
+
+:is(.grid__cell, .grid-key).is-no {
+  background-color: var(--rule);
+}
+
+/* "Couldn't tell" is an answer, not a status, so the grids show identity only:
+   a neutral 45° hatch on the surface, the pattern being the cue, not a colour. */
+:is(.grid__cell, .grid-key).is-unsure {
+  background-color: var(--surface);
+  background-image: repeating-linear-gradient(135deg, var(--ink-2) 0 1.25px, transparent 1.25px 4.5px);
+}
+
+:is(.grid__cell, .grid-key).is-na {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+:is(.grid__cell, .grid-key).step-0 { background-color: var(--step-0); color: var(--on-step-0); }
+:is(.grid__cell, .grid-key).step-1 { background-color: var(--step-1); color: var(--on-step-1); }
+:is(.grid__cell, .grid-key).step-2 { background-color: var(--step-2); color: var(--on-step-2); }
+:is(.grid__cell, .grid-key).step-3 { background-color: var(--step-3); color: var(--on-step-3); }
+
+/* Where we differ from the original: an ink corner triangle inside a surface
+   ring, which keeps it visible on every fill in both themes. */
+:is(.grid__cell, .grid-key).is-diff::before,
+:is(.grid__cell, .grid-key).is-diff::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  pointer-events: none;
+}
+
+:is(.grid__cell, .grid-key).is-diff::before {
+  width: 0.6875rem;
+  height: 0.6875rem;
+  background: var(--surface);
+}
+
+:is(.grid__cell, .grid-key).is-diff::after {
+  width: 0.5rem;
+  height: 0.5rem;
+  background: var(--ink);
+}
+
+
+/* ---- Forced colours: the charts keep their own colours inside their frame -- */
+
+@media (forced-colors: active) {
+  .chart,
+  .chart-figure .legend,
+  .chart-tip {
+    forced-color-adjust: none;
+  }
+}
+
+/* =============================================================================
+   Handbook shell: the header, the edits banner, the tab bar and the tab's
+   screen (app.js fills them; index.html holds the empty slots).
+   ========================================================================== */
+
+.hb {
+  max-width: var(--page-max);
+  margin-inline: auto;
+  padding-inline: var(--gutter-start) var(--gutter-end);
+  padding-block: 0 var(--s7);
+}
+
+/* The top bar: the name and facts, the tabs and the theme switch on one row on
+   wide screens (the tabs drop to a row of their own under 60rem); on a phone,
+   the name over one small line of facts beside the theme switch, then the tabs.
+   The bar's rule is the tabs' baseline, so the current tab's underline sits on it. */
+.hb-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--s5);
+  margin-bottom: var(--s2);
+  padding-top: var(--s1);
+  box-shadow: inset 0 -1px 0 var(--rule);
+}
+
+.hb-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--s4);
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-block: var(--s1);
+}
+
+.hb-head__title {
+  font-family: var(--serif);
+  font-size: var(--fs-20);
+  font-weight: 600;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.hb-head__edition {
+  color: var(--ink-2);
+  font-weight: 400;
+}
+
+.hb-head__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--s3);
+  color: var(--ink-2);
+  font-size: var(--fs-14);
+  font-variant-numeric: tabular-nums;
+}
+
+.hb-head__facts > span + span::before {
+  content: "\00b7";
+  margin-right: var(--s3);
+  color: var(--rule-strong);
+}
+
+.hb-head__facts strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.hb-theme {
+  flex: none;
+  margin-left: auto;
+}
+
+.hb-theme__switch > .btn {
+  min-height: 1.75rem;
+  padding-inline: 0.4375rem;
+}
+
+.hb-theme__icon {
+  flex: none;
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
+.hb-banner {
+  margin-bottom: var(--s3);
+}
+
+/* The tab bar: links, so each tab has an address. It scrolls sideways on its own
+   when the tabs outgrow a phone's width; the page never does. */
+.hb-tabs {
+  flex: 0 1 auto;
+  min-width: 0;
+  box-shadow: none;
+}
+
+.hb-tabs .tabs__tab {
+  padding-block: var(--s3);
+}
+
+a.tabs__tab {
+  display: inline-block;
+  text-decoration: none;
+}
+
+.tabs__tab[aria-current="page"] {
+  border-bottom-color: var(--accent);
+  color: var(--ink);
+}
+
+@media (width < 60rem) {
+  .hb-head { flex: 1 1 0; min-width: min(100%, 14rem); }
+  .hb-tabs { flex: 1 1 100%; order: 3; }
+}
+
+/* On a phone the head's two lines become items of the bar: the name beside the
+   theme switch, then the facts and the tabs each on a full-width line. */
+@media (width < 40rem) {
+  .hb-top { gap: 0 var(--s3); padding-top: var(--s2); }
+  .hb-head { display: contents; }
+  .hb-head__title { flex: 1 1 0; min-width: 0; font-size: 1.0625rem; }
+  .hb-head__facts { flex: 1 1 100%; order: 2; gap: 0 var(--s2); font-size: var(--fs-12); }
+  .hb-head__facts > span + span::before { margin-right: var(--s2); }
+  .hb-theme__switch > .btn { min-height: 2rem; }
+  .hb-tabs { gap: var(--s4); }
+  .hb-tabs .tabs__tab { padding-block: var(--s2); }
+}
+
+.hb-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s6);
+  min-width: 0;
+}
+
+.hb-main:focus {
+  outline: none;   /* focused by the shell after a move, never by Tab */
+}
+
+.hb-view {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s5);
+  min-width: 0;
+}
+
+.hb-empty {
+  display: grid;
+  gap: var(--s2);
+  max-width: var(--measure);
+  padding: var(--s5);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
