@@ -632,6 +632,83 @@
     );
   }
 
+  /* ---- Your material: files for the set-up, and Draft my set-up (only under hb serve) --------------------------------------- */
+
+  const MATERIAL_TYPES = {
+    pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", html: "text/html", htm: "text/html",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  };
+  const material = { files: null, line: "", busy: false };
+
+  async function loadMaterial(box) {
+    try {
+      const res = await fetch("/api/material", { headers: { "X-HB-Token": String((window.HB_LOCAL || {}).token || "") }, cache: "no-store" });
+      material.files = res.ok ? (await res.json()).files || [] : [];
+    } catch (e) {
+      material.files = [];
+    }
+    paintMaterial(box);
+  }
+
+  async function addMaterial(box, input) {
+    const tool = window.claude && typeof window.claude.use === "function" ? await window.claude.use("assets") : null;
+    const picked = Array.from(input.files || []);
+    if (!tool || !picked.length) return;
+    material.busy = true;
+    material.line = "Adding " + count(picked.length, "file", "files") + "\u2026";
+    paintMaterial(box);
+    const failed = [];
+    for (const f of picked) {
+      const type = MATERIAL_TYPES[(f.name.split(".").pop() || "").toLowerCase()];
+      if (!type) { failed.push(f.name + " (save it as PDF, Word or Excel)"); continue; }
+      try { await tool.upload(f, { type }); } catch (e) { failed.push(f.name); }
+    }
+    material.busy = false;
+    material.line = failed.length ? "Not added: " + failed.join("; ") + "." : "";
+    input.value = "";
+    loadMaterial(box);
+  }
+
+  async function draftSetup(box) {
+    material.busy = true;
+    try {
+      await HB.edits.save("setup", { action: "draft", at: new Date().toISOString() });
+      material.line = "Claude is reading your files and drafting the set-up. Progress shows in the run bar; this page fills in when it is done.";
+    } catch (e) {
+      material.line = HB.cantSave();
+    }
+    material.busy = false;
+    paintMaterial(box);
+  }
+
+  function paintMaterial(box) {
+    const files = material.files;
+    const input = h("input", { type: "file", class: "input", multiple: true, id: "su-material-input",
+      accept: ".pdf,.docx,.xlsx,.csv,.txt,.md,.html", onchange: () => addMaterial(box, input) });
+    box.replaceChildren(
+      sub("Your material", files && files.length ? count(files.length, "file", "files") : ""),
+      h("p", { class: "small muted" }, "Add what you have: your questions, the list you score, how scores are worked out, last " +
+        "edition's results (strongly advised: it makes the results far more accurate), the methodology and last year's sources. " +
+        "PDF, Word, Excel or text."),
+      h("p", null, h("label", { class: "btn btn--small", for: "su-material-input" }, "Add files"), input),
+      files === null ? h("p", { class: "small muted" }, "Looking\u2026")
+        : files.length ? h("ul", { class: "small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
+            (f.chars == null ? ": can't be read" : "")))) : null,
+      files && files.length ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
+        disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
+        h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
+          "and the groups for you to check. It uses some of your Claude plan.")) : null,
+      material.line ? h("p", { class: "small" }, material.line) : null,
+    );
+  }
+
+  function materialSection() {
+    const box = h("section", { class: "section stack", "aria-label": "Your material" });
+    if (material.files === null) loadMaterial(box); else paintMaterial(box);
+    return box;
+  }
+
   /* ---- The tab -------------------------------------------------------------------------------------------------------------- */
 
   function watchEdits(wrap) {
@@ -668,6 +745,7 @@
           : "The benchmark as agreed for this edition."),
         editsReady() ? null : h("p", { class: "su-edits-line muted small" }, EDITS_LINE()),
       ),
+      HB.local ? safely("your material", () => materialSection()) : null,
       safely("checklist", () => checklistSection(b, plural)),
       safely("data you need to supply", () => needsSection(b, plural)),
       h(

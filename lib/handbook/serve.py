@@ -57,14 +57,16 @@ HB = Path(__file__).resolve().parents[1] / "hb.py"
 LOCAL_JS = VIEWER_SRC / "js" / "local.js"
 PAGE_CLAUDE = Path(__file__).resolve().parents[2] / "guide" / "page-claude.md"
 DATA_TAG = '<script type="application/json" id="hb-data">'
-WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons")
+WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons", "setup")
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
 ROW_RE = re.compile(r"^[a-z0-9-]+\Z")
 ASSET_RE = re.compile(r"^[a-f0-9]{16,32}\Z")
 UPLOAD_TYPES = {"application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md", "text/csv": ".csv",
-                "text/html": ".html"}
+                "text/html": ".html",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"}
 
 
 def now_iso() -> str:
@@ -301,6 +303,8 @@ class Worker:
                 rebuild = self._take_charts(docs["charts"]) or rebuild
             if "reasons" in docs and self._new("reasons", docs["reasons"]):
                 rebuild = self._take_reasons(docs["reasons"]) or rebuild
+            if "setup" in docs and self._new("setup", docs["setup"]):
+                self._take_setup(docs["setup"])
             if rebuild:
                 self.build()
         self._queue_reruns()
@@ -413,6 +417,30 @@ class Worker:
             else:
                 self.note("The chart could not be added.", "warning", out[-800:] or None)
         return changed
+
+    def _take_setup(self, docs: list[dict]) -> None:
+        """"Draft my set-up" (`{action: "draft"}`): one background job running `hb draft-setup`."""
+        for d in docs:
+            self.store.delete("setup", d["id"])
+        if any(d.get("action") == "draft" for d in docs):
+            self.enqueue("setup-draft:" + now_iso(), "setup", "Drafting your set-up", self.draft_setup)
+
+    def draft_setup(self, job: dict) -> None:
+        job.update({"total": 1, "line": "Claude is reading your files and drafting the set-up"})
+        code, out = self.cmd.run("draft-setup", "--json", timeout=2800)
+        try:
+            got = json.loads(out.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            got = {}
+        job["tokens"] += int(got.get("tokens") or 0)
+        self.log_usage({"kind": "setup-draft", "job": job["key"], "processed": job["tokens"], "ok": code == 0})
+        with self.cmd.lock:
+            self.build()
+        job.update({"done": 1, "line": "Done"})
+        if code == 0:
+            self.note("Your set-up is drafted. Check it on the Set-up tab.", "good", got.get("result"))
+        else:
+            self.note("The set-up draft stopped before it finished.", "warning", (got.get("result") or out)[-800:])
 
     def _take_reasons(self, docs: list[dict]) -> bool:
         """A reason the owner accepted under Ask Claude why: recorded in compare/compare.json by
@@ -844,6 +872,15 @@ class Handler(BaseHTTPRequestHandler):
             p = srv.project.read("project")
             return self.json({**srv.worker.state(), "user": {"name": name, "id": user_id(name)},
                               "project": {"name": p.get("name"), "path": str(srv.project.path)}})
+        if parts[0] == "material" and method == "GET":
+            from . import material
+            try:
+                if len(parts) == 1:
+                    return self.json({"files": material.listing(srv.project)})
+                q = lambda k, d: (query.get(k) or [d])[0]  # noqa: E731
+                return self.json(material.read(srv.project, parts[1], int(q("start", 0)), int(q("size", 20000))))
+            except (ValueError, OSError) as e:
+                return self.fail(400, str(e), "unreadable")
         if path == "page-claude" and method == "GET":
             return self.json({"text": page_claude_text()})
         if path == "user" and method == "POST":
@@ -895,7 +932,7 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 ext = UPLOAD_TYPES.get(ctype)
                 if not ext:
-                    return self.fail(400, "Send a PDF or a text file.", "unsupported_type")
+                    return self.fail(400, "Send a PDF, Word (.docx), Excel (.xlsx) or text file.", "unsupported_type")
                 try:
                     data = self.body(MAX_UPLOAD)
                 except HandbookError:

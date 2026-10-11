@@ -561,6 +561,26 @@
     return propose(verb + " “" + title + "” to Your charts on the Results tab", () => HB.edits.save("charts", { chart, at }));
   }
 
+  /* ---- The owner's set-up material (only under hb serve) ------------------------------------- */
+
+  async function readMaterial(input) {
+    if (!HB.local) throw new Error("The owner's files can be read only in the tool on their own computer.");
+    const id = input && input.file ? String(input.file) : "";
+    const url = "/api/material" + (id ? "/" + encodeURIComponent(id) + "?start=" + Number(input.start || 0) + "&size=20000" : "");
+    const res = await fetch(url, { headers: { "X-HB-Token": String((window.HB_LOCAL || {}).token || "") }, cache: "no-store" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.message || body.error || "The file could not be read.");
+    if (!id) return { files: body.files, note: "Read one with file: its id. Long files come in parts: pass start to read on." };
+    return body;
+  }
+
+  function proposeDraftSetup() {
+    if (!HB.local) throw new Error(NOT_SAVED_HERE());
+    canSave();
+    return propose("Draft the set-up from your files (Claude reads them all in the background; it uses some of your plan)",
+      () => HB.edits.save("setup", { action: "draft", at: new Date().toISOString() }));
+  }
+
   /* ---- The tool list ------------------------------------------------------------------- */
 
   const S = (props, required) => ({ type: "object", properties: props, required: required || [] });
@@ -601,6 +621,10 @@
         inputSchema: S({ action: { type: "string", enum: RUN_ACTIONS }, row: ROW, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID }, stage: { type: "string", enum: ["find", "score", "none"] } }, ["action"]), execute: proposeRunControl },
       { name: "propose_correction", description: "Puts a correction of one answer to the owner: their evidence (quote, and document id plus page, or link), a new value with their reason, or both. Saved only when they click Confirm.",
         inputSchema: S({ row: ROW, question: QID, value: { type: ["number", "string"] }, reason: { type: "string" }, quote: { type: "string" }, doc: { type: "string" }, page: { type: "number" }, link: { type: "string" } }, ["row", "question"]), execute: proposeCorrection },
+      { name: "read_material", description: "The owner's set-up files (added on the Set-up tab under Your material): without file, the list (id, name, kind, length); with file, its text as PDF, Word, Excel or text, 20,000 characters from start. For the fit check.",
+        inputSchema: S({ file: { type: "string" }, start: { type: "number" } }), execute: readMaterial },
+      { name: "propose_draft_setup", description: "Puts Draft my set-up to the owner: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions in Claude's note on the Set-up step. Saved only when they click Confirm. Use it once the fit check is done and the files are in.",
+        execute: proposeDraftSetup },
       { name: "chart_columns", description: "The columns of each dataset a chart can draw from (rows, cells, compare, history), for propose_chart.",
         execute: chartColumns },
       { name: "propose_chart", description: "Puts a chart for Your charts (Results tab) to the owner: id (lowercase-with-dashes; an existing id is replaced), title, a one-line description, dataset, and a Vega-Lite spec with no data (fields are dataset columns; the page fills the data and its colours). Or remove: an existing chart's id. Saved only when they click Confirm; " +
