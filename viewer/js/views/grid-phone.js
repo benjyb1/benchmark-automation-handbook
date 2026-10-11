@@ -74,13 +74,14 @@
 
   function card(ctx, m, unit) {
     const t = m.totals(unit);
+    const docs = HB.gridGaps.note(ctx, m, unit);
     return h("div", { class: "hbg-li", role: "listitem" },
-      h("span", { class: "hbg-li__name" }, unit.name || unit.id),
+      h("span", { class: "hbg-li__name" }, unit.name || unit.id, HB.gridGaps.marker(unit)),
       h("span", { class: "hbg-li__tot" }, m.overallText(t),
         t && t.partial ? h("span", { class: "visually-hidden" }, " (partial)") : null),
-      flagSummary(m, unit),
+      docs ? h("span", { class: "hbg-docnote" }, docs) : flagSummary(m, unit),
       m.bandNode(m.bandName(unit)),
-      h("span", { class: "hbg-li__strip" }, m.sections.map((sec) =>
+      docs ? null : h("span", { class: "hbg-li__strip" }, m.sections.map((sec) =>
         h("span", { class: "hbg-li__sec" }, sec.qs.map((q) => square(ctx, m, unit, q))))));
   }
 

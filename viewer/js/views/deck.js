@@ -6,7 +6,8 @@
    HB.stepBrief(step, ctx) returns the brief for a tab as an HTMLElement, or
    null when there is none. Tab to brief: setup → set-up, documents →
    documents, grid → scores, results → results; rules → null (the Rules list is
-   itself the decisions). app.js puts it at the top of the tab.
+   itself the decisions). The Documents tab is gone (it is part of the Grid), so
+   a link that opened it, an item's `open.tab` "documents", opens the Grid.
 
    Data: bundle.decks, the briefs in deck/ that passed `hb check-deck` (see
    lib/handbook/deck.py for the shape). Code chose every item and figure;
@@ -19,7 +20,7 @@
                              are changed, or open the viewer on their cases.
      Needs your eye          up to three patterns. "75 answers" opens the viewer
                              on exactly those cases: the Grid with the cells
-                             highlighted, the Documents tab narrowed to the rows
+                             highlighted, the Grid narrowed to the rows
                              (HB.state.onlyRows), or the comparison on Results.
                              A "send" pattern lists its cases with a Send button
                              each: the owner uploads the file (assets capability;
@@ -49,7 +50,7 @@
   const CONTRACT = "handbook-deck/2";
   const BRIEF_OF = { setup: "setup", documents: "documents", grid: "scores", results: "results" };
   const STEP_WORDS = { setup: "Set-up", documents: "Documents", scores: "Scores", results: "Results" };
-  const TAB_WORDS = { setup: "the Set-up tab", documents: "the Documents tab", grid: "the Grid", rules: "the Rules tab", results: "the Results tab" };
+  const TAB_WORDS = { setup: "the Set-up tab", documents: "the Grid", grid: "the Grid", rules: "the Rules tab", results: "the Results tab" };
   const PARTS = { how: "How I did it", decided: "What I decided for you", eye: "Needs your eye" };
 
   const CSS = `
@@ -184,7 +185,7 @@ dialog.dk::backdrop { background: #050c0a; }
       ctx.highlight(open.cells);
     } else if (open.tab === "documents") {
       HB.state.onlyRows = Array.isArray(open.rows) ? open.rows.slice() : null;
-      ctx.go("documents");
+      ctx.go("grid");
     } else if (open.tab === "results") {
       ctx.go("results", "compare");
     } else {
@@ -194,7 +195,7 @@ dialog.dk::backdrop { background: #050c0a; }
     // sight: bring what changed into view.
     requestAnimationFrame(() => {
       const brief = document.querySelector(".sb");
-      const target = document.getElementById("dc-shown") || (brief && brief.nextElementSibling);
+      const target = brief && brief.nextElementSibling;
       if (target) target.scrollIntoView({ block: "start", behavior: "smooth" });
     });
   }
@@ -266,7 +267,7 @@ dialog.dk::backdrop { background: #050c0a; }
       change, box);
   }
 
-  /** A step's own choice: Change links to where it lives (Set-up); See or Check opens its cases (Documents, Grid). */
+  /** A step's own choice: Change links to where it lives (Set-up); See or Check opens its cases (the Grid). */
   function choiceItem(it, ctx) {
     const open = it.open || {};
     const tab = TAB_WORDS[open.tab] || open.tab;

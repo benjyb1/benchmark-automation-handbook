@@ -31,6 +31,14 @@
    id a dashed box counts the answers in view resting on open rules (hover or
    focus lists the rules), and the switch outlines those cells (dashed).
 
+   Documents (these used to be the Documents tab, views/grid-gaps.js): a row with
+   something Claude expected but did not find, or a document it could not keep a
+   copy of, has a small "N missing" button after its name that opens the list with
+   a Send button for each. While documents are still being found, a row with no
+   answer yet says "N documents found" (or "No documents found yet") in place of
+   its empty cells. HB.state.onlyRows (a list of row ids, set by the chat and the
+   step brief) narrows the Grid to those rows, with a "Show all" button.
+
    Every mark, square and cell is an <a data-row data-q href> with a full
    aria-label; one click handler on the tab opens the cell panel (cell.js). The
    panel adds .is-open to the open cell's links (a 2px ink outline here).
@@ -414,7 +422,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const groupBy = labels.includes(state.groupBy) ? state.groupBy : state.groupBy === "" ? "" : labels[0] || "";
     const sortLabel = groupBy ? nextLabel(labels, groupBy) : null;
     const filters = state.filters || {};
-    const shown = units.filter((u) => passes(u, filters, labels));
+    const only = Array.isArray(state.onlyRows) ? new Set(state.onlyRows) : null;
+    const shown = units.filter((u) => (!only || only.has(u.id)) && passes(u, filters, labels));
     const hl = new Set((Array.isArray(state.highlight) ? state.highlight : []).map((c) => String(c[0]) + SEP + String(c[1])));
     const byName = (a, b) => collator.compare(String(a.name || a.id), String(b.name || b.id));
 
@@ -597,10 +606,15 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   function stripRow(ctx, m, unit, group) {
     const t = m.totals(unit);
     const short = m.shortName(unit, group);
-    const marks = m.sections.map((sec) => h("span", { class: "hbg-ov__mks" }, sec.qs.map((q) => mark(ctx, m, unit, q))));
-    return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" },
+    const docs = HB.gridGaps.note(ctx, m, unit);
+    const who = h("span", { class: "hbg-ov__who" },
       h("span", { class: "hbg-ov__nm", title: unit.name || unit.id }, short,
         short !== (unit.name || unit.id) ? h("span", { class: "visually-hidden" }, " (" + (unit.name || unit.id) + ")") : null),
+      HB.gridGaps.marker(unit));
+    if (docs) return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" }, who, h("span", { class: "hbg-docnote" }, docs));
+    const marks = m.sections.map((sec) => h("span", { class: "hbg-ov__mks" }, sec.qs.map((q) => mark(ctx, m, unit, q))));
+    return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" },
+      who,
       h("span", { class: "hbg-ov__mk" }, marks),
       h("span", { class: "hbg-num" }, m.overallText(t)),
       tierCell(ctx, m, unit, t));
@@ -751,7 +765,12 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 
   function bodyRow(ctx, m, unit, sections) {
     const sub = m.sortLabel ? labelOf(unit, m.sortLabel) : null;
-    const cells = [h("th", { scope: "row", class: "hbg-rh" }, unit.name || unit.id, sub ? h("span", { class: "hbg-sub" }, sub) : null)];
+    const cells = [h("th", { scope: "row", class: "hbg-rh" }, unit.name || unit.id, HB.gridGaps.marker(unit), sub ? h("span", { class: "hbg-sub" }, sub) : null)];
+    const docs = HB.gridGaps.note(ctx, m, unit);
+    if (docs) {
+      cells.push(h("td", { class: "hbg-docnote hbg-start", colspan: String(sections.reduce((n, g) => n + g.qs.length, 0) || 1) }, docs));
+      return h("tr", null, cells, totalsCells(m, unit));
+    }
     for (const g of sections) {
       g.qs.forEach((q, i) => {
         const td = tableCell(ctx, m, unit, q);
@@ -1012,6 +1031,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const view = state.gridView;
     root.classList.toggle("hbg-rests-on", m.showRests);
     root.append(toolbar(ctx, m, view), ...countsLine(ctx, m));
+    if (Array.isArray(state.onlyRows)) {
+      root.append(h("p", { class: "muted small" }, "Showing only the " + ctx.unitWords(m.shown.length) + " Claude pointed to. ",
+        h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => { state.onlyRows = null; ctx.render(); } }, "Show all")));
+    }
 
     if (!m.shown.length) {
       root.append(HB.notice("neutral", "No " + (p.unit_word_plural || "rows") + " match these filters."));

@@ -1,7 +1,7 @@
 /* =============================================================================
-   Handbook viewer: views/runbar.js, the run bar on the Grid and Documents tabs.
+   Handbook viewer: views/runbar.js, the run bar on the Grid tab.
    Defines HB.runBar(viewId, root, ctx); app.js calls it after drawing a tab, and
-   it puts the bar under the tab's heading (Grid and Documents only).
+   it puts the bar under the tab's heading (Grid only).
 
    What it shows (from the bundle):
      the open run (runs with finished null: kind, when it started, rows in scope
@@ -29,7 +29,7 @@
   "use strict";
 
   const { h, fmtInt } = HB;
-  const TABS = new Set(["grid", "documents"]);
+  const TABS = new Set(["grid"]);
   const KIND_WORDS = { trial: "Trial run", full: "Full run", rerun: "Rerun" };
   const STOP_WORDS = { find: "Finding documents", score: "Scoring", none: "Carry on to the end" };
   const WHEN = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });

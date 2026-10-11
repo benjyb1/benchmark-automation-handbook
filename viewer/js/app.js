@@ -14,8 +14,8 @@
    in the page, empty) and may also return a Node to put in it. Start the tab with an h2. visible() is optional (left out = shown).
    With no views registered the page shows an empty state instead.
    After a tab is drawn, HB.runBar(viewId, root, ctx) (views/runbar.js) may add
-   the run bar to it (the Grid and Documents tabs). The five tabs that are the
-   process's steps (Set-up, Rules, Documents, Grid, Results, in that order) then
+   the run bar to it (the Grid tab). The four tabs that are the
+   process's steps (Set-up, Rules, Grid, Results, in that order) then
    (no longer open with HB.stepBrief: the few notes that matter show on the chat button).
    Once the first tab is drawn, HB.chat.start() (views/chat.js) puts the corner
    chat's button in #hb-chat.
@@ -27,7 +27,8 @@
      #results~compare      a tab with its own parts (any count other than a valid
                            row and question pair), read from ctx.route.parts
    Parts are encoded by HB.href: any character outside letters, digits, "." and
-   "-" becomes "_<hex code>_". An unknown tab shows the default tab. A hash naming
+   "-" becomes "_<hex code>_". An unknown tab shows the default tab, except "documents" (an old
+   link; the Documents tab is part of the Grid now), which lands on the Grid. A hash naming
    an element on the page (the skip link's #main) is an in-page jump.
    Default tab: "setup" while project.stage is "setup" and no cell is scored, else
    "grid"; when that tab is not registered, the first tab.
@@ -73,8 +74,8 @@
   const SEP = "~";
   const STAGE_WORDS = { setup: "Setting up", trial: "Trial run", running: "Scoring", done: "Finished" };
   const DATE = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
-  const STEPS = ["setup", "rules", "documents", "grid", "results"];   // the process, in order: one tab each
-  const collator = new Intl.Collator("en-GB", { numeric: true, sensitivity: "base" });
+  const STEPS = ["setup", "rules", "grid", "results"];   // the process, in order: one tab each
+    const collator = new Intl.Collator("en-GB", { numeric: true, sensitivity: "base" });
 
   HB.state = { groupBy: null, filters: {}, highlight: [], openCell: null };
 
@@ -359,6 +360,10 @@
   function route(moved) {
     const list = tabs();
     let r = parse(location.hash);
+    if (r.tab === "documents" && list.some((v) => v.id === "grid")) {   // the Documents tab was folded into the Grid
+      r = { tab: "grid", parts: [] };
+      replaceHash(href("grid"));
+    }
     if (r.tab && !list.some((v) => v.id === r.tab)) {
       if (!r.parts.length && document.getElementById(r.tab)) return;   // an in-page jump (the skip link)
       r = { tab: null, parts: [] };

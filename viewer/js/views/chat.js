@@ -11,7 +11,7 @@
                rules), get_rule, find_cells, get_counts, get_step_brief,
                get_results (scores, the comparison with last edition)
      move      go_to (HB.go), open_cell (HB.openCell), highlight_cells
-               (HB.highlight), filter_documents (HB.state.onlyRows)
+               (HB.highlight), filter_grid (HB.state.onlyRows)
      propose   propose_rule_decision (HB.edits.decide / HB.edits.skip),
                propose_rerun (HB.compareView.rerun: the Re-run button's control
                request), propose_run_control (HB.runBar.request: the run bar's
@@ -58,7 +58,7 @@
 
   const { h, svg } = HB;
   const fmtInt = (n) => (typeof HB.fmtInt === "function" ? HB.fmtInt(n) : String(n));
-  const TABS = ["setup", "rules", "documents", "grid", "results"];
+  const TABS = ["setup", "rules", "grid", "results"];
   const BRIEF_OF = { setup: "setup", documents: "documents", grid: "scores", scores: "scores", results: "results" };
   const DOCK = "(width >= 64rem)";
   const MAX_TURNS = 24;
@@ -389,11 +389,11 @@
     return moved(list.length ? "Highlighted " + list.length + (list.length === 1 ? " cell" : " cells") + " on the Grid." : "Cleared the highlight.");
   }
 
-  function filterDocuments(input) {
+  function filterGrid(input) {
     const rows = input.rows == null ? null : Array.from(new Set(arr(input.rows).map(rowOf)));
     HB.state.onlyRows = rows && rows.length ? rows : null;
-    HB.go("documents");
-    return moved(HB.state.onlyRows ? "The Documents list now shows " + HB.data.unitWords(rows.length) + "." : "The Documents list shows everything again.");
+    HB.go("grid");
+    return moved(HB.state.onlyRows ? "The Grid now shows " + HB.data.unitWords(rows.length) + "." : "The Grid shows everything again.");
   }
 
   /* ---- Tools: propose a change (the owner confirms it) ----------------------------- */
@@ -607,14 +607,14 @@
         inputSchema: S({ step: { type: "string", enum: ["setup", "documents", "scores", "results"] } }, ["step"]), execute: getStepBrief },
       { name: "get_results", description: "Results: with a row, its scores and how they compare with last edition; without, the headline figures, the report's state and the comparison with last edition.",
         inputSchema: S({ row: ROW }), execute: getResults },
-      { name: "go_to", description: "Shows a tab of the page: setup, rules (optionally one rule), documents, grid, results, or compare (the comparison with last edition).",
+      { name: "go_to", description: "Shows a tab of the page: setup, rules (optionally one rule), grid, results, or compare (the comparison with last edition).",
         inputSchema: S({ tab: { type: "string", enum: TABS.concat(["compare"]) }, rule: RULE }, ["tab"]), execute: goTo },
       { name: "open_cell", description: "Opens one answer in the cell panel on the Grid, so the owner sees it.",
         inputSchema: S({ row: ROW, question: QID }, ["row", "question"]), execute: openCell },
       { name: "highlight_cells", description: "Highlights answers on the Grid and shows it. An empty list clears the highlight.",
         inputSchema: S({ cells: { type: "array", items: S({ row: ROW, question: QID }, ["row", "question"]) } }, ["cells"]), execute: highlightCells },
-      { name: "filter_documents", description: "Narrows the Documents list to these rows and shows it; rows null shows every row again.",
-        inputSchema: S({ rows: { type: ["array", "null"], items: ROW } }, ["rows"]), execute: filterDocuments },
+      { name: "filter_grid", description: "Narrows the Grid to these rows and shows it (each row shows a small \"missing\" button when Claude couldn't find or keep a document for it); rows null shows every row again.",
+        inputSchema: S({ rows: { type: ["array", "null"], items: ROW } }, ["rows"]), execute: filterGrid },
       { name: "propose_rule_decision", description: "Puts a decision on a rule to the owner (an option id, their own wording, or skip: true). Saved only when they click Confirm.",
         inputSchema: S({ rule: RULE, option: { type: "string" }, own_words: { type: "string" }, skip: { type: "boolean" } }, ["rule"]), execute: proposeDecision },
       { name: "propose_rerun", description: "Puts to the owner a request to score again the answers resting on a rule (usually after it is decided). Saved only when they click Confirm; " +
@@ -653,13 +653,13 @@
     const asked = Array.from(st.proposals.values()).filter((x) => x.state === "asked").map((x) => x.line);
     return [
       "You are Claude, in the corner chat of the benchmark tool's page, talking with the benchmark's owner. The page shows one benchmark: " +
-        (p.name || "this benchmark") + (p.edition ? " " + p.edition : "") + ". Its steps are tabs: Set-up, Rules, Documents, Grid (every answer), Results.",
+        (p.name || "this benchmark") + (p.edition ? " " + p.edition : "") + ". Its steps are tabs: Set-up, Rules, Grid (every answer, and the documents Claude found for each row), Results.",
       "How the tool works: Claude finds each " + one + "'s documents, scores every question with quotes as evidence, " +
         "raises rules where the methodology leaves a judgement open, and builds this page. The owner works only in this page. " +
         HB.when("The page has its own server: heavy work such as scoring runs behind the page, and the page updates as it goes.",
           "This page is a snapshot of the project: Claude updates it the next time it works on this project."),
       "What you can do here, with the tools: explain any answer (its evidence, Claude's note, flags and the rules it rests on), a rule and its options, counts and flags, " +
-        "the step briefs, the results and the comparison with last edition; move the page (a tab, a cell, highlighted cells, a narrowed Documents list); " +
+        "the step briefs, the results and the comparison with last edition; move the page (a tab, a cell, highlighted cells, a narrowed Grid); " +
         "propose changes: decide or skip a rule, a re-run of the answers resting on a rule, pause, resume, stop or scope the run, and a correction of an answer; and start the report draft.",
       "What you can't do yourself: score, search for documents, run anything or change files. " +
         HB.when("A change the owner confirms here is saved and applied at once by the page's server. Heavy work, such as a re-run, runs behind the page and its progress shows in the Run bar on the Grid tab. " +
@@ -687,7 +687,7 @@
       "=== NOW ===",
       JSON.stringify({
         tab: route.tab, open_cell: open ? { row: open.row, question: open.qid } : null,
-        highlighted: arr(HB.state && HB.state.highlight).length, documents_narrowed_to: HB.state && Array.isArray(HB.state.onlyRows) ? HB.state.onlyRows.length : null,
+        highlighted: arr(HB.state && HB.state.highlight).length, grid_narrowed_to: HB.state && Array.isArray(HB.state.onlyRows) ? HB.state.onlyRows.length : null,
         run: { paused: ctl.paused === true, stop_now: ctl.stop_now === true, open_runs: arr(b.runs).filter((r) => r && !r.finished).length },
         waiting_for_claude: waiting, changes_put_to_the_owner_not_confirmed_yet: asked,
       }),
@@ -934,7 +934,7 @@
       const bits = [];
       if (lost) bits.push("couldn't get copies of " + fmtInt(lost) + (lost === 1 ? " document" : " documents") + " (a site blocked me or the file broke)");
       if (missing) bits.push("couldn't find " + fmtInt(missing) + (missing === 1 ? " document" : " documents") + " the questions need");
-      out.push({ id: "docs:" + lost + ":" + missing, show: () => goTo({ tab: "documents" }),
+      out.push({ id: "docs:" + lost + ":" + missing, show: () => filterGrid({ rows: HB.data.gapRows() }),
         text: "I " + bits.join(", and ") + ". If you have them, sending them improves the scores." });
     }
     const seen = new Set(arr(HB.store.get(seenKey(), [])));

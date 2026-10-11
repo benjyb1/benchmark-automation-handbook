@@ -23,6 +23,13 @@
                                 unit_word and unit_word_plural)
    HB.data.isScored(cell)       true for a cell with an answer (answered or
                                 no_evidence)
+   HB.data.foundCount(row)      how many documents Claude has found for a row
+   HB.data.gaps(row)            what Claude could not get for a row: {missing:
+                                [{what, where_looked}] (expected but not found,
+                                from found[row].expected_not_found), lost: [{id,
+                                title, url, why}] (found, but no saved copy kept:
+                                documents[id].kept === false, not_kept_why)}
+   HB.data.gapRows()            the ids of the rows with any gap, in unit order
    ========================================================================== */
 
 (function (HB) {
@@ -114,6 +121,37 @@
     return Boolean(c) && (c.state === "answered" || c.state === "no_evidence");
   }
 
+  function found(row) {
+    const b = bundle();
+    return (b && b.found && b.found[row]) || {};
+  }
+
+  function foundCount(row) {
+    const ids = found(row).documents;
+    return Array.isArray(ids) ? ids.length : 0;
+  }
+
+  function gaps(row) {
+    const b = bundle();
+    const f = found(row);
+    const missing = (Array.isArray(f.expected_not_found) ? f.expected_not_found : [])
+      .map((m) => (m && typeof m === "object" ? { what: m.what, where_looked: m.where_looked } : { what: m }))
+      .filter((m) => m.what != null && String(m.what).trim() !== "")
+      .map((m) => ({ what: String(m.what), where_looked: m.where_looked ? String(m.where_looked) : null }));
+    const docs = (b && b.documents) || {};
+    const lost = (Array.isArray(f.documents) ? f.documents : [])
+      .filter((id) => typeof id === "string" && docs[id] && docs[id].kept === false)
+      .map((id) => ({ id, title: String(docs[id].title || docs[id].url || id), url: docs[id].url || null, why: docs[id].not_kept_why ? String(docs[id].not_kept_why) : null }));
+    return { missing, lost };
+  }
+
+  function gapRows() {
+    return list("units").filter((u) => u && u.id).map((u) => u.id).filter((id) => {
+      const g = gaps(id);
+      return g.missing.length || g.lost.length;
+    });
+  }
+
   function evidence(row) {
     if (typeof row !== "string" || !ROW_ID.test(row)) return Promise.resolve(null);
     if (!evidenceCache.has(row)) {
@@ -148,5 +186,8 @@
     labelValues,
     unitWords,
     isScored,
+    foundCount,
+    gaps,
+    gapRows,
   };
 })((window.HB = window.HB || {}));
