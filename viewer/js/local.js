@@ -610,6 +610,8 @@
     flag: (text) => { flagText = text; paintTop(); },
     state: () => state,
     refresh: pollState,
+    /** GET /api/<path> with the page's token (the Set-up material list, the chat's read_material). */
+    get: (path) => fetch("/api/" + path, { headers: { "X-HB-Token": TOKEN }, cache: "no-store" }),
   };
 
   const CSS = `

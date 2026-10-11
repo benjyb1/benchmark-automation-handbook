@@ -643,7 +643,7 @@
 
   async function loadMaterial(box) {
     try {
-      const res = await fetch("/api/material", { headers: { "X-HB-Token": String((window.HB_LOCAL || {}).token || "") }, cache: "no-store" });
+      const res = await HB.local.get("material");
       material.files = res.ok ? (await res.json()).files || [] : [];
     } catch (e) {
       material.files = [];

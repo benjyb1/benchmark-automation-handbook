@@ -16,7 +16,7 @@
    After a tab is drawn, HB.runBar(viewId, root, ctx) (views/runbar.js) may add
    the run bar to it (the Grid and Documents tabs). The five tabs that are the
    process's steps (Set-up, Rules, Documents, Grid, Results, in that order) then
-   open with HB.stepBrief(step, ctx) (views/deck.js) when it returns an element.
+   (no longer open with HB.stepBrief: the few notes that matter show on the chat button).
    Once the first tab is drawn, HB.chat.start() (views/chat.js) puts the corner
    chat's button in #hb-chat.
 
@@ -298,13 +298,13 @@
         console.error("HB.runBar failed:", err);
       }
     }
-    // Each step of the process opens with its brief (HB.stepBrief, views/deck.js), above the heading.
-    if (STEPS.includes(view.id) && typeof HB.stepBrief === "function") {
+    // What used to be each step's brief now lives on the chat button: a count of the few things worth the
+    // owner's attention (HB.chat.badge, views/chat.js).
+    if (HB.chat && typeof HB.chat.badge === "function") {
       try {
-        const brief = HB.stepBrief(view.id, context());
-        if (brief instanceof Node) root.prepend(brief);
+        HB.chat.badge();
       } catch (err) {
-        console.error("HB.stepBrief failed:", err);
+        console.error("HB.chat.badge failed:", err);
       }
     }
   }

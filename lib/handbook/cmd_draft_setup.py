@@ -5,7 +5,8 @@ scorers are (the unmodified command, the owner's plan, only the tools it needs, 
 on with no network), follows the set-up skill's steps 1 and 2 without an owner to ask: it reads
 every file in `inbox/uploads/`, records them in `provided`, drafts the questions, rows, score sheet,
 group labels and where-to-look plan as `draft`, holds back last edition's results when they are
-there, and writes what it could not settle as open questions in Claude's note on the Set-up step.
+there, and turns what it could not settle into open rules and data needs (the few that matter show on the
+chat button's badge).
 The owner then checks, corrects and confirms in the page.
 """
 from __future__ import annotations
@@ -41,9 +42,9 @@ def prompt_for(project: Path, python: str) -> str:
         "says, and record any mismatch as an open question.",
         f"- Run every hb command as {hb} COMMAND --project \"{project}\" ... . Validate and fix until validate is clean, "
         "then build. Do not publish anything and do not use the web.",
-        f"- Finish by writing Claude's note on the Set-up step as {LIB.parent / 'skills' / 'run' / 'deck.md'} says "
-        "(--step setup): what you drafted, what you proposed rather than took from the files, and the open questions, "
-        "most important first, each with your recommendation, in plain UK English for a non-technical owner.",
+        "- Put each open question where the owner will see it: a point a scorer would have to guess becomes an open "
+        "rule (raise-rule, as grill.md says, with your recommendation), and something only the owner can supply becomes "
+        "a data need (step 5). Keep them few: only what changes many points or blocks the work.",
         f"Token cap: {CAP:,}. If you get near it, save the drafts you have, validate, build and stop.",
         "Reply in two lines: what you drafted, and how many open questions you left for the owner.",
     ])

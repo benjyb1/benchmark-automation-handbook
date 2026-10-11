@@ -39,6 +39,8 @@
    HB.chat = {
      start()                  builds the button and the panel (once)
      open(), close(), isOpen()
+     badge()                  refreshes the count on the button (app.js, after each draw)
+     notices()                what the count covers: [{id, text, show}]
      send(text)               asks Claude (Promise; the reply lands in the panel)
      tools()                  the tool list given to `sample` (each {name,
                               description, inputSchema, execute})
@@ -55,6 +57,7 @@
   "use strict";
 
   const { h, svg } = HB;
+  const fmtInt = (n) => (typeof HB.fmtInt === "function" ? HB.fmtInt(n) : String(n));
   const TABS = ["setup", "rules", "documents", "grid", "results"];
   const BRIEF_OF = { setup: "setup", documents: "documents", grid: "scores", scores: "scores", results: "results" };
   const DOCK = "(width >= 64rem)";
@@ -567,7 +570,7 @@
     if (!HB.local) throw new Error("The owner's files can be read only in the tool on their own computer.");
     const id = input && input.file ? String(input.file) : "";
     const url = "/api/material" + (id ? "/" + encodeURIComponent(id) + "?start=" + Number(input.start || 0) + "&size=20000" : "");
-    const res = await fetch(url, { headers: { "X-HB-Token": String((window.HB_LOCAL || {}).token || "") }, cache: "no-store" });
+    const res = await HB.local.get(url.replace(/^\/api\//, ""));
     const body = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(body.message || body.error || "The file could not be read.");
     if (!id) return { files: body.files, note: "Read one with file: its id. Long files come in parts: pass start to read on." };
@@ -623,7 +626,7 @@
         inputSchema: S({ row: ROW, question: QID, value: { type: ["number", "string"] }, reason: { type: "string" }, quote: { type: "string" }, doc: { type: "string" }, page: { type: "number" }, link: { type: "string" } }, ["row", "question"]), execute: proposeCorrection },
       { name: "read_material", description: "The owner's set-up files (added on the Set-up tab under Your material): without file, the list (id, name, kind, length); with file, its text as PDF, Word, Excel or text, 20,000 characters from start. For the fit check.",
         inputSchema: S({ file: { type: "string" }, start: { type: "number" } }), execute: readMaterial },
-      { name: "propose_draft_setup", description: "Puts Draft my set-up to the owner: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions in Claude's note on the Set-up step. Saved only when they click Confirm. Use it once the fit check is done and the files are in.",
+      { name: "propose_draft_setup", description: "Puts Draft my set-up to the owner: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions as rules to decide and data to supply. Saved only when they click Confirm. Use it once the fit check is done and the files are in.",
         execute: proposeDraftSetup },
       { name: "chart_columns", description: "The columns of each dataset a chart can draw from (rows, cells, compare, history), for propose_chart.",
         execute: chartColumns },
@@ -903,9 +906,79 @@
       h("p", { class: "small muted" }, HB.when("Reload the page to try again.", "With the page open on claude.ai and Claude allowed, this chat works here too.")));
   }
 
+  /* ---- Worth your attention: the badge on the button ----------------------------------------------
+     Only what really matters: the undecided rules that govern the most answers, data only the owner
+     can supply, and documents Claude could not get. Each can be marked "Got it" (kept per viewer). */
+
+  const seenKey = () => "chat-seen:" + ((bundle().project || {}).slug || "");
+
+  function notices() {
+    const b = bundle() || {};
+    const out = [];
+    const all = arr(b.units).length * arr(b.questions).length;
+    arr(b.rules)
+      .filter((r) => r && r.status === "open" && r.stakes && Number(r.stakes.cells) >= Math.max(10, all * 0.05))
+      .sort((x, y) => (Number(y.stakes.points) || 0) - (Number(x.stakes.points) || 0))
+      .slice(0, 3)
+      .forEach((r) => out.push({ id: "rule:" + r.id, show: () => goTo({ tab: "rules", rule: r.id }),
+        text: "Rule " + r.id + " is undecided and governs " + fmtInt(r.stakes.cells) + " answers: " + clipText(r.ask || r.why || "", 110) }));
+    const needs = arr(b.needs).filter((n) => n && n.status === "needed");
+    if (needs.length) {
+      out.push({ id: "needs:" + needs.map((n) => n.id).join(","), show: () => goTo({ tab: "setup" }),
+        text: (needs.length === 1 ? "I need something only you can supply: " + clipText(needs[0].what || needs[0].why || "", 110)
+          : "I need " + fmtInt(needs.length) + " things only you can supply, such as " + clipText(needs[0].what || "", 80)) });
+    }
+    const lost = Object.values(b.documents || {}).filter((d) => d && d.kept === false).length;
+    const missing = Object.values(b.found || {}).reduce((n, f) => n + arr(f && f.expected_not_found).length, 0);
+    if (lost || missing) {
+      const bits = [];
+      if (lost) bits.push("couldn't get copies of " + fmtInt(lost) + (lost === 1 ? " document" : " documents") + " (a site blocked me or the file broke)");
+      if (missing) bits.push("couldn't find " + fmtInt(missing) + (missing === 1 ? " document" : " documents") + " the questions need");
+      out.push({ id: "docs:" + lost + ":" + missing, show: () => goTo({ tab: "documents" }),
+        text: "I " + bits.join(", and ") + ". If you have them, sending them improves the scores." });
+    }
+    const seen = new Set(arr(HB.store.get(seenKey(), [])));
+    return out.filter((n) => !seen.has(n.id));
+  }
+
+  function clipText(t, n) {
+    const x = String(t || "").replace(/\s+/g, " ").trim();
+    return x.length > n ? x.slice(0, n - 1) + "\u2026" : x;
+  }
+
+  function gotIt(id) {
+    const seen = arr(HB.store.get(seenKey(), []));
+    if (!seen.includes(id)) HB.store.set(seenKey(), seen.concat([id]));
+    repaint();
+    badge();
+  }
+
+  /** The count on the chat button: how many notices the owner has not marked Got it. */
+  function badge() {
+    if (!connected(ui.fab)) return;
+    let n = 0;
+    try { n = notices().length; } catch (e) { n = 0; }
+    ui.badge.hidden = n === 0;
+    ui.badge.textContent = n > 9 ? "9+" : String(n);
+    ui.fab.setAttribute("aria-label", n ? "Ask Claude (" + n + " to look at)" : "Ask Claude");
+  }
+
+  function noticesNode() {
+    const list = notices();
+    if (!list.length) return null;
+    return h("div", { class: "hbc-notes", "aria-label": "Worth your attention" },
+      h("p", { class: "hbc-notes__title" }, "Worth your attention"),
+      list.map((n) => h("div", { class: "hbc-note" }, h("p", null, n.text),
+        h("p", { class: "hbc-note__acts" },
+          h("button", { type: "button", class: "btn btn--small", onclick: () => { try { n.show(); } catch (e) { /* tab missing */ } } }, "Show"),
+          h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => gotIt(n.id) }, "Got it")))));
+  }
+
   function repaint() {
     if (!connected(ui.body)) return;
     const parts = [];
+    const notes = noticesNode();
+    if (notes) parts.push(notes);
     if (st.log.length) {
       ui.logBox = h("div", { class: "hbc-log", id: "hbc-log", role: "log", "aria-live": "polite", "aria-label": "Conversation" },
         st.log.map(entryNode));
@@ -994,7 +1067,10 @@
     }
     ui.fab = h("button", { type: "button", class: "hbc-fab", id: "hbc-fab", "aria-expanded": "false", "aria-controls": "hbc-panel",
       "aria-label": "Ask Claude", title: "Ask Claude" }, glyph("hbc-fab__glyph"));
+    ui.badge = h("span", { class: "hbc-fab__badge", "aria-hidden": "true", hidden: true });
+    ui.fab.append(ui.badge);
     ui.fab.addEventListener("click", open);
+    setTimeout(badge, 0);                    // once the button is in the page
     const closeBtn = h("button", { type: "button", class: "btn btn--quiet btn--small hbc-close", id: "hbc-close" }, "Close");
     closeBtn.addEventListener("click", () => close());
     ui.body = h("div", { class: "hbc-body" });
@@ -1034,6 +1110,12 @@
 .hbc-fab:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .hbc-fab[hidden] { display: none; }
 .hbc-fab__glyph { width: 1.75rem; height: 1.75rem; }
+.hbc-fab__badge { position: absolute; top: -0.2rem; right: -0.2rem; min-width: 1.25rem; height: 1.25rem; padding: 0 0.3rem; border-radius: 999px; background: #b42318; color: #ffffff; font-size: 0.75rem; font-weight: 600; line-height: 1.25rem; text-align: center; box-shadow: 0 0 0 2px var(--bg, #ffffff); }
+.hbc-fab__badge[hidden] { display: none; }
+.hbc-notes { display: grid; gap: var(--s2); padding: var(--s3); border-bottom: 1px solid var(--rule); background: var(--accent-soft); font-size: var(--fs-14); }
+.hbc-notes__title { font-weight: 600; }
+.hbc-note { display: grid; gap: var(--s1); }
+.hbc-note__acts { display: flex; gap: var(--s2); }
 .hbc-panel { position: fixed; right: max(var(--gutter-end), 16px); bottom: max(16px, env(safe-area-inset-bottom, 0px)); z-index: 37; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(380px, 100vw - 32px); height: min(40rem, 100dvh - 32px); border: 1px solid var(--rule-strong); border-radius: 0.75rem; background: var(--surface); color: var(--ink); box-shadow: 0 1.25rem 3rem var(--shadow); overflow: hidden; }
 .hbc-panel[hidden] { display: none; }
 .hbc-head { display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s2) var(--s2) var(--s3); border-bottom: 1px solid var(--rule); }
@@ -1080,6 +1162,8 @@
 
   HB.chat = {
     start,
+    badge,
+    notices: () => notices(),
     open,
     close: () => close(),
     isOpen: () => st.open,

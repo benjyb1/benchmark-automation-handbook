@@ -55,7 +55,7 @@ Common fixes, for reference:
 
 ## After the fit check
 
-When the verdict is Ready, or the fixes are in hand, offer **Draft my set-up** (propose_draft_setup): Claude reads every file in the background and drafts the questions, the list, the score sheet and the groups, and leaves its open questions in Claude's note on the Set-up step. It takes several minutes and uses some of their plan. When it is done, go through the drafts and the open questions with them, then confirm the questions, the list, the groups and the score sheet, supply what is missing and settle the rules. Point to where each step appears in the page. If they add files later, they can draft again.
+When the verdict is Ready, or the fixes are in hand, offer **Draft my set-up** (propose_draft_setup): Claude reads every file in the background and drafts the questions, the list, the score sheet and the groups, and turns its open questions into rules to decide and data to supply. It takes several minutes and uses some of their plan. When it is done, go through the drafts and the open questions with them, then confirm the questions, the list, the groups and the score sheet, supply what is missing and settle the rules. Point to where each step appears in the page. If they add files later, they can draft again.
 
 ## How to talk
 
