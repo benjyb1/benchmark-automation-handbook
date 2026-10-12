@@ -1,4 +1,4 @@
-"""hb serve [--project DIR] [--port N] [--no-browser]: open the project's page in your own browser.
+"""hb serve [--project DIR] [--port N] [--no-browser] [--app-window]: open the project's page in your own browser.
 
 The page works on its own from then on: what you save there is applied at once, re-runs are scored
 on this computer, and the corner chat asks Claude on your own plan. Close the tab to pause; open
@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import signal
+import subprocess
+import sys
 import urllib.request
 import webbrowser
 from pathlib import Path
@@ -59,11 +61,25 @@ def already_running(path) -> str | None:
     return f"http://127.0.0.1:{int(info['port'])}/?t={info['token']}"
 
 
+CHROME = Path("/Applications/Google Chrome.app")
+
+
+def show(url: str, app_window: bool = False) -> None:
+    """Open the page: in a window of its own (Chrome's app mode, no tabs or address bar) when asked
+    and Chrome is installed, otherwise in the default browser."""
+    if app_window and sys.platform == "darwin" and CHROME.is_dir():
+        if subprocess.run(["open", "-na", str(CHROME), "--args", f"--app={url}"]).returncode == 0:
+            return
+    webbrowser.open(url)
+
+
 def main(argv) -> int:
     parser = command_parser("serve", "Open the project's page in your browser, served from this computer.")
     parser.add_argument("--port", type=int, default=None,
                         help=f"the port on 127.0.0.1 (default {DEFAULT_PORT}, or a free one if that is taken)")
     parser.add_argument("--no-browser", action="store_true", help="print the address but don't open the browser")
+    parser.add_argument("--app-window", action="store_true",
+                        help="open the page in its own window (Chrome's app mode) when Chrome is installed")
     args = parser.parse_args(argv)
     config = Config()
     where = args.project or config.last_project()
@@ -77,7 +93,7 @@ def main(argv) -> int:
         config.remember(project.path, name)
         print(f"{name} is already open at {running}", flush=True)
         if not args.no_browser:
-            webbrowser.open(running)
+            show(running, args.app_window)
         return 0
 
     print(f"Building the page for {name}...", flush=True)
@@ -101,7 +117,7 @@ def main(argv) -> int:
     print("Keep this running while you work. Close the browser tab to pause; press Ctrl-C here to stop.",
           flush=True)
     if not args.no_browser:
-        webbrowser.open(url)
+        show(url, args.app_window)
 
     def stop(signum, frame):
         for sig in (signal.SIGTERM, signal.SIGINT):     # once is enough: a second signal must not
