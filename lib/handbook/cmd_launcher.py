@@ -138,6 +138,14 @@ def set_icon(app: Path) -> bool:
             if not dest.parent.is_dir():
                 return False
             shutil.copyfile(icns, dest)
+        # Newer macOS also ships the stock icon in an asset catalogue named by CFBundleIconName,
+        # and prefers it; drop both so the .icns is the one Finder shows, then re-seal the app.
+        (app / "Contents" / "Resources" / "Assets.car").unlink(missing_ok=True)
+        if shutil.which("plutil"):
+            subprocess.run(["plutil", "-remove", "CFBundleIconName", str(app / "Contents" / "Info.plist")],
+                           capture_output=True, text=True)
+        if shutil.which("codesign"):
+            subprocess.run(["codesign", "--force", "--sign", "-", str(app)], capture_output=True, text=True)
         app.touch()                      # so Finder notices the new icon
         (app / "Contents").touch()
         return True
