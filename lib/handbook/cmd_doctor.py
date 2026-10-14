@@ -58,6 +58,27 @@ def tool_checks() -> list[dict]:
     return []
 
 
+CHROME_APPS = (Path("/Applications/Google Chrome.app"), Path.home() / "Applications" / "Google Chrome.app")
+
+
+def render_checks() -> list[dict]:
+    """Pages that draw their words with a script are read by opening them in the owner's own Chrome
+    (render.py, through Playwright, which the launcher installs). Without Chrome they come from the
+    web archive when it has them, and are otherwise left out: every quote from such a page would
+    then be a quote not found."""
+    from . import render
+    has_chrome = any(p.is_dir() for p in CHROME_APPS)
+    if not has_chrome:
+        return [check("Reading script-built pages", WARN, "Google Chrome is not installed, so pages that build "
+                      "their text with a script can only come from the web archive, and some will be left out.",
+                      "Install Google Chrome (google.com/chrome); the tool opens such pages in it, out of sight.")]
+    if render.renderer() is None:
+        return [check("Reading script-built pages", WARN, "Chrome is here, but the part that drives it is missing, "
+                      "so pages that build their text with a script can only come from the web archive.",
+                      "Run the tool through its launcher (lib/hb), which installs it.")]
+    return [check("Reading script-built pages", OK, "Pages that build their text with a script are read in Chrome.")]
+
+
 def claude_path() -> str | None:
     return shutil.which("claude") or next(
         (str(p) for p in [Path.home() / ".local" / "bin" / "claude"] if p.is_file()), None)
@@ -210,7 +231,7 @@ def main(argv) -> int:
                              "(uses a few thousand tokens of your plan)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    checks = python_checks() + tool_checks() + claude_checks() + folder_checks(args.folder)
+    checks = python_checks() + tool_checks() + render_checks() + claude_checks() + folder_checks(args.folder)
     if args.probe and not any(c["state"] == BLOCKED and c["check"] == "Claude Code command line" for c in checks):
         checks += probe()
     ready = not any(c["state"] == BLOCKED for c in checks)

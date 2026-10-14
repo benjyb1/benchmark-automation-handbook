@@ -27,6 +27,10 @@ What happens when the owner saves something (the Worker):
 - a correction waiting on a link or a file (one on a saved page is checked by the page itself):
   the blind re-read as the run skill says, `kit --look`, `score`, `apply-corrections --record`.
 Heavy work runs as one job at a time; the page polls its progress.
+- the Feedback tab (`/api/feedback/...`, see `Handler._feedback`): make packs, mark them sent, read
+  dropped reply files, decide a point, undo it, set a stage, move or remove a file, start a unit
+  over. Each call runs the matching `feedback.py`, `packs.py` or `replies.py` function and then
+  rebuilds before it answers, so the page's next look at the data is the new one.
 """
 from __future__ import annotations
 import html
@@ -35,6 +39,7 @@ import mimetypes
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -66,7 +71,15 @@ ASSET_RE = re.compile(r"^[a-f0-9]{16,32}\Z")
 UPLOAD_TYPES = {"application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md", "text/csv": ".csv",
                 "text/html": ".html",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx"}
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                # What businesses send back in the feedback round: their reply in Excel (old and macro
+                # formats too, so the page can say what to do with them), and what they attach.
+                "application/vnd.ms-excel": ".xls",
+                "application/vnd.ms-excel.sheet.macroenabled.12": ".xlsm",
+                "application/msword": ".doc",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                "image/png": ".png", "image/jpeg": ".jpg", "message/rfc822": ".eml",
+                "application/vnd.ms-outlook": ".msg"}
 
 
 def now_iso() -> str:
@@ -80,6 +93,24 @@ def page_claude_text() -> str:
     except OSError:
         return ""
     return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+
+
+def open_folder(project: Project, folder: str) -> dict:
+    """Show a folder of the project (the packs just made) in the computer's file manager. Only folders
+    inside the project's `packs` folder open; anything else is refused."""
+    path = (project.path / folder).resolve()
+    packs_dir = (project.path / "packs").resolve()
+    if path != packs_dir and packs_dir not in path.parents:
+        raise HandbookError("Only the packs folder can be opened from here.")
+    if not path.is_dir():
+        raise HandbookError("That folder is not there any more.")
+    cmd = ["open", str(path)] if sys.platform == "darwin" else ["explorer", str(path)] if sys.platform.startswith("win") \
+        else ["xdg-open", str(path)]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except OSError:
+        return {"opened": False, "path": str(path)}
+    return {"opened": True, "path": str(path)}
 
 
 # ---- Running the existing commands ----------------------------------------------------------------
@@ -143,6 +174,9 @@ class Worker:
         self.project = project
         self.store = store
         self.cmd = Commands(project)
+        # One feedback write at a time (the Feedback tab's calls and the plain-reasons job); always taken
+        # before `cmd.lock`.
+        self.feedback_lock = threading.RLock()
         self.version = 0                    # goes up after every build; the page reloads its data then
         self.activity: deque = deque(maxlen=30)
         self.job: dict | None = None
@@ -442,6 +476,44 @@ class Worker:
         else:
             self.note("The set-up draft stopped before it finished.", "warning", (got.get("result") or out)[-800:])
 
+    def plain_reasons(self, job: dict, ids: list[str]) -> None:
+        """The plain-reasons job (`POST /api/feedback/plain-reasons`): one small Claude call per unit, outside
+        any lock, then its result kept under the locks. Two failures in a row stop it (a rate limit, a
+        broken sign-in) with what was done kept; the page shows progress as for any job."""
+        from . import feedback, plainreasons
+        names = {uid: u.get("name") or uid for uid, u in feedback.units_by_id(self.project).items()}
+        job.update({"total": len(ids), "done": 0, "line": "Starting"})
+        problems, in_a_row, done = [], 0, 0
+        for n, uid in enumerate(ids, 1):
+            if self.stopping:
+                break
+            job["line"] = f"Writing the reasons for {names.get(uid, uid)} ({n} of {len(ids)})"
+            try:
+                reasons, usage = plainreasons.ask(self.project, uid)
+                with self.feedback_lock, self.cmd.lock:
+                    got = plainreasons.save(self.project, uid, reasons, usage)
+                job["tokens"] += got["tokens"]
+                in_a_row, done = 0, done + 1
+            except HandbookError as e:
+                problems.append(f"{names.get(uid, uid)}: {e}")
+                in_a_row += 1
+                if plainreasons.spent(e):
+                    with self.feedback_lock, self.cmd.lock:
+                        job["tokens"] += plainreasons.save(self.project, uid, {}, plainreasons.spent(e))["tokens"]
+            job["done"] = n
+            if in_a_row >= 2:
+                job["line"] = "Stopped after two failures in a row"
+                break
+        with self.feedback_lock:
+            self.build()
+        self.log_usage({"kind": "plain-reasons", "job": job["key"], "processed": job["tokens"], "units": done,
+                        "failed": len(problems)})
+        if not problems:
+            self.note(f"The reasons are written in plain words for {done} of {len(ids)}.", "good")
+        else:
+            self.note(f"Plain reasons: {done} of {len(ids)} done, {len(problems)} not.", "warning", "\n".join(problems)[-800:])
+        job["line"] = f"Done: {done} of {len(ids)}" + (f", {len(problems)} could not be written" if problems else "")
+
     def _take_reasons(self, docs: list[dict]) -> bool:
         """A reason the owner accepted under Ask Claude why: recorded in compare/compare.json by
         `compare.fill_reason`. Each document is deleted once handled."""
@@ -564,6 +636,8 @@ class Worker:
             self.cmd.run("run", "finish", "--run", run_id)
             self.cmd.run("control", "set", "--rerun-done", req["id"])
             self.cmd.run("check")
+            if (self.project.path / "compare" / "compare.json").is_file():
+                self.cmd.run("compare")   # the comparison follows the new answers: a re-run rule leaves Check these first
         self.build()
         after = self._values([r for r, _ in work], questions)
         moved = sum(1 for k in before if before[k] != after.get(k))
@@ -684,6 +758,7 @@ class LocalServer(ThreadingHTTPServer):
         self.config = config or Config()
         self.store = Store(project.path)
         self.worker = Worker(project, self.store)
+        self.feedback_lock = self.worker.feedback_lock     # one feedback write at a time (a Claude check can take a minute)
         slug = re.sub(r"[^a-z0-9-]+", "-", project.path.name.lower()).strip("-") or "project"
         self.sampler = Sampler(home() / "chat" / slug, self.bridge_url, page_claude_text,
                                log=self.worker.log_usage, claude=claude)
@@ -881,6 +956,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(material.read(srv.project, parts[1], int(q("start", 0)), int(q("size", 20000))))
             except (ValueError, OSError) as e:
                 return self.fail(400, str(e), "unreadable")
+        if parts[0] == "setup":
+            return self._setup(method, parts[1:])
+        if parts[0] == "feedback":
+            return self._feedback(method, parts[1:])
         if path == "page-claude" and method == "GET":
             return self.json({"text": page_claude_text()})
         if path == "user" and method == "POST":
@@ -898,6 +977,210 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, copy_html(srv.project).encode("utf-8"), "text/html; charset=utf-8",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
         return self.fail(404, "No such call.", "not_found")
+
+    def _setup(self, method: str, parts: list[str]) -> None:
+        """The Set-up tab's chat: GET the set-up as it stands (or `guide`, the file formats); POST a part
+        ({part, content}) or a checklist status ({item, status}). Each write is checked before it is kept
+        (setup_parts), then the page is rebuilt so the right-hand side fills in."""
+        from . import setup_parts
+        srv = self.server
+        worker = srv.worker
+        if method == "GET" and not parts:
+            return self.json(setup_parts.describe(srv.project))
+        if method == "GET" and parts == ["guide"]:
+            return self.json({"text": setup_parts.guide()})
+        if method != "POST" or parts not in ([], ["status"]):
+            return self.fail(404, "No such call.", "not_found")
+        body = self.body_json() or {}
+        try:
+            with worker.cmd.lock:
+                if parts == ["status"]:
+                    got = setup_parts.set_status(srv.project, str(body.get("item") or ""), str(body.get("status") or ""))
+                else:
+                    got = setup_parts.write_part(srv.project, str(body.get("part") or ""), body.get("content"))
+        except HandbookError as e:
+            return self.fail(400, str(e))
+        if got.get("ok"):
+            worker.build()
+        return self.json(got)
+
+    def _feedback(self, method: str, parts: list[str]) -> None:
+        """The Feedback tab. GET `status`: the round as the bundle shows it (also before it has started).
+        POST (JSON body), each answering `{result, built, feedback}`: `packs` {scope: ready|units|all,
+        units?}, `mark-sent` {units}, `replies` {files: [{asset, name}], unit?, replace?}, `decide`
+        {unit, question, action: keep|change, value?, reason?}, `undo` {unit, question}, `stage` {unit,
+        stage}, `move-file` {file, units}, `remove-file` {file}, `confirm-group` {file, units?},
+        `restart` {unit}, `settings` {set: {key: value}}; `stage`, `restart` also take `units` (a list),
+        `remove-file` takes `files`, `review` takes `questions`. The corner chat uses the lists.
+        Claude is called in three places only, each when the owner asks: `review` {unit, question} (one small
+        call for a point), `read-file` {file} (one small call to say whose a waiting file is) and
+        `plain-reasons` {units?, setting?} (a background job, one small call per unit; it sets the reasons to
+        plain unless setting is false, and answers at once with the units queued and the tokens it will use).
+        `preview` {unit, question, value} and `open-folder` {folder} change nothing.
+        Every write rebuilds the page before it answers."""
+        from . import feedback, packs, replies
+        srv = self.server
+        project = srv.project
+        worker = srv.worker
+        if method == "GET" and parts == ["status"]:
+            return self.json({"feedback": feedback.bundle_part(project, always=True)})
+        if method != "POST" or len(parts) != 1:
+            return self.fail(404, "No such call.", "not_found")
+        act = parts[0]
+        body = self.body_json() or {}
+        if not isinstance(body, dict):
+            return self.fail(400, "The request body must be a JSON object.")
+
+        def need(key):
+            value = body.get(key)
+            if value in (None, "", []):
+                raise HandbookError(f"Say which {key.replace('_', ' ')}.")
+            return value
+
+        def units_of(key="units"):
+            value = body.get(key)
+            if isinstance(value, str):
+                value = [value]
+            if not isinstance(value, list) or not value or not all(isinstance(x, str) for x in value):
+                raise HandbookError("Say which units.")
+            return value
+
+        if act == "preview":
+            return self.json({"result": feedback.preview(project, need("unit"), str(need("question")), body.get("value"))})
+        if act == "open-folder":
+            return self.json({"result": open_folder(project, str(need("folder")))})
+
+        def do(fn, slow=False):
+            """Run `fn` with the feedback lock, then rebuild so the page's data is the new one. A slow call
+            (Claude reading a point) does not hold the lock the other saves and builds wait on."""
+            with srv.feedback_lock:
+                if slow:
+                    result = fn()
+                    built = worker.build()
+                else:
+                    with worker.cmd.lock:
+                        result = fn()
+                        built = worker.build()
+                part = feedback.bundle_part(project, always=True)
+            return self.json({"result": result, "built": built, "feedback": part})
+
+        def make():
+            got = packs.make_packs(project, scope, ids)
+            got["path"] = str(project.path / got["folder"])
+            return got
+
+        if act == "packs":
+            scope = str(body.get("scope") or "ready")
+            ids = units_of() if scope == "units" else None
+            return do(make)
+        if act == "mark-sent":
+            return do(lambda: {"units": feedback.mark_sent(project, units_of())})
+        if act == "replies":
+            files = body.get("files")
+            if not isinstance(files, list) or not files:
+                raise HandbookError("There are no files to read.")
+            unit = body.get("unit")
+            return do(lambda: self._read_replies(files, unit if isinstance(unit, str) and unit else None, bool(body.get("replace"))))
+        if act == "decide":
+            action = str(need("action"))
+            return do(lambda: feedback.decide(project, need("unit"), str(need("question")), action, body.get("value"),
+                                              str(body.get("reason") or "")))
+        if act == "undo":
+            return do(lambda: feedback.undo_decision(project, need("unit"), str(need("question"))))
+        def either(one: str, many: str) -> list[str]:
+            """`many` (a list) when given, else the single `one`: the chat sends lists, the tab one at a time."""
+            if body.get(many):
+                return units_of(many) if many == "units" else files_of()
+            return [str(need(one))]
+
+        def files_of() -> list[str]:
+            value = body.get("files")
+            if not isinstance(value, list) or not value or not all(isinstance(x, str) for x in value):
+                raise HandbookError("Say which files.")
+            return value
+
+        def checked_units(names: list[str]) -> list[str]:
+            return [feedback.unit_id(project, u) for u in names]      # every name is found before anything is written
+
+        if act == "stage":
+            stage, names = str(need("stage")), either("unit", "units")
+            if body.get("units"):
+                return do(lambda: {"units": [feedback.set_stage(project, u, stage) for u in checked_units(names)]})
+            return do(lambda: feedback.set_stage(project, names[0], stage))
+        if act == "move-file":
+            return do(lambda: feedback.move_file(project, str(need("file")), units_of()))
+        if act == "remove-file":
+            def remove():
+                ids = either("file", "files")
+                state = feedback.read_state(project)
+                for fid in ids:
+                    feedback._find_file(state, fid)                    # all there before any goes
+                gone = [feedback.remove_file(project, fid) for fid in ids]
+                return gone[0] if not body.get("files") else {"files": gone}
+            return do(remove)
+        if act == "confirm-group":
+            ids = units_of() if body.get("units") else None
+            return do(lambda: feedback.confirm_group_file(project, str(need("file")), ids))
+        if act == "restart":
+            names = either("unit", "units")
+            if body.get("units"):
+                return do(lambda: {"units": [feedback.restart(project, u) for u in checked_units(names)]})
+            return do(lambda: feedback.restart(project, names[0]))
+        if act == "review":
+            # A Claude call, only when the owner asks: one small `claude -p` for the points they name.
+            qs = body.get("questions") if isinstance(body.get("questions"), list) and body.get("questions") else [str(need("question"))]
+            return do(lambda: replies.review_unit(project, need("unit"), [str(q) for q in qs], True), slow=True)
+        if act == "settings":
+            changes = body.get("set")
+            if not isinstance(changes, dict) or not changes:
+                raise HandbookError("Say which settings to change.")
+            return do(lambda: {"settings": feedback.set_settings(project, **changes)})
+        if act == "read-file":
+            # Another Claude call, only when asked: one small `claude -p` to say whose a waiting file is.
+            return do(lambda: replies.read_unmatched(project, str(need("file"))), slow=True)
+        if act == "plain-reasons":
+            from . import plainreasons
+            chosen = body.get("units")
+            if chosen is not None and (not isinstance(chosen, list) or not all(isinstance(x, str) for x in chosen)):
+                raise HandbookError("Say which units, as a list.")
+
+            def start():
+                ids = plainreasons.with_notes(project, chosen or None)
+                if not ids:
+                    raise HandbookError("None of those has a note to rewrite yet.")
+                if body.get("setting", True):
+                    feedback.set_settings(project, reasons="plain")
+                queued = worker.enqueue("plain-reasons:" + now_iso(), "plain", "Writing the reasons in plain words",
+                                        lambda job: worker.plain_reasons(job, ids))
+                low, high = plainreasons.PER_UNIT
+                return {"queued": queued, "units": ids, "tokens": {"low": low * len(ids), "high": high * len(ids)}}
+            return do(start)
+        return self.fail(404, "No such call.", "not_found")
+
+    def _read_replies(self, files: list, unit, replace: bool) -> dict:
+        """Read the files the page uploaded (as assets): each is copied under the name the owner dropped it
+        with (the file name is how a reply finds its unit), read, and the upload removed."""
+        from . import feedback, replies
+        srv = self.server
+        work = Path(tempfile.mkdtemp(prefix="hb-replies-"))
+        assets, paths = [], []
+        try:
+            for n, item in enumerate(files):
+                asset = item.get("asset") if isinstance(item, dict) else None
+                src = srv.worker.asset_path(asset)
+                if not src:
+                    raise HandbookError("One of the files you dropped could not be found among the uploads. Drop it again.")
+                assets.append(src)
+                name = feedback.safe_name((item.get("name") or src.name.split("--", 1)[-1]))
+                dest = work / f"{n}" / name
+                dest.parent.mkdir()
+                dest.write_bytes(src.read_bytes())
+                paths.append(dest)
+            return replies.read_replies(srv.project, paths, unit, replace)
+        finally:
+            for src in assets:
+                src.unlink(missing_ok=True)
+            shutil.rmtree(work, ignore_errors=True)
 
     def _db(self, method: str, parts: list[str], query: dict) -> None:
         store = self.server.store
@@ -932,7 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 ext = UPLOAD_TYPES.get(ctype)
                 if not ext:
-                    return self.fail(400, "Send a PDF, Word (.docx), Excel (.xlsx) or text file.", "unsupported_type")
+                    return self.fail(400, "Send a PDF, Word, Excel, text, picture or email file.", "unsupported_type")
                 try:
                     data = self.body(MAX_UPLOAD)
                 except HandbookError:

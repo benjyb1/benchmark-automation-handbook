@@ -119,14 +119,56 @@ def archive_captures(url: str, before: Optional[str] = None, limit: int = 3) -> 
     return sorted(stamps, reverse=True)
 
 
-def recover(url: str, before: Optional[str] = None, python: Optional[str] = None) -> dict:
-    """What to keep for a page whose fetched text is a shell. Tries the live page rendered, then the
-    archive's raw capture, then that capture rendered. Returns
+ARCHIVE_NEAR_DAYS = 365   # an archive capture this close before a past cut-off is preferred to today's page
+
+
+def _near(stamp: str, before: Optional[str]) -> bool:
+    """Whether a capture (YYYYMMDDhhmmss) falls within ARCHIVE_NEAR_DAYS before `before`."""
+    import datetime as _dt
+    try:
+        cut = _dt.date.fromisoformat(before)
+        got = _dt.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+    except (TypeError, ValueError):
+        return False
+    return 0 <= (cut - got).days <= ARCHIVE_NEAR_DAYS
+
+
+def _past(before: Optional[str]) -> bool:
+    import datetime as _dt
+    try:
+        return _dt.date.fromisoformat(before) < _dt.date.today()
+    except (TypeError, ValueError):
+        return False
+
+
+def recover(url: str, before: Optional[str] = None, python: Optional[str] = None,
+            prefer_archive: Optional[bool] = None) -> dict:
+    """What to keep for a page whose fetched text is a shell. When the cut-off (`before`) has passed,
+    first the archive's raw capture from the year before it, since that is the page as it stood
+    when the documents had to be out, not as it is today (`prefer_archive`, by default whether the
+    cut-off has passed). Then the live page rendered, then the archive's raw capture, then that
+    capture rendered. Returns
     `{"kind": "text"|"html"|None, "content": bytes, "title", "text_source": "rendered"|"archive"|
     "archive_rendered"|None, "archive_url", "tried": [...], "why": ...}`; `kind` None means nothing
     readable was found and `why` says what was tried, for meta.json's `not_kept_why`."""
     tried = []
     out = {"kind": None, "content": b"", "title": "", "text_source": None, "archive_url": None, "tried": tried}
+    if prefer_archive is None:
+        prefer_archive = _past(before)
+    if prefer_archive and before:
+        for stamp in [x for x in archive_captures(url, before) if _near(x, before)][:2]:
+            raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+            if raw.ok and not is_shell(fetch.extract_text_html(raw.content)):
+                out.update(kind="html", content=raw.content, title=fetch.html_title(raw.content),
+                           text_source="archive", archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
+                return out
+            if python or renderer():
+                got = render_text(ARCHIVE_PAGE.format(stamp=stamp, url=url), python or renderer())
+                if got is not None and not is_shell(got["text"]):
+                    out.update(kind="text", content=got["text"].encode("utf-8"), title=got["title"],
+                               text_source="archive_rendered", archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
+                    return out
+            tried.append(f"the archive's {stamp[:8]} capture, near the cut-off, is a shell")
     python = python or renderer()
     if python is None:
         tried.append("no browser to render with (no Python here has Playwright)")

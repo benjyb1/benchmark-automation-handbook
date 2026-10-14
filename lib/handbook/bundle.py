@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents, is_grounded, normalise
 from .fetch import weak_why
-from . import control, corrections
+from . import control, corrections, feedback
 from .folder import Project, applies, effective_question, read_json
 from .custom_charts import read_charts
 from .deck import checked_decks
@@ -79,6 +79,10 @@ def _cell(answer: dict | None, check: dict | None, documents: dict, sources=None
                 "out_of_date": bool(answer.get("out_of_date"))}
         if isinstance(answer.get("owner"), dict):      # the owner's answer, and Claude's verdict on it
             cell["owner"] = {k: answer["owner"].get(k) for k in OWNER_KEYS}
+        if isinstance(answer.get("feedback"), dict):   # what the feedback round decided about it
+            cell["feedback"] = {k: answer["feedback"].get(k) for k in ("text", "kept", "reason")}
+        if answer.get("checked"):
+            cell["checked"] = True
         if sources is not None and "quote_not_found" in ((check or {}).get("flags") or []):
             for item in cell["evidence"]:
                 doc = item.get("doc")
@@ -124,13 +128,14 @@ def make_bundle(project: Project, now: datetime) -> dict:
     proj = project.read("project")
     documents = project.documents()
     sources = _Documents(project)
-    cells, totals, found = {}, {}, {}
+    cells, totals, found, unchecked = {}, {}, {}, {}
     for unit, qids, answers, checks in _rows(project):
         row = unit.get("id")
+        unchecked[row] = feedback.unchecked_questions(answers, checks, qids)
         cells[row] = {q: _cell(answers.get(q), checks.get(q), documents, sources) for q in qids}
         totals[row] = row_totals(project, unit, answers)
         found[row] = project.found(row)
-    return {
+    out = {
         "contract": CONTRACT,
         "generated": stamp(now),
         "project": {k: v for k, v in proj.items() if k != "provided"},
@@ -158,6 +163,11 @@ def make_bundle(project: Project, now: datetime) -> dict:
         # The step briefs whose sentences passed `hb check-deck` (views/deck.js).
         "decks": checked_decks(project),
     }
+    # The feedback round (packs sent, replies, the owner's decisions), once it has started.
+    part = feedback.bundle_part(project, unchecked)
+    if part is not None:
+        out["feedback"] = part
+    return out
 
 
 def evidence_files(project: Project) -> dict[str, dict]:

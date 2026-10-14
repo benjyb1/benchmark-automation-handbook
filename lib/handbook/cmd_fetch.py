@@ -94,6 +94,8 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
                             "cannot read. Nothing was saved. Download it as a PDF or text file and "
                             "use add-document.")
     title = (fetch.html_title(result.content) if kind == "html" else "") or fetch.title_from_url(url)
+    if kind == "html" and fetch.misleading_title(title, fetch.extract_text_html(result.content)):
+        title = fetch.title_from_url(url)   # e.g. "Not Found | joejuice.com" on a page that holds the policy
     host_type, _, archive_url = classify_host(url)
     content, notes, text_source, not_kept_why = result.content, [], None, None
     if kind == "html" and render.is_shell(fetch.extract_text_html(content)):

@@ -223,6 +223,9 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
         old = (answers.get("cells") or {}).get(qid)
         if isinstance(old, dict) and isinstance(old.get("owner"), dict):
             new[qid] = merge_owner(questions[qid], old, cell)
+        elif isinstance(old, dict) and isinstance(old.get("feedback"), dict) and old["feedback"].get("kept") is False:
+            # An answer changed after a party's reply stays; what the scorer read is kept beside it.
+            new[qid] = {**old, "feedback": {**old["feedback"], "rescored": {"value": cell.get("value"), "run": run}}}
     problems = check_answers({"row": row, "cells": new}, project.read("questions"))
     if problems:
         raise _problem_list(f"Nothing was stored for {row}: the stored cells would have", problems)

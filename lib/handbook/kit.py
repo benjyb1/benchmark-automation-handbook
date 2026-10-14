@@ -243,7 +243,12 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         "(p004.txt is page 4); quote is copied exactly from the page file, character for character, "
         "and runs to at least five words (a number or a heading alone cannot be found on the page); "
         "language is the page's language code, for example \"en\" or \"da\". When the page is not in "
-        "English, add quote_en, your English translation. When it is English, quote_en is the same as quote.",
+        "English, add quote_en, your English translation. When it is English, quote_en is the same as quote. "
+        "For a table or a page in columns, quote the words in the order the page file has them, even "
+        "where the columns run together; never describe a table or add words of your own in brackets. "
+        "A quote is never a web address, a page title or an error message.",
+        "   A document's title in meta.json can be wrong: some sites label a working page \"Not Found\". "
+        "Judge a document by its page text, never by its title.",
         "6. note: one plain sentence on why you chose this value.",
         "7. If your answer is a best guess because the rule is unclear, or because a document you would "
         "expect seems to be missing, still give your best answer and add "

@@ -44,6 +44,8 @@ EDIT_TARGETS = ("question", "unit", "confirm")
 CORRECTION_STATUSES = ("to_check", "checked", "superseded", "kept")
 VERDICT_BY = ("code", "claude", "page")   # page: checked in the viewer by the Claude there
 EVIDENCE_PLACES = ("doc", "link", "asset")      # where the owner's quote is: exactly one of these
+CHECKED_HOW = ("owner", "feedback")     # how an answer was marked checked (feedback round, or by hand)
+FEEDBACK_STAGES = ("answers_to_check", "ready_to_send", "sent", "returned", "needs_review", "reviewed")
 EDIT_FIELDS = {"question": ("wording", "short", "rule", "applies_to", "levels_points"),
                "unit": ("name", "labels"),
                "confirm": ("questions", "units")}
@@ -712,7 +714,15 @@ def _check_cell(out, qid, c, q):
     owner = c.get("owner")
     if owner is not None and out.obj(owner, f"{w}: owner"):
         _check_owner(out, owner, f"{w}: owner", value)
-    if state == "answered" and not evidence and c.get("evidence") in (None, []) and owner is None:
+    feedback = c.get("feedback")
+    if feedback is not None and out.obj(feedback, f"{w}: feedback"):
+        _check_feedback(out, feedback, f"{w}: feedback", value)
+    checked = c.get("checked")
+    if checked is not None and out.obj(checked, f"{w}: checked"):
+        out.stamp(checked, "at", f"{w}: checked", nullable=False)
+        out.enum(checked, "how", CHECKED_HOW, f"{w}: checked")
+    if state == "answered" and not evidence and c.get("evidence") in (None, []) and owner is None \
+            and feedback is None:
         out.append(f"{w}: an answered cell needs at least one evidence item")
     for i, ev in enumerate(evidence):
         we = f"{w}: evidence {i + 1}"
@@ -756,6 +766,25 @@ def _check_owner(out, o, w, value):
     out.boolean(o, "kept", w)
     if o.get("kept") is True and agreed is not False:
         out.append(f"{w}: kept is only for an answer Claude disagreed with")
+
+
+def _check_feedback(out, f, w, value):
+    """A cell's `feedback`: what the feedback round decided about it. `kept` is true when the owner
+    kept our answer after a reply, false when the answer was changed after it (the value is then the
+    one the owner chose); `text` is the sentence the page shows ("changed after Acme's reply, 2026-11-02"),
+    `reason` the owner's reason to go back to the business, `from` the answer before the change and
+    `previous` the whole cell as it was (so the change can be undone); `rescored` is what a later
+    scorer run read, kept beside the owner's decision instead of replacing it."""
+    out.text(f, "unit", w)
+    out.text(f, "text", w)
+    out.date(f, "date", w, nullable=False)
+    out.boolean(f, "kept", w)
+    out.text(f, "reason", w, required=False, nullable=True, empty_ok=True)
+    for key in ("previous", "rescored"):
+        if f.get(key) is not None:
+            out.obj(f.get(key), f"{w}: {key}")
+    if f.get("kept") is False and "from" not in f:
+        out.append(f"{w}: from is missing")
 
 
 def check_answers(d, questions) -> list[str]:
@@ -1379,6 +1408,10 @@ def check_folder(project: Project) -> list[str]:
         data = _load(root / rel, rel, probs)
         if data is not None:
             _add(probs, rel, check(data))
+    fb_state = _load(root / "feedback" / "state.json", "feedback/state.json", probs)
+    if fb_state is not None:
+        from .feedback import check_state
+        _add(probs, "feedback/state.json", check_state(fb_state))
     for rel in ("estimate.json", "published.json", "report/facts.json"):
         data = _load(root / rel, rel, probs)
         if data is not None and not isinstance(data, dict):

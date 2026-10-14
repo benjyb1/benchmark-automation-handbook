@@ -651,24 +651,31 @@
     paintMaterial(box);
   }
 
-  async function addMaterial(box, input) {
+  let materialBox = null;   // the Your material section on screen, for files dropped on the set-up chat
+
+  /** Uploads files into inbox/uploads/ and repaints Your material; Promise of the names added. */
+  async function addMaterial(box, list) {
     const tool = window.claude && typeof window.claude.use === "function" ? await window.claude.use("assets") : null;
-    const picked = Array.from(input.files || []);
-    if (!tool || !picked.length) return;
+    const picked = Array.from(list || []);
+    if (!tool || !picked.length) return [];
+    const paint = () => { if (box && box.isConnected) paintMaterial(box); };
     material.busy = true;
     material.line = "Adding " + count(picked.length, "file", "files") + "\u2026";
-    paintMaterial(box);
+    paint();
     const failed = [];
+    const added = [];
     for (const f of picked) {
       const type = MATERIAL_TYPES[(f.name.split(".").pop() || "").toLowerCase()];
       if (!type) { failed.push(f.name + " (save it as PDF, Word or Excel)"); continue; }
-      try { await tool.upload(f, { type }); } catch (e) { failed.push(f.name); }
+      try { await tool.upload(f, { type }); added.push(f.name); } catch (e) { failed.push(f.name); }
     }
     material.busy = false;
     material.line = failed.length ? "Not added: " + failed.join("; ") + "." : "";
-    input.value = "";
-    loadMaterial(box);
+    if (box && box.isConnected) loadMaterial(box); else material.files = null;
+    return added;
   }
+
+  HB.setupMaterial = { add: (list) => addMaterial(materialBox, list) };
 
   async function draftSetup(box) {
     material.busy = true;
@@ -682,29 +689,44 @@
     paintMaterial(box);
   }
 
+  /** A quiet drop area: drag files onto it, or click it to choose them. The browser's own file
+      control stays hidden inside it. */
+  function materialDrop(box) {
+    const input = h("input", { type: "file", class: "visually-hidden", multiple: true, id: "su-material-input",
+      accept: ".pdf,.docx,.xlsx,.csv,.txt,.md,.html", onchange: () => { addMaterial(box, input.files); } });
+    const zone = h("label", { class: "su-drop", for: "su-material-input", "data-busy": String(material.busy) },
+      input,
+      h("span", { class: "su-drop__lead" }, material.busy ? "Adding\u2026" : "Drop files here, or ", material.busy ? null : h("span", { class: "su-drop__pick" }, "choose them")),
+      h("span", { class: "su-drop__hint" }, "PDF, Word, Excel or text"));
+    const over = (on) => (e) => { e.preventDefault(); zone.classList.toggle("is-over", on); };
+    zone.addEventListener("dragenter", over(true));
+    zone.addEventListener("dragover", over(true));
+    zone.addEventListener("dragleave", over(false));
+    zone.addEventListener("drop", (e) => { over(false)(e); if (!material.busy) addMaterial(box, e.dataTransfer && e.dataTransfer.files); });
+    return zone;
+  }
+
   function paintMaterial(box) {
     const files = material.files;
-    const input = h("input", { type: "file", class: "input", multiple: true, id: "su-material-input",
-      accept: ".pdf,.docx,.xlsx,.csv,.txt,.md,.html", onchange: () => addMaterial(box, input) });
-    box.replaceChildren(
+    box.replaceChildren(...[
       sub("Your material", files && files.length ? count(files.length, "file", "files") : ""),
       h("p", { class: "small muted" }, "Add what you have: your questions, the list you score, how scores are worked out, last " +
-        "edition's results (strongly advised: it makes the results far more accurate), the methodology and last year's sources. " +
-        "PDF, Word, Excel or text."),
-      h("p", null, h("label", { class: "btn btn--small", for: "su-material-input" }, "Add files"), input),
+        "edition's results (strongly advised: it makes the results far more accurate), the methodology and last year's sources."),
+      materialDrop(box),
       files === null ? h("p", { class: "small muted" }, "Looking\u2026")
-        : files.length ? h("ul", { class: "small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
+        : files.length ? h("ul", { class: "su-files small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
             (f.chars == null ? ": can't be read" : "")))) : null,
       files && files.length ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
         disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
         h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
           "and the groups for you to check. It uses some of your Claude plan.")) : null,
       material.line ? h("p", { class: "small" }, material.line) : null,
-    );
+    ].filter(Boolean));   // replaceChildren would write a null out as the word "null"
   }
 
   function materialSection() {
     const box = h("section", { class: "section stack", "aria-label": "Your material" });
+    materialBox = box;
     if (material.files === null) loadMaterial(box); else paintMaterial(box);
     return box;
   }
@@ -765,7 +787,15 @@
         ),
       ),
     );
-    root.append(wrap);
+    // In the local page the set-up is drafted in a chat: the corner chat moves into a column on the
+    // left (HB.chat.inline, views/chat.js) and this tab's content sits on the right, as in the demo.
+    if (HB.local && HB.chat && typeof HB.chat.inline === "function") {
+      const col = h("aside", { class: "su-chatcol", "aria-label": "Set up with Claude" });
+      root.append(h("div", { class: "su-split" }, col, wrap));
+      try { HB.chat.inline(col); } catch (err) { console.error("HB.chat.inline failed:", err); }
+    } else {
+      root.append(wrap);
+    }
     watchEdits(wrap);
   }
 
@@ -773,10 +803,22 @@
 
   addStyles("setup", `
 .su { gap: var(--s6); }
+.su-split { display: grid; grid-template-columns: minmax(22rem, 30rem) minmax(0, 1fr); align-items: start; gap: var(--s6); }
+.su-split > .su { min-width: 0; }
+.su-chatcol { position: sticky; top: var(--s4); min-width: 0; }
+@media (width < 56rem) { .su-split { grid-template-columns: minmax(0, 1fr); } .su-chatcol { position: static; } }
 .su-narrow { max-width: 56rem; }
 .su-edits-line { max-width: var(--measure); }
 .su-sub__title { font-size: var(--fs-16); }
 .su-sub__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.su-drop { display: grid; justify-items: center; gap: var(--s1); padding: var(--s5) var(--s4); border: 1px dashed var(--rule-strong); border-radius: 0.75rem; background: var(--surface); color: var(--ink-2); text-align: center; cursor: pointer; transition: border-color 120ms, background-color 120ms; }
+.su-drop:hover, .su-drop.is-over { border-color: var(--accent); background: var(--accent-soft); }
+.su-drop:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+.su-drop[data-busy="true"] { cursor: progress; }
+.su-drop__lead { color: var(--ink); font-size: var(--fs-14); }
+.su-drop__pick { color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.su-drop__hint { font-size: var(--fs-12); }
+.su-files { margin: 0; padding-left: 1.1rem; }
 .su-list-title { color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 
 .su-progress { display: grid; gap: var(--s2); }

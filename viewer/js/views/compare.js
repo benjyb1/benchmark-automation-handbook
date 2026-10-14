@@ -383,15 +383,29 @@
   const questionWords = (qs) => (qs.length === 1 ? `question ${qs[0]}`
     : `questions ${qs.slice(0, -1).join(", ")} and ${qs[qs.length - 1]}`);
 
-  /** The rules still open or skipped under some cells of a row, as [{rule, qs}], in rule order. */
-  function openRulesUnder(row, qids) {
+  /** Whether a run that started after the rule was decided has finished scoring the row on one of
+      the rule's questions: the decision has then reached that row's answers. */
+  function rescoredSince(rule, row) {
+    const at = Date.parse((rule.decision && rule.decision.at) || "");
+    if (!Number.isFinite(at)) return false;
+    const qs = new Set((rule.question_ids || []).map(String));
+    return (Array.isArray(bundle().runs) ? bundle().runs : []).some((r) => r && r.finished && Date.parse(r.started || "") >= at
+      && (!Array.isArray(r.rows) || r.rows.includes(row))
+      && (!Array.isArray(r.questions) || !qs.size || r.questions.some((q) => qs.has(String(q)))));
+  }
+
+  /** The rules still open or skipped under some cells of a row, as [{rule, qs}], in rule order. With
+      {unapplied: true}, also those decided since and not yet re-run on this row ("Check these first"
+      keeps them, marked Decided, until the re-run). */
+  function openRulesUnder(row, qids, { unapplied = false } = {}) {
     const byId = rulesById();
     const found = new Map();
     qids.forEach((q) => {
       const cell = HB.data.cell(row, q) || {};
       (Array.isArray(cell.rules) ? cell.rules : []).forEach((rid) => {
         const rule = byId.get(rid);
-        if (!rule || !UNDECIDED.includes(rule.status)) return;
+        if (!rule) return;
+        if (!UNDECIDED.includes(rule.status) && !(unapplied && rule.status === "decided" && !rescoredSince(rule, row))) return;
         if (!found.has(rid)) found.set(rid, { rule, qs: [] });
         if (!found.get(rid).qs.includes(q)) found.get(rid).qs.push(q);
       });
@@ -1251,7 +1265,7 @@
     // One card per open rule, with the rows whose big differences rest on it.
     const byRule = new Map();
     onRules.forEach((mv) => {
-      openRulesUnder(mv.row, cellsOfMoves(mv.row, [mv], mLatest).map((x) => x[1])).forEach(({ rule, qs }) => {
+      openRulesUnder(mv.row, cellsOfMoves(mv.row, [mv], mLatest).map((x) => x[1]), { unapplied: true }).forEach(({ rule, qs }) => {
         if (!byRule.has(rule.id)) byRule.set(rule.id, { rule, rows: new Map() });
         const rows = byRule.get(rule.id).rows;
         if (!rows.has(mv.row)) rows.set(mv.row, { list: [], qs: new Set() });
@@ -1268,8 +1282,8 @@
         const title = words.topic || (q.length > 80 ? q.slice(0, 77).replace(/\s+\S*$/, "") + "…" : q);   // no topic: its question, short
         const chose = ownerChoice(rule);
         const rowIds = Array.from(rows.keys());
-        return firstCard("rule:" + rule.id, chose ? {
-          kind: "You decided", title, cta: rerunWaiting(rule) ? "Re-run asked for" : "Re-run",
+        return Object.assign(firstCard("rule:" + rule.id, chose ? {
+          kind: "Decided", title, cta: rerunWaiting(rule) ? "Re-run asked for" : "Re-run",
           summary: `${chose.text.length > 90 ? chose.text.slice(0, 87).replace(/\s+\S*$/, "") + "…" : chose.text} \u00b7 ` +
             (n === 1 ? `one ${nouns.one} to score again` : `${fmtInt(n)} ${nouns.many} to score again`),
         } : {
@@ -1286,7 +1300,7 @@
           h("p", { class: "small muted" }, `Resting on it, with their difference from ${latest}:`),
           h("ul", { class: "cmp-card__rows" }, Array.from(rows, ([row, x]) => h("li", null,
             nameButton(row), " ", h("span", null, movesSummary(x.list, mLatest)),
-            h("span", { class: "small muted" }, ` (${questionWords(Array.from(x.qs).sort((a, b) => a.localeCompare(b, "en-GB", { numeric: true })))})`))))));
+            h("span", { class: "small muted" }, ` (${questionWords(Array.from(x.qs).sort((a, b) => a.localeCompare(b, "en-GB", { numeric: true })))})`)))))), { decided: Boolean(chose) });
       });
 
     // One card per row with a big move that nothing in the files explains.
@@ -1360,7 +1374,7 @@
       h("p", { class: "small muted cmp-measure" },
         `The biggest differences from the ${latest} edition, each with what you can do about it. Open one to act on it.` +
         (hist && hist.editions.length ? ` A small line under each move shows the ${nouns.one}'s past editions; the last dot is this run, and the shaded band is its past range.` : "")),
-      group("Open rules to decide", ruleCards),
+      group(ruleCards.some((x) => x.decided) ? "Rules to decide or re-run" : "Open rules to decide", ruleCards),
       group(`${capital(nouns.many)} to check`, rowCards));
   }
 

@@ -612,6 +612,14 @@
     refresh: pollState,
     /** GET /api/<path> with the page's token (the Set-up material list, the chat's read_material). */
     get: (path) => fetch("/api/" + path, { headers: { "X-HB-Token": TOKEN }, cache: "no-store" }),
+    /** POST /api/<path> with a JSON body (the Set-up chat's saves); Promise of the parsed reply. */
+    post: async (path, body) => {
+      const res = await fetch("/api/" + path, { method: "POST", headers: { "X-HB-Token": TOKEN, "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}), cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data && (data.message || (data.error && data.error.message))) || "The page's server refused that.");
+      return data;
+    },
   };
 
   const CSS = `

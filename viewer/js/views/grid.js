@@ -98,6 +98,9 @@
 .hbg-counts__kinds { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); padding-left: var(--s3); border-left: 1px solid var(--rule); font-size: var(--fs-12); }
 .hbg-kind { display: inline-flex; align-items: center; gap: 0.3rem; }
 .hbg-kind .flag-glyph { width: 0.875rem; height: 0.875rem; color: var(--critical); }
+.hbg-counts__part { display: inline-flex; align-items: center; gap: 0.3em; }
+.hbg-cnt-mk { display: inline-block; flex: none; --mk-w: 14px; width: 14px; height: 14px; margin-right: 0.05rem; }
+.hbg-cnt-cell { width: 1.25rem; height: 0.875rem; border: 1px solid var(--rule); }
 .hbg-live { color: var(--ink); font-weight: 600; }
 .hbg-progress { height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
 .hbg-progress > span { display: block; height: 100%; background: var(--accent); }
@@ -462,7 +465,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const sections = sectionsFor(bundle, qidsAll);
 
     // Counts over the rows in view.
-    const counts = { answered: 0, ne: 0, waiting: 0, flagged: 0, rests: 0, kinds: {} };
+    const counts = { answered: 0, ne: 0, waiting: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
     for (const k of HB.flagKinds.factual) counts.kinds[k] = 0;
     const restsByQ = new Map();
     const cellInfo = new Map();
@@ -476,6 +479,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         const kinds = HB.factualFlags(c);
         if (kinds.length) counts.flagged += 1;
         for (const k of kinds) counts.kinds[k] += 1;
+        if (c.out_of_date) counts.stale += 1;
         let rules = null;
         if (restsOnRule(c, bundle, u.id, q.id)) {
           counts.rests += 1;
@@ -893,8 +897,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     if (view === "strips") {
       items.push(
         li(wide, sample("hbg-mk", "--v: 0.6"), "Green fill: the points scored. A full square is top marks; a thin sliver, a low score; empty grey, none"),
-        li(wide, sample("hbg-mk is-ne"), "No evidence found"),
-        li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner: something to check on this answer, one of the kinds below. Hover over it to see which; click it to see what to do"),
+        li(wide, sample("hbg-mk is-ne"), "Hatched: no evidence found"),
+        li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner, top right: something to check on this answer, one of the kinds below. Hover over it to see which; click it and the panel says why at the top"),
         li(wide, sample("hbg-mk is-wait"), "Not scored yet"),
         li(wide, sample("hbg-mk is-na"), "A gap: the question does not apply"),
       );
@@ -911,14 +915,15 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       li(phone, sample("hbg-sq is-ne", sq, "0"), "No evidence found"),
       li(phone, sample("hbg-sq is-wait", sq), "Not scored yet"),
       li(phone, sample("hbg-sq is-na", sq), "A gap: the question does not apply"),
-      li(null, sample("hbg-cell is-stale", box), "The question changed since it was scored"),
+      li(null, view === "strips" ? sample("hbg-mk", "--v: 0", h("i", { class: "hbg-mk__stale" })) : sample("hbg-cell is-stale", box),
+        "Dark corner, top left: the question changed since it was scored"),
     );
     if (view !== "strips") items.push(li(wide, sample("hbg-cell", box, h("span", { class: "hbg-cell__flags" }, HB.flagGlyph("quote_not_found"))),
       "Red sign on a cell's corner: something to check, one of the kinds below. Hover over the cell to see which; open it to see what to do"));
     items.push(li(phone, sample("hbg-sq", sq, HB.flagGlyph("quote_not_found")),
       "Red sign on a square: something to check, one of the kinds below. Open it to see what to do"));
     for (const k of HB.flagKinds.factual) {
-      items.push(li(null, HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", null, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k]));
+      items.push(li(null, view === "strips" ? null : HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", null, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k]));
     }
     items.push(li(null, h("span", { class: "hbg-rm", "aria-hidden": "true" }, "12"),
       "Under a question: answers in view resting on Claude's reading of open rules (hover or focus for the rules)"));
@@ -963,8 +968,13 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     return h("div", { class: "hbg-bar" }, parts);
   }
 
-  function countsLine(ctx, m) {
+  /* The counts line doubles as the key: each count wears the mark it counts, as it looks in the
+     view on screen (a small strip mark, or the table's sign), so a hatched square or a corner on
+     the grid can be matched to its words without opening the Key. */
+  function countsLine(ctx, m, view) {
     const c = m.counts;
+    const strips = view === "strips";
+    const mark = (cls) => h("span", { class: (strips ? "hbg-mk " : "hbg-cell hbg-cnt-cell ") + cls + " hbg-cnt-mk", "aria-hidden": "true" });
     const parts = [];
     const total = m.units.length;
     const part = (...kids) => h("span", { class: "hbg-counts__part" }, kids);
@@ -975,13 +985,17 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       parts.push(part(h("b", null, fmtInt(m.shown.length)), m.shown.length === total ? " " + ctx.unitWords(total).replace(/^[\d,]+ /, "") : " of " + ctx.unitWords(total)));
     }
     parts.push(part(h("b", null, fmtInt(c.answered)), " answered"));
-    parts.push(part(h("b", null, fmtInt(c.ne)), " no evidence"));
-    if (c.waiting) parts.push(part(h("b", null, fmtInt(c.waiting)), " not scored yet"));
-    parts.push(part(h("b", null, fmtInt(c.flagged)), " flagged"));
+    parts.push(part(strips ? mark("is-ne") : null, h("b", null, fmtInt(c.ne)), " no evidence", strips ? null : h("span", { class: "hbg-ne", "aria-hidden": "true" }, " \u2205")));
+    if (c.waiting) parts.push(part(mark("is-wait"), h("b", null, fmtInt(c.waiting)), " not scored yet"));
+    parts.push(part(strips ? mark("is-flag") : null, h("b", null, fmtInt(c.flagged)), strips ? " flagged (red corner)" : " flagged"));
+    if (c.stale) parts.push(part(strips ? h("span", { class: "hbg-mk hbg-cnt-mk", "aria-hidden": "true" }, h("i", { class: "hbg-mk__stale" })) : mark("is-stale"),
+      h("b", null, fmtInt(c.stale)), " question changed since scored (dark corner)"));
     const kinds = h("span", { class: "hbg-counts__kinds", "aria-label": "Flags by kind" },
       // Only the kinds with some in view: a bare glyph and a 0 read as noise (the Key lists them all).
+      // The strips show every kind as the same red corner, so there the kinds are words: their signs
+      // belong to the table and the answer panel.
       HB.flagKinds.factual.filter((k) => c.kinds[k]).map((k) =>
-        h("span", { class: "hbg-kind" }, HB.flagGlyph(k), HB.flagKinds.words[k], h("b", null, fmtInt(c.kinds[k])))));
+        h("span", { class: "hbg-kind" }, strips ? null : HB.flagGlyph(k), HB.flagKinds.words[k], h("b", null, fmtInt(c.kinds[k])))));
     const line = h("div", { class: "hbg-counts", role: "status" }, h("span", { class: "cluster", style: "gap: 0 var(--s3)" }, parts), kinds);
     if (c.rests) {
       const id = HB.uid("hbg-rests");
@@ -1030,7 +1044,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const m = model(ctx);
     const view = state.gridView;
     root.classList.toggle("hbg-rests-on", m.showRests);
-    root.append(toolbar(ctx, m, view), ...countsLine(ctx, m));
+    root.append(toolbar(ctx, m, view), ...countsLine(ctx, m, view));
     if (Array.isArray(state.onlyRows)) {
       root.append(h("p", { class: "muted small" }, "Showing only the " + ctx.unitWords(m.shown.length) + " Claude pointed to. ",
         h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => { state.onlyRows = null; ctx.render(); } }, "Show all")));

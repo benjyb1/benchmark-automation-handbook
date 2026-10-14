@@ -264,6 +264,17 @@ def new_meta(doc_id: str, *, title: str, how: str, sha1: str, host_type: str, ur
             "sha1": sha1, "pages": None}
 
 
+_NOT_FOUND_TITLE = re.compile(r"\b(?:not found|404|page (?:not|cannot be) found|error)\b", re.I)
+
+
+def misleading_title(title: str, text: str) -> bool:
+    """A page titled like an error ("Not Found | joejuice.com") whose text is a real page: in the
+    Pecking Order fixture a scorer believed such a title and scored a page holding the policy as
+    no evidence on all 14 questions."""
+    from .prepare import STUB_CHARS
+    return bool(title and _NOT_FOUND_TITLE.search(title)) and len((text or "").strip()) > 4 * STUB_CHARS
+
+
 def store_document(project, meta: dict, data: bytes, extension: str) -> Path:
     """Write `documents/<id>/original<extension>`, then meta.json (its presence marks the
     document as filed). Returns the folder."""

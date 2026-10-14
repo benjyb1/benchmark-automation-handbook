@@ -1239,11 +1239,11 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const notes = [];
     const evidence = Array.isArray(cell.evidence) ? cell.evidence : [];
     if (evidence.some((e) => e && !e.missing && docs[e.doc] && docs[e.doc].kept === false)) notes.push("Saved copy not kept; quote not checked.");
-    if (cell.out_of_date) notes.push("The question changed after this was scored.");
+    if (cell.out_of_date) notes.push("Dark corner: the question changed after this was scored, so the answer may be out of date.");
     if (evidence.some((e) => e && (e.missing || !docs[e.doc]))) notes.push(NOT_KEPT);
     for (const n of notes) items.push(h("li", { "data-tone": "neutral" }, HB.icon("exclamation"), h("span", null, n)));
     if (!items.length) return null;
-    return section("cellp-flagsec", heading("Flags"), h("ul", { class: "cellp-flags" }, items));
+    return section("cellp-flagsec", heading("Why it's marked"), h("ul", { class: "cellp-flags" }, items));
   }
 
   // The quote, with the English and the original a toggle apart when it was
@@ -1553,11 +1553,12 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const kicker = unit ? String(unit.name || unit.id) : String(row);
 
     const content = [navBar(ctx, row, qid), answerPart(ctx, qv, cell, unitWord)];
+    const quotes = cell ? evidenceParts(ctx, row, cell) : null;
+    // Why the grid marked it comes straight under the answer: that is what the owner clicked to find out.
+    if (cell) content.push(flagsPart(ctx, unit, qv, cell, quotes));
     if (cell && qv) content.push(fixPart(ctx, row, qid, qv));
     if (cell) {
-      const quotes = evidenceParts(ctx, row, cell);
       content.push(...reasonParts(ctx, row, qid, qv, cell));
-      content.push(flagsPart(ctx, unit, qv, cell, quotes));
       content.push(...quotes.sections);
     }
     content.push(questionPart(qv, unitWord));
