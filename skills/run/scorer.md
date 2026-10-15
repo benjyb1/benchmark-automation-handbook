@@ -16,6 +16,10 @@ When `score` says the claude command line is not installed, start the scorer wit
 
 For a rescore after a second search or a rule decision, the prompt is the same: the kit already holds only the questions to redo.
 
+## Pictures in the kit
+
+A document that is a picture (a menu poster saved as a JPG, a screenshot), a scanned PDF page, or a PDF page that is mostly picture (a grid of logos, a chart) has its text read from the picture by the Mac's own reader, and the picture itself sits in the kit next to the page text (`docs/<doc>/p001.jpg`). The brief tells the scorer so: it looks at a picture only when where something sits or how it looks is the evidence (which column a figure is in, which logos are in a row, what a chart shows), and otherwise reads the page file, which costs far less. A kit holds at most 12 pictures, each no more than 1,568 pixels on its long side. Nothing about them goes in the prompt.
+
 ## Never in the prompt
 
 - The project folder's path, or any path inside it.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from . import answers
 from .folder import HandbookError, Project, read_json, write_json
 from .scoresheet import round_half_up, row_totals
 from .shapes import REASONS, check_compare, check_held_back, is_date
@@ -39,12 +40,49 @@ NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six", 7: "seven"
 
 SCORED = ("answered", "no_evidence")
 UNDECIDED = ("open", "skipped")
+NOT_APPLICABLE = "n/a"           # our answer when the question does not apply to the row
+
 NOT_COMPARED_TEXT = {
     "not_scored": "None of its questions have been scored yet.",
-    "partial": "Some of its questions have not been scored, so its totals were not compared.",
+    "partial": "Some of its questions have not been scored, so its totals were not compared (a section scored in full still is).",
     "not_in_last_edition": "It is not in last edition's results.",
     "not_in_units": "It is in last edition's results but not among this edition's rows.",
+    "rank_only": "Last edition gives it only a rank, so it is checked in the rank order, not figure by figure.",
 }
+
+
+def _rank_order(held: dict, totals_by_row: dict, units: dict | None = None) -> dict | None:
+    """Whether the rows fully scored keep last edition's order (ALDF and VACI publish ranks only):
+    {"key", "rows": [{"row", "ours", "theirs"}], "pairs", "same_order", "swapped": [[better, worse]]},
+    `ours` being our overall score and `theirs` their rank (1 is best). Pairs with the same rank are
+    left out; a pair is in the same order when our score for their better row is not lower. None when
+    no rank is held back."""
+    keys = sorted({k for v in held.values() for k in v if k.startswith("rank:")})
+    if not keys:
+        return None
+    key = "rank:overall" if "rank:overall" in keys else keys[0]
+    of, _, within = key[len("rank:"):].partition("@")
+    # rank:overall@jurisdiction_type ranks rows only against rows with the same value of that label
+    # (ALDF: 50 states ranked 1-50, territories 1-6 on their own).
+    group = (lambda row: ((units or {}).get(row) or {}).get("labels", {}).get(within)) if within else (lambda row: None)
+    rows = []
+    for row, t in totals_by_row.items():
+        theirs = (held.get(row) or {}).get(key)
+        ours = t.get("overall") if of == "overall" else (t.get("sections", {}).get(of) or {}).get("percent")
+        if _number(theirs) and _number(ours):
+            rows.append({"row": row, "ours": ours, "theirs": theirs, **({"group": group(row)} if within else {})})
+    rows.sort(key=lambda r: r["theirs"])
+    pairs, same, swapped = 0, 0, []
+    for i, a in enumerate(rows):
+        for b in rows[i + 1:]:
+            if a["theirs"] == b["theirs"] or a.get("group") != b.get("group"):
+                continue
+            pairs += 1
+            if a["ours"] >= b["ours"]:
+                same += 1
+            else:
+                swapped.append([a["row"], b["row"]])
+    return {"key": key, "rows": rows, "pairs": pairs, "same_order": same, "swapped": swapped}
 
 
 def read_held_back(project: Project) -> dict:
@@ -107,14 +145,33 @@ def _section_figure(section: dict, entry: dict):
 
 def _ours(project: Project, unit: dict, cells: dict, level: str, sheet: dict) -> tuple[dict, bool]:
     """Every key we can give for the row, in a fixed order, and whether the row is partial."""
-    totals = row_totals(project, unit, cells)
+    totals = row_totals(project, unit, cells) if sheet.get("computable") is not False else None
     out = {}
     if level == "question":
         for q in project.questions_for(unit):
             cell = cells.get(q["id"])
             if isinstance(cell, dict) and cell.get("state") in SCORED:
-                out[q["id"]] = _points(q, cell)
+                # A number question is published as its figure (or NR and the like), not as points.
+                if answers.is_number(q):
+                    out[q["id"]] = cell.get("value") if cell.get("state") == "answered" else q.get("no_evidence_value")
+                else:
+                    out[q["id"]] = _points(q, cell)
+            elif isinstance(cell, dict) and cell.get("state") == "not_applicable":
+                # Our 'does not apply' against a published answer is a difference to see (HSUS, 15 Oct 2026:
+                # Mississippi's bear-hunting item, n/a here and 0 in the key, was silently left out).
+                out[q["id"]] = NOT_APPLICABLE
+    if totals is None:                               # no totals (a tracker): the answers alone
+        return out, False
     if totals["partial"]:
+        # A trial scores a few questions: compare each section whose questions are all scored
+        # (FAIRR and ALDF, 14 Oct 2026: 'Compared 0 of 60' after every slice).
+        open_sections = {q.get("section") for q in project.questions_for(unit)
+                         if not (isinstance(cells.get(q["id"]), dict) and cells[q["id"]].get("state") in SCORED
+                                 + ("not_applicable",))}
+        for section in sheet.get("sections") or []:
+            entry = totals["sections"][section["id"]]
+            if section["id"] not in open_sections and entry.get("max"):
+                out[section["id"]] = _section_figure(section, entry)
         return out, True
     for section in sheet.get("sections") or []:
         out[section["id"]] = _section_figure(section, totals["sections"][section["id"]])
@@ -268,8 +325,11 @@ def _most(key: str, question: dict | None, totals: dict | None, sheet: dict):
     """The most a key can be for a row: 100 for a percentage, else its most points (None when the
     row's totals are not known)."""
     if question is not None:
-        return max((lvl.get("points") or 0 for lvl in (question.get("answer") or {}).get("levels") or []),
-                   default=0)
+        a = question.get("answer") or {}
+        if answers.is_number(question):              # a figure: the width of its range
+            lo, hi = a.get("min"), a.get("max")
+            return hi - lo if _number(lo) and _number(hi) and hi > lo else None
+        return max((lvl.get("points") or 0 for lvl in a.get("levels") or []), default=0)
     if _is_percent(key, sheet):
         return 100
     sections = (totals or {}).get("sections") or {}
@@ -292,11 +352,14 @@ def _what(key: str, sheet: dict) -> str:
     return f"Question {key}"
 
 
-def _shown(v, key: str, sheet: dict) -> str:
-    """A figure as the sentence says it: "71%", "5 points", "Tier 1"."""
+def _shown(v, key: str, sheet: dict, question: dict | None = None) -> str:
+    """A figure as the sentence says it: "71%", "5 points", "Tier 1"; a number question's figure in
+    its own unit ("73%")."""
     if not _number(v):
         return str(v)
-    n = str(int(v)) if float(v).is_integer() else str(round(v, 1))
+    if answers.is_number(question):
+        return answers.show_figure(question, round(v, 4))
+    n = str(int(v)) if float(v).is_integer() else f"{round(v, 2):.2f}".rstrip("0").rstrip(".")   # 0.25, not 0.2 or 1e+06
     return f"{n}%" if _is_percent(key, sheet) else f"{n} point{'' if n == '1' else 's'}"
 
 
@@ -310,10 +373,11 @@ def _trend(past: dict, ours, rank) -> tuple:
     return ("breaks" if not lo[0] <= rank(ours) <= hi[0] else "within"), lo[1], hi[1]
 
 
-def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool, span: tuple) -> str:
+def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool, span: tuple,
+               question: dict | None = None) -> str:
     """The big move in one plain sentence."""
     key, ours, theirs = m["key"], m["ours"], m["theirs"]
-    what, show = _what(key, sheet), (lambda v: _shown(v, key, sheet))
+    what, show = _what(key, sheet), (lambda v: _shown(v, key, sheet, question))
     if m["why"] == "band_jump":
         word = _band_word(_band_names(sheet, key[len("band:"):]))
         text = (f"{what} moved from {theirs} in {edition} to {ours} in this run, "
@@ -326,8 +390,11 @@ def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool
         gap = abs(ours - theirs)
         gap = str(int(gap)) if float(gap).is_integer() else str(round(gap, 1))
         points = "points" if _is_percent(key, sheet) or gap != "1" else "point"
+        if answers.is_number(question):
+            unit = str((question.get("answer") or {}).get("unit") or "")
+            points = "percentage points" if unit == "%" else unit
         text = (f"{what} went from {show(theirs)} in {edition} to {show(ours)} in this run, "
-                f"{gap} {points} {'lower' if ours < theirs else 'higher'}")
+                f"{gap}{' ' + points if points else ''} {'lower' if ours < theirs else 'higher'}")
     if m["trend"] != "too_short":
         first, last, lo, hi = span
         where = "outside" if m["trend"] == "breaks" else "within"
@@ -361,6 +428,7 @@ def _big_moves(project: Project, disagreements: list[dict], history: dict, cells
                 continue
             why = "band_jump"
         else:
+            question = None
             if not (_number(ours) and _number(theirs)):
                 continue
             unit = unit_by_id[row]
@@ -382,7 +450,8 @@ def _big_moves(project: Project, disagreements: list[dict], history: dict, cells
         m = {"row": row, "key": key, "ours": ours, "theirs": theirs, "why": why,
              "reason": d["reason"], "trend": trend}
         m["text"] = _move_text(m, sheet, edition, apart, no_evidence,
-                               (span[0], span[-1], lo, hi) if span else (None, None, lo, hi))
+                               (span[0], span[-1], lo, hi) if span else (None, None, lo, hi),
+                               None if key.startswith("band:") else question)
         out.append(m)
     return out
 
@@ -393,10 +462,13 @@ def compare(project: Project) -> dict:
     Raises HandbookError when there are no valid held-back results or no usable score sheet."""
     results = read_held_back(project)
     sheet = project.read("scoresheet")
-    if not sheet or sheet.get("computable") is False:
-        raise HandbookError("There is no computable score sheet, so our results cannot be worked "
-                            "out to compare.")
     level = results["level"]
+    if not sheet:
+        raise HandbookError("There is no score sheet yet, so there is nothing to compare.")
+    if sheet.get("computable") is False and level != "question":
+        raise HandbookError("The score sheet does not compute totals and last edition's results are "
+                            f"given at {level} level, so there is nothing to compare: hold back last "
+                            "edition's answers question by question to compare them.")
     held = results.get("rows") or {}
     units = [u for u in project.read("units").get("units", []) if isinstance(u, dict)]
     unit_by_id = {u.get("id"): u for u in units}
@@ -412,7 +484,7 @@ def compare(project: Project) -> dict:
         previous = None                              # an unreadable old file is simply replaced
 
     rows, not_compared = [], []
-    ours_by_row, theirs_by_row, cells_by_row = {}, {}, {}
+    ours_by_row, theirs_by_row, cells_by_row, full_totals = {}, {}, {}, {}
     this_run = {}                                    # every key we give, per scored row (history)
     question_ids = {q.get("id") for q in questions}
     for unit in units:
@@ -430,10 +502,21 @@ def compare(project: Project) -> dict:
         ours_all = {k: v for k, v in this_run[row].items()
                     if level == "question" or k not in question_ids}
         theirs_row = held[row]
+        qmap_row = {q["id"]: q for q in project.questions_for(unit)}
+        for k, v in theirs_row.items():
+            # A level held as text ("yes") is compared with our level, not our points: two levels can be
+            # worth the same points (EggTrack's yes/no flags are all 0), so points would hide a difference.
+            if isinstance(v, str) and k in ours_all and k in qmap_row and not answers.is_number(qmap_row[k]):
+                c = cells.get(k) or {}
+                ours_all[k] = c.get("value") if c.get("state") == "answered" else qmap_row[k].get("no_evidence_value")
         keys = [k for k in ours_all if theirs_row.get(k) is not None]
         if partial:
             not_compared.append({"row": row, "why": "partial"})
+        if not partial and sheet.get("computable") is not False:
+            full_totals[row] = row_totals(project, unit, cells)
         if not keys:
+            if any(k.startswith("rank:") for k in theirs_row) and not partial:
+                not_compared.append({"row": row, "why": "rank_only"})
             continue
         ours_by_row[row] = {k: ours_all[k] for k in keys}
         theirs_by_row[row] = {k: theirs_row[k] for k in keys}
@@ -454,7 +537,17 @@ def compare(project: Project) -> dict:
         scored = [q for q in project.questions_for(unit)
                   if isinstance(cells.get(q["id"]), dict) and cells[q["id"]].get("state") in SCORED]
         ours, theirs = ours_by_row[row], theirs_by_row[row]
-        agree = {k: _agree(ours[k], theirs[k]) for k in ours}
+        qmap = {q["id"]: q for q in project.questions_for(unit)}
+        tol = results.get("tolerance")
+
+        def agrees(k):
+            # A tolerance (last results that are a panel's mean, as Food-EPI's are) applies to answers.
+            if k in qmap and _number(tol) and _number(ours[k]) and _number(theirs[k]):
+                return abs(ours[k] - theirs[k]) <= tol + 1e-9
+            if answers.is_number(qmap.get(k)):
+                return answers.same_answer(qmap[k], ours[k], theirs[k])
+            return _agree(ours[k], theirs[k])
+        agree = {k: agrees(k) for k in ours}
         rows.append({"row": row, "ours": ours, "theirs": theirs, "agree": agree})
         for key, ok in agree.items():
             of_counts[key] = of_counts.get(key, 0) + 1
@@ -481,6 +574,7 @@ def compare(project: Project) -> dict:
                        "of": {k: of_counts[k] for k in key_order},
                        "not_compared": not_compared},
            "history": history,
+           "rank_order": _rank_order(held, full_totals, unit_by_id),
            "big_moves": _big_moves(project, disagreements, history, cells_by_row, unit_by_id, sheet,
                                    {q.get("id"): q for q in questions})}
     problems = check_compare(out)

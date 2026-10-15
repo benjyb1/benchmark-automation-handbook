@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import unicodedata
+from difflib import SequenceMatcher, get_close_matches
 from pathlib import Path
 
 MIN_RUN = 5  # a grounded quote shares at least this many consecutive words with the source
@@ -61,6 +62,61 @@ def is_grounded(evidence: str, src_join: str) -> bool:
         return n >= SHORT_MIN and (" " + " ".join(et) + " ") in src_join
     return any((" " + " ".join(et[i:i + MIN_RUN]) + " ") in src_join
                for i in range(n - MIN_RUN + 1))
+
+
+# --- text read from a picture --------------------------------------------------------------------
+
+OCR_SIMILARITY = 0.78  # two words of four letters or more are "the same word" read from a picture at this ratio
+
+
+def _similar(a: str, b: str) -> bool:
+    """Whether two words are one word that a text reader may have misread: equal, or (for words of four
+    characters or more with no figure in them) alike enough. A figure must match exactly: "1130" is not
+    "1180"."""
+    if a == b:
+        return True
+    if len(a) < 4 or len(b) < 4 or any(ch.isdigit() for ch in a + b):
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= OCR_SIMILARITY
+
+
+def is_grounded_ocr(evidence: str, src_join: str) -> bool:
+    """The test for a page whose words were read from a picture, which can hold a wrong letter ("Whooper"
+    for "Whopper"). Like `is_grounded`, but a run of MIN_RUN words counts when all but one of them are the
+    page's words or misreadings of them, in order (a quote of fewer than MIN_RUN words, when every one is).
+    Figures and words shorter than four characters must match exactly, and a figure is never the one slip. `src_join` is `source_join` of the
+    picture-read pages."""
+    et = tokens(evidence)
+    n = len(et)
+    if n < SHORT_MIN:
+        return False
+    window = min(n, MIN_RUN)
+    need = window if n < MIN_RUN else window - 1
+    src = src_join.split()
+    index: dict[str, list[int]] = {}
+    for pos, tok in enumerate(src):
+        index.setdefault(tok, []).append(pos)
+    vocab = list(index)
+    like: dict[str, list[str]] = {}
+
+    def alike(word: str) -> list[str]:
+        if word not in like:
+            near = [word] if word in index else []
+            if len(word) >= 4 and not any(ch.isdigit() for ch in word):
+                near += [v for v in get_close_matches(word, vocab, n=6, cutoff=OCR_SIMILARITY) if v != word]
+            like[word] = near
+        return like[word]
+    for i in range(n - window + 1):
+        win = et[i:i + window]
+        starts = {pos - j for j, w in enumerate(win) for v in alike(w) for pos in index[v]}
+        for start in starts:
+            if start < 0 or start + window > len(src):
+                continue
+            if any(any(ch.isdigit() for ch in w) and w != src[start + j] for j, w in enumerate(win)):
+                continue                    # a figure is never the allowed slip
+            if sum(_similar(w, src[start + j]) for j, w in enumerate(win)) >= need:
+                return True
+    return False
 
 
 # --- text normalisation ------------------------------------------------------------------------
@@ -133,6 +189,20 @@ def kit_pages(kit: Path) -> dict[str, dict[int, str]]:
     return out
 
 
+def kit_ocr_pages(kit: Path) -> dict[str, set[int]]:
+    """{doc: page numbers read from a picture} from each document's meta.json in `kit/docs/`."""
+    out: dict[str, set[int]] = {}
+    for folder in sorted((kit / "docs").iterdir()) if (kit / "docs").is_dir() else []:
+        try:
+            meta = json.loads((folder / "meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pages = meta.get("ocr_pages") if isinstance(meta, dict) else None
+        if isinstance(pages, list) and pages:
+            out[folder.name] = {n for n in pages if isinstance(n, int)}
+    return out
+
+
 def check_kit(kit: Path, answers_path: Path | None = None) -> list[dict]:
     """Every quote in the answers file (`kit/answers.json` unless `answers_path` says otherwise)
     that is not word for word on a page of its document, as `{"question", "evidence", "doc",
@@ -141,7 +211,9 @@ def check_kit(kit: Path, answers_path: Path | None = None) -> list[dict]:
     run of them, when any does)."""
     answers = json.loads((answers_path or kit / "answers.json").read_text(encoding="utf-8"))
     docs = kit_pages(kit)
+    ocr_pages = kit_ocr_pages(kit)
     joins: dict[str, str] = {}
+    ocr_joins: dict[str, str] = {}
     problems = []
     for qid, cell in sorted((answers.get("cells") or {}).items()):
         for i, e in enumerate(cell.get("evidence") or [] if isinstance(cell, dict) else [], start=1):
@@ -163,11 +235,18 @@ def check_kit(kit: Path, answers_path: Path | None = None) -> list[dict]:
                 joins[doc] = source_join(docs[doc][n] for n in sorted(docs[doc]))
             if is_grounded(normalise(quote), joins[doc]):
                 continue
+            if doc in ocr_pages:
+                if doc not in ocr_joins:
+                    ocr_joins[doc] = source_join(docs[doc][n] for n in sorted(docs[doc]) if n in ocr_pages[doc])
+                if is_grounded_ocr(normalise(quote), ocr_joins[doc]):
+                    continue                # a small misreading on a page read from a picture
             best = max(((longest_run(normalise(quote), source_join([t])), n) for n, t in docs[doc].items()),
                        default=(0, None))
             where = (f"; the longest run of its words ({best[0]}) is on page {best[1]}" if best[0] else
                      "; none of its words run together on any page")
-            problems.append({**item, "why": f"not word for word on any page of {doc}{where}"})
+            note = (" (some of its pages were read from a picture: copy the words as the page file has them)"
+                    if doc in ocr_pages else "")
+            problems.append({**item, "why": f"not word for word on any page of {doc}{where}{note}"})
     return problems
 
 

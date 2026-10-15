@@ -29,7 +29,7 @@ import copy
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import fetch
+from . import answers as answer_kinds, fetch
 from .checks import _after_cutoff
 from .cmd_add_document import add_file
 from .cmd_fetch import save_url
@@ -151,9 +151,8 @@ def _handle(project: Project, c: dict, stamp: str, rounds: list) -> dict:
     if question is None:
         raise _Skip(f"Question {qid} does not apply to {row}, or is not in questions.json.")
     value = c.get("value")
-    if value is not None and _level(question, value) is None:
-        levels = ", ".join(repr(lv.get("value")) for lv in (question.get("answer") or {}).get("levels") or [])
-        raise _Skip(f"Question {qid} has no level {value!r} (its levels are {levels}).")
+    if value is not None and _level(question, value) is None and not answer_kinds.figure_ok(question, value):
+        raise _Skip(f"Question {qid} has no level {value!r} (its levels are {answer_kinds.describe(question)}).")
     answers = project.answers(row)
     cells = answers.setdefault("cells", {})
     current = cells.get(qid) if isinstance(cells.get(qid), dict) else None

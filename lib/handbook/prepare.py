@@ -1,11 +1,11 @@
-"""Reading a saved document into `pages.json`: one entry per PDF page, one page for a web page or a
-text file.
+"""Reading a saved document into `pages.json`: one entry per page (a PDF page, a slide, a sheet), one
+page for a web page, a picture or a text file.
 
-`guess_language`, `_pdf_pages` and `_pdf_dates` are copied from scripts/prep.py (here
-`pdf_page_count` and `pdf_info`); `decode_html` lives in fetch.py. PDFs are read with pypdfium2
-(PDFium, the reader in Chrome), page by page, with no other program to install. Without it (the tool
-run with a bare `python3` rather than its launcher) poppler is used if it is installed: `pdfinfo`
-for the page count, then `pdftotext -f N -l N -layout` for each page. On the Pecking Order fixture
+The reading itself, kind by kind, is readers.py; this module files the result: `pages.json`, the
+pictures kept for the scorer (`images/`), the capture, and `meta.json` (`kept`, `file`, `pages`,
+`language`, `text_source` "ocr" when words were read from a picture, and the PDF's own date).
+`guess_language` and `pdf_date` are copied from scripts/prep.py. PDFs are read with pypdfium2 (PDFium,
+the reader in Chrome), with poppler as the fallback (see readers.py); on the Pecking Order fixture
 pypdfium2 found 813 of 828 cited quotes against poppler's 797, lost none that poppler found, and was
 twelve times faster.
 """
@@ -16,19 +16,13 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import fetch
+from . import fetch, readers
 from .folder import HandbookError, read_json, write_json
 from .quotecheck import capture_id
 from .shapes import is_date
-
-try:
-    import pypdfium2 as _pdfium
-except ImportError:                     # run without the launcher: poppler, if it is installed
-    _pdfium = None
-
-PDF_MISSING = ("PDF text needs pypdfium2. Run the tool through its launcher (lib/hb), which "
-               "installs it, or install poppler (brew install poppler).")
-KINDS = {".pdf": "pdf", ".html": "html", ".htm": "html", ".txt": "text"}
+# The PDF reading moved to readers.py; these names stay importable from here.
+from .readers import (PDF_MISSING, have, pdf_info, pdf_page_count, pdf_page_texts, pdf_reader,  # noqa: F401
+                      pdfium_read, _pdfium_date)
 
 # A saved web page whose text is no more than this, or that asks for JavaScript, is a shell: the
 # words the finder saw were drawn by a script and are not in the copy. In the Pecking Order dev
@@ -38,10 +32,39 @@ _NEEDS_SCRIPT = re.compile(r"enable javascript|javascript (?:is )?(?:required|di
                            r"you need to enable javascript|please enable javascript", re.I)
 
 
+# A web page or text file longer than this is split into pages of about this size, at a sentence or
+# line break. Measured 15 Oct 2026: pages of 10,000 characters raised scorer cost (the Animal Protection
+# Index re-test +33%, Seafood Watch's Norway kit +27%: more pages, more steps), so only very long pages
+# (Brazil's Constitution, 669,000 characters) are split, into pages of 100,000.
+PAGE_CHARS = 100_000
+
+
+def split_long(text: str, size: int = PAGE_CHARS) -> list[str]:
+    """`text` as one page, or as pages of at most about `size` characters cut after a full stop or a
+    line break (a space when there is neither), with nothing lost or added but the cut's whitespace."""
+    text = text or ""
+    if len(text) <= size * 1.5:
+        return [text]
+    pages, start = [], 0
+    while len(text) - start > size * 1.5:
+        window = text[start:start + size]
+        cut = max(window.rfind(". "), window.rfind("\n"), window.rfind("? "), window.rfind("! "))
+        if cut < size // 2:
+            cut = window.rfind(" ")
+        if cut < size // 2:
+            cut = size - 1
+        pages.append(text[start:start + cut + 1].strip())
+        start += cut + 1
+    pages.append(text[start:].strip())
+    return [pg for pg in pages if pg]
+
+
 def is_stub(texts) -> bool:
     """Whether a document's page texts are a script shell rather than the page's words."""
     text = " ".join(t or "" for t in texts).strip()
-    return len(text) <= STUB_CHARS or bool(_NEEDS_SCRIPT.search(text))
+    # "JavaScript is disabled" on a page with its words is a banner, not a shell (ALI, 14 Oct 2026: both
+    # ASC standards, 340 KB and 675 KB of text, were thrown away for it and an older capture kept).
+    return len(text) <= STUB_CHARS or (len(text) <= 20_000 and bool(_NEEDS_SCRIPT.search(text)))
 
 # Small stopword tables; script detection handles the non-Latin cases. (Copied from scripts/prep.py.)
 _STOP = {
@@ -67,22 +90,18 @@ def guess_language(text: str) -> str:
     if not text or not text.strip():
         return "unknown"
     sample = text[:20000]
-    if re.search(r"[؀-ۿ]", sample):
-        return "ar"
-    if re.search(r"[぀-ヿ]", sample):
+    # A script decides only when it is a real share of the letters: one Cyrillic word in a language menu
+    # marked every EUR-Lex page Russian, and a few kana made a page Japanese (15 Oct 2026).
+    letters = max(1, len(re.findall(r"[^\W\d_]", sample)))
+
+    def share(pattern: str) -> float:
+        return len(re.findall(pattern, sample)) / letters
+    if share(r"[぀-ヿ]") > 0.05:
         return "ja"
-    if re.search(r"[가-힯]", sample):
-        return "ko"
-    if re.search(r"[一-鿿]", sample):
-        return "zh"
-    if re.search(r"[Ѐ-ӿ]", sample):
-        return "ru"          # Cyrillic: Russian, Bulgarian, Macedonian, Mongolian all land here
-    if re.search(r"[฀-๿]", sample):
-        return "th"
-    if re.search(r"[Ⴀ-ჿ]", sample):
-        return "ka"
-    if re.search(r"[֐-׿]", sample):
-        return "he"
+    for pattern, code in ((r"[؀-ۿ]", "ar"), (r"[가-힯]", "ko"), (r"[一-鿿]", "zh"), (r"[Ѐ-ӿ]", "ru"),
+                          (r"[฀-๿]", "th"), (r"[Ⴀ-ჿ]", "ka"), (r"[֐-׿]", "he")):
+        if share(pattern) > 0.2:
+            return code   # Cyrillic: Russian, Bulgarian, Macedonian, Mongolian all land on "ru"
     words = re.findall(r"[^\W\d_]+", sample.lower(), flags=re.UNICODE)[:4000]
     if not words:
         return "unknown"
@@ -94,83 +113,7 @@ def guess_language(text: str) -> str:
     return best if best_hits >= 3 else "unknown"
 
 
-# --- PDFs ---------------------------------------------------------------------------------------
-
-def have(tool: str) -> bool:
-    """Whether a command-line tool is installed (tests patch this)."""
-    return shutil.which(tool) is not None
-
-
-def pdf_reader() -> str | None:
-    """What reads PDFs here: "pdfium" (pypdfium2), else "poppler" (pdftotext and pdfinfo), else None."""
-    if _pdfium is not None:
-        return "pdfium"
-    return "poppler" if have("pdftotext") and have("pdfinfo") else None
-
-
-# PDFium marks a word broken at the end of a line with \x02 (poppler prints a hyphen) and gives
-# other control characters for glyphs it cannot map to a letter; poppler drops those.
-_PDFIUM_JUNK = re.compile(r"[\x00-\x01\x03-\x08\x0b\x0c\x0e-\x1f]")
-
-
-def _pdfium_date(value: str) -> str:
-    """A PDF date ("D:20250301120000+00'00'") in the ISO form `pdf_date` reads; anything else as given."""
-    m = re.match(r"D:(\d{4})(\d{2})(\d{2})(?:(\d{2})(\d{2})(\d{2}))?", value or "")
-    if not m:
-        return value
-    day = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-    return f"{day}T{m.group(4)}:{m.group(5)}:{m.group(6)}" if m.group(4) else day
-
-
-def pdfium_read(path: Path) -> tuple[list[str], dict]:
-    """(the text of each page, CreationDate/ModDate/Title/Producer) with pypdfium2. No pages when
-    the PDF cannot be opened (damaged, or locked with a password)."""
-    try:
-        pdf = _pdfium.PdfDocument(str(path))
-    except _pdfium.PdfiumError:
-        return [], {}
-    try:
-        texts = []
-        for i in range(len(pdf)):
-            page = pdf[i]
-            textpage = page.get_textpage()
-            text = textpage.get_text_bounded().replace("\r\n", "\n").replace("\r", "\n")
-            texts.append(_PDFIUM_JUNK.sub("", text.replace("\x02", "-")).rstrip())
-            textpage.close()
-            page.close()
-        meta = pdf.get_metadata_dict(skip_empty=True)
-    finally:
-        pdf.close()
-    info = {key: _pdfium_date(meta[key]) if key.endswith("Date") else meta[key]
-            for key in ("CreationDate", "ModDate", "Title", "Producer") if meta.get(key)}
-    return texts, info
-
-
-def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout)
-
-
-def _pdfinfo(path: Path) -> str:
-    return _run(["pdfinfo", "-isodates", str(path)]).stdout
-
-
-def pdf_page_count(path: Path) -> int:
-    """The number of pages a PDF has (0 when pdfinfo cannot read it)."""
-    m = re.search(r"^Pages:\s+(\d+)", _pdfinfo(path), flags=re.M)
-    return int(m.group(1)) if m else 0
-
-
-def pdf_info(path: Path) -> dict:
-    """CreationDate, ModDate, Title and Producer from the PDF's metadata, where present."""
-    out = _pdfinfo(path)
-    info = {}
-    for key in ("CreationDate", "ModDate", "Title", "Producer"):
-        m = re.search(rf"^{key}:\s+(.+)$", out, flags=re.M)
-        if m:
-            info[key] = m.group(1).strip()
-    return info
-
+# --- dates ---------------------------------------------------------------------------------------
 
 _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
@@ -193,17 +136,6 @@ def pdf_date(info: dict) -> str | None:
         if is_date(day):
             return day
     return None
-
-
-def pdf_page_texts(path: Path, pages: int) -> list[str]:
-    """The text of each page, layout kept: `pdftotext -f N -l N -layout` once per page."""
-    texts = []
-    for n in range(1, pages + 1):
-        got = _run(["pdftotext", "-f", str(n), "-l", str(n), "-layout", "-q", str(path), "-"])
-        if got.returncode != 0:
-            raise HandbookError(f"pdftotext could not read page {n} of {path.name}.")
-        texts.append(got.stdout.replace("\f", "").rstrip())
-    return texts
 
 
 # --- one document -------------------------------------------------------------------------------
@@ -231,14 +163,40 @@ def unsaved_documents(project) -> list[str]:
             if find_original(project, doc) is None and not (project.doc_dir(doc) / "pages.json").is_file()]
 
 
+IMAGES = "images"       # documents/<doc>/images/: the pictures kept for the scorer (see write_pictures)
+
+
+def picture_name(page: int, piece: int, pieces: int) -> str:
+    """images/p004.jpg, or images/p004-2.jpg for the second of several pieces of one tall picture."""
+    return f"{IMAGES}/p{page:03d}{'' if pieces == 1 else f'-{piece}'}.jpg"
+
+
+def write_pictures(folder: Path, pictures: dict) -> dict:
+    """Write the pictures a reading kept ({page: [JPEG bytes]}) to `images/` (replacing any earlier set) and
+    return {page: [names relative to the document's folder]}."""
+    target = folder / IMAGES
+    if target.is_dir():
+        shutil.rmtree(target)
+    names = {}
+    for page, pieces in sorted(pictures.items()):
+        for n, data in enumerate(pieces, 1):
+            name = picture_name(page, n, len(pieces))
+            (folder / name).parent.mkdir(parents=True, exist_ok=True)
+            (folder / name).write_bytes(data)
+            names.setdefault(page, []).append(name)
+    return names
+
+
 def prepare_document(project, doc: str) -> dict:
     """Read a document's saved copy into pages.json and update meta.json (`kept`, `file`, `pages`,
-    `language`, `capture`, and `date` with `date_basis` "pdf metadata" when the PDF carries one
-    and no other date was set by the owner or read from the page). The pages are also kept as
-    `captures/<capture id>.json`, named by their content, so every text a scorer was ever given
-    stays on file and the quote check can read what the scorer read after the copy changes.
-    Returns {"doc", "kind", "pages", "empty_pages", "language", "date", "capture"}. Raises
-    HandbookError."""
+    `language`, `capture`, `text_source` "ocr" and `ocr_pages` when words were read from a picture, and
+    `date` with `date_basis` "pdf metadata" when the PDF carries one and no other date was set by the owner
+    or read from the page). The pages are also kept as `captures/<capture id>.json`, named by their
+    content, so every text a scorer was ever given stays on file and the quote check can read what the
+    scorer read after the copy changes. A page read from a picture carries `ocr: true`, and the pictures
+    kept for the scorer are in `images/` and named in the page's `images`.
+    Returns {"doc", "kind", "pages", "empty_pages", "language", "date", "capture", "stub", "ocr_pages",
+    "pictures", "unread_pictures", "notes", "ocr_quality"}. Raises HandbookError."""
     folder = project.doc_dir(doc)
     meta = read_json(folder / "meta.json", None)
     if not isinstance(meta, dict):
@@ -246,32 +204,28 @@ def prepare_document(project, doc: str) -> dict:
     path = find_original(project, doc)
     if path is None:
         raise HandbookError(f"{doc} has no saved copy to read.")
-    kind = KINDS.get(path.suffix.lower())
-    if kind is None:
-        raise HandbookError(f"{doc}: the handbook cannot read {path.suffix or 'this kind of'} files "
-                            "yet. Save it as a PDF or a text file and add that.")
-    pdf_date_found = None
-    if kind == "pdf":
-        reader = pdf_reader()
-        if reader is None:
-            raise HandbookError(PDF_MISSING)
-        try:
-            if reader == "pdfium":
-                texts, info = pdfium_read(path)
-            else:
-                count = pdf_page_count(path)
-                texts, info = (pdf_page_texts(path, count), pdf_info(path)) if count > 0 else ([], {})
-            if not texts:
-                raise HandbookError(f"{doc}: the PDF could not be read (damaged, or locked with a password).")
-            pdf_date_found = pdf_date(info)
-        except subprocess.TimeoutExpired:
-            raise HandbookError(f"{doc}: reading the PDF took too long, so it was skipped. It may be very "
-                                "large or damaged; try it again with --doc, or save a smaller copy.") from None
-    elif kind == "html":
-        texts = [fetch.extract_text_html(path.read_bytes())]
-    else:
-        texts = [fetch.decode_html(path.read_bytes()).strip()]
+    if readers.kind_for_name(path.name) is None:
+        raise HandbookError(f"{doc}: " + (readers.cannot_read(path.name) or
+                                          f"the tool cannot read {path.suffix or 'this kind of'} files. It reads "
+                                          f"{readers.READABLE_WORDS} files."))
+    try:
+        reading = readers.read(path)
+    except HandbookError as e:
+        if str(e) == PDF_MISSING:
+            raise                                     # said once, not once per PDF
+        raise HandbookError(f"{doc}: {e}") from None
+    except subprocess.TimeoutExpired:
+        raise HandbookError(f"{doc}: reading the {readers.LABELS.get(readers.kind_for_name(path.name), 'file')} "
+                            "took too long, so it was skipped. It may be very large or damaged; try it again "
+                            "with --doc, or save a smaller copy.") from None
+    kind, texts = reading.kind, reading.pages
+    pdf_date_found = pdf_date(reading.info) if kind == "pdf" else None
     pages = [{"page": i, "text": text} for i, text in enumerate(texts, 1)]
+    names = write_pictures(folder, reading.pictures)
+    for n in reading.ocr_pages:
+        pages[n - 1]["ocr"] = True
+    for n, files in names.items():
+        pages[n - 1]["images"] = files
     language = guess_language("\n".join(texts))
     capture = capture_id(texts)
 
@@ -287,8 +241,18 @@ def prepare_document(project, doc: str) -> dict:
     if not (folder / "captures" / f"{capture}.json").is_file():   # content-addressed: never overwritten
         write_json(folder / "captures" / f"{capture}.json", {"pages": pages})
     meta["kept"], meta["file"], meta["pages"], meta["capture"] = True, path.name, len(pages), capture
+    if reading.ocr_pages:
+        meta["text_source"], meta["ocr_pages"] = "ocr", list(reading.ocr_pages)
+    else:
+        meta.pop("ocr_pages", None)
+        if meta.get("text_source") == "ocr":
+            meta.pop("text_source")
     if language != "unknown":
         meta["language"] = language
+    if pdf_date_found and str(meta.get("fetched") or "")[:10] and pdf_date_found >= str(meta["fetched"])[:10]:
+        # A PDF stamped when it was downloaded (a repository or viewer regenerating it: the SAMS review,
+        # CPF's 2021 report, 14 Oct 2026) says nothing about when it was written.
+        pdf_date_found = None
     if pdf_date_found and (meta.get("date") is None or meta.get("date_basis") in (None, "pdf metadata",
                                                                                    "http header")):
         meta["date"], meta["date_basis"] = pdf_date_found, "pdf metadata"
@@ -296,4 +260,6 @@ def prepare_document(project, doc: str) -> dict:
     return {"doc": doc, "kind": kind, "pages": len(pages),
             "empty_pages": sum(1 for t in texts if not t.strip()),
             "language": meta.get("language"), "date": meta.get("date"), "capture": capture,
-            "stub": kind == "html" and is_stub(texts)}
+            "stub": kind == "html" and is_stub(texts), "ocr_pages": len(reading.ocr_pages),
+            "pictures": sum(len(v) for v in names.values()), "unread_pictures": reading.unread_pictures,
+            "notes": reading.notes, "ocr_quality": reading.ocr_quality}

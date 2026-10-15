@@ -32,6 +32,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import answers as answer_kinds
 from .folder import HandbookError, Project, read_json, write_json
 from .scoresheet import row_totals
 from .shapes import FEEDBACK_STAGES, check_answers, is_date
@@ -480,6 +481,17 @@ def _level(question: dict, value):
     for lv in levels:
         if str(lv.get("value")) == str(value):
             return lv
+    if answer_kinds.is_number(question):
+        # A figure, from the page as typed ("73") or as a number: it has no level, and adds no points.
+        figure = value
+        if isinstance(value, str):
+            try:
+                figure = float(value.strip().rstrip("%").replace(",", ""))
+            except ValueError:
+                return None
+            figure = int(figure) if figure.is_integer() else figure
+        if answer_kinds.figure_ok(question, figure):
+            return {"value": figure, "points": 0, "meaning": None}
     return None
 
 
@@ -585,8 +597,8 @@ def decide(project: Project, unit, question: str, action: str, value=None, reaso
     if action == "change":
         new_level = _level(q, value)
         if new_level is None:
-            levels = ", ".join(repr(lv.get("value")) for lv in (q.get("answer") or {}).get("levels") or [])
-            raise HandbookError(f"Question {question} has no level {value!r}. Its levels are {levels}.")
+            raise HandbookError(f"Question {question} has no level {value!r}. Its levels are "
+                                f"{answer_kinds.describe(q)}.")
         if cell and cell.get("state") in ("answered", "no_evidence") and cell.get("value") == new_level["value"]:
             action, new_level = "keep", None            # the same answer: nothing to change
     if action == "keep" and cell is None:
@@ -702,8 +714,8 @@ def preview(project: Project, unit, question: str, value) -> dict:
         raise HandbookError(f"Question {question} does not apply to {units_by_id(project)[uid].get('name')}.")
     after = _totals_if(project, uid, question, value)
     if after is None:
-        levels = ", ".join(repr(lv.get("value")) for lv in (q.get("answer") or {}).get("levels") or [])
-        raise HandbookError(f"Question {question} has no level {value!r}. Its levels are {levels}.")
+        raise HandbookError(f"Question {question} has no level {value!r}. Its levels are "
+                            f"{answer_kinds.describe(q)}.")
     points = after.pop("points")
     return {"unit": uid, "question": question, "value": value, "points": points,
             "before": _totals(project, uid), "after": after}

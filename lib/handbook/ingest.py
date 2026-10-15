@@ -12,6 +12,7 @@ copy changes. A kit whose copy of a document is not one the project has on file 
 from __future__ import annotations
 import re
 
+from . import answers as answer_kinds
 from .folder import HandbookError, Project, applies
 from .kit import rules_for, unit
 from .shapes import UNSURE_WHY, check_answers, check_rules
@@ -38,8 +39,20 @@ def _level(question: dict, value):
     return None
 
 
+def _accepts(question: dict, value) -> bool:
+    return _level(question, value) is not None or answer_kinds.figure_ok(question, value)
+
+
+def _points(question: dict, value):
+    """What `value` is worth: its level's points, 0 for a figure a number question accepts, else None."""
+    level = _level(question, value)
+    if level is not None:
+        return level.get("points")
+    return 0 if answer_kinds.figure_ok(question, value) else None
+
+
 def _values(question: dict) -> str:
-    return ", ".join(repr(lv.get("value")) for lv in (question.get("answer") or {}).get("levels") or [])
+    return answer_kinds.describe(question)
 
 
 def _check_evidence(problems, w, evidence, docs, row, stale):
@@ -87,7 +100,7 @@ def _check_cell(problems, qid, c, question, docs, row, stale):
         problems.append(f"{w}: evidence must be a list")
         evidence = []
     if state == "answered":
-        if _level(question, value) is None:
+        if not _accepts(question, value):
             problems.append(f"{w}: value {value!r} is not one of the question's levels ({_values(question)})")
         if not evidence:
             problems.append(f"{w}: an answered cell needs at least one piece of evidence")
@@ -97,6 +110,19 @@ def _check_cell(problems, qid, c, question, docs, row, stale):
             problems.append(f"{w}: a no_evidence cell takes value null (or {nev!r}), found {value!r}")
         if evidence:
             problems.append(f"{w}: a no_evidence cell takes no evidence")
+    elif state == "not_applicable" and question.get("may_not_apply") is True:
+        # The documents show the question does not apply to this row (ACES: a camp with no riding).
+        if value is not None:
+            problems.append(f"{w}: a not_applicable cell takes value null, found {value!r}")
+        if not evidence and not (isinstance(c.get("note"), str) and c["note"].strip()):
+            # Evidence where a document shows it; else the note says why (the Bankwijzer, 15 Oct 2026: an element
+            # the owner rules 'not relevant' for every bank has no page to quote, and one such cell threw
+            # away a whole bank's answers).
+            problems.append(f"{w}: a not_applicable cell needs the evidence that shows it does not apply, "
+                            "or a note saying why")
+    elif state == "not_applicable":
+        problems.append(f"{w}: question {qid} is not marked may_not_apply, so its state cannot be not_applicable; "
+                        "answer it or say no_evidence")
     else:
         problems.append(f"{w}: state must be \"answered\" or \"no_evidence\", found {state!r}")
     _check_evidence(problems, w, evidence, docs, row, stale)
@@ -145,8 +171,8 @@ def validate_answers(project: Project, row: str, data, captures=None) -> list[st
 
 def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps: dict) -> dict:
     state = c["state"]
-    value = c.get("value") if state == "answered" else question.get("no_evidence_value")
-    level = _level(question, value)
+    value = (c.get("value") if state == "answered" else None if state == "not_applicable"
+             else question.get("no_evidence_value"))
     evidence = []
     for ev in c.get("evidence") or []:
         language = ev.get("language")
@@ -155,7 +181,7 @@ def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps:
                          "language": language, "capture": caps.get(ev["doc"])})
     applying = rules_for(rules, question["id"], row)
     unsure = c.get("unsure")
-    return {"state": state, "value": value, "points": level.get("points") if level else None,
+    return {"state": state, "value": value, "points": None if value is None else _points(question, value),
             "evidence": evidence, "rules": [r["id"] for r in applying],
             "judgement": any(r.get("status") in ("open", "skipped") for r in applying),
             "unsure": None if unsure is None else {"why": unsure["why"], "note": unsure["note"],
@@ -176,13 +202,12 @@ def owner_cell(question: dict, base: dict | None, value, evidence: list, owner: 
     """`base` (a stored cell, or None) holding the owner's `value` and `evidence`, with `owner` as
     its owner block. It rests on no reading of Claude's, so `judgement` is false; with no evidence
     and the question's no-evidence value it is a no_evidence cell."""
-    level = _level(question, value)
     nev = question.get("no_evidence_value")
     cell = {"state": "answered", "value": None, "points": None, "evidence": [], "rules": [],
             "judgement": False, "unsure": None, "note": "", "run": None, "out_of_date": False}
     cell.update({k: v for k, v in (base or {}).items() if k not in ("previous",)})
     cell.update({"state": "no_evidence" if not evidence and _same(value, nev) else "answered",
-                 "value": value, "points": level.get("points") if level else None,
+                 "value": value, "points": _points(question, value),
                  "evidence": evidence, "judgement": False, "unsure": None, "out_of_date": False,
                  "owner": owner})
     return cell
@@ -194,7 +219,7 @@ def merge_owner(question: dict, current: dict, claude: dict, why: str | None = N
     is not, `why` (Claude's note unless given) says why. The cell keeps its evidence, or takes
     Claude's when it has none and Claude agreed."""
     owner = dict(current["owner"])
-    agreed = _same(claude.get("value"), owner.get("value"))
+    agreed = answer_kinds.same_answer(question, claude.get("value"), owner.get("value"))
     owner.update({"agreed": agreed, "claude": claude.get("value"),
                   "why": None if agreed else ((why or "").strip() or claude.get("note")
                                               or "Claude's re-read gave a different answer."),

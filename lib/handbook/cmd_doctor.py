@@ -37,13 +37,22 @@ def check(name: str, state: str, says: str, fix: str | None = None) -> dict:
 
 def python_checks() -> list[dict]:
     found = [check("Python", OK, f"Python {sys.version.split()[0]}.")]
-    for module, job in (("pypdfium2", "Reading PDFs"), ("openpyxl", "Excel downloads")):
+    for module, job in (("pypdfium2", "Reading PDFs"), ("openpyxl", "Excel downloads"),
+                        ("PIL", "Pictures and scanned pages"), ("xlrd", "Old Excel (.xls) files"),
+                        ("olefile", "Outlook (.msg) messages")):
         try:
             importlib.import_module(module)
             found.append(check(job, OK, "Ready."))
         except ImportError:
             found.append(check(job, BLOCKED, f"{module} is not installed.",
                                "Run the tool through its launcher, handbook/lib/hb, which installs it."))
+    from . import ocr
+    reader = ocr.engine()
+    found.append(check("Words in pictures", OK, "Ready (the Mac's own text reader)." if reader == "vision"
+                       else "Ready (tesseract)." if reader else "", None) if reader else
+                 check("Words in pictures", WARN, "No program on this computer can read the words in a picture, so "
+                       "pictures and scanned pages are kept and shown to the scorer but their text is empty.",
+                       "On a Mac this is built in. Elsewhere, install tesseract."))
     return found
 
 

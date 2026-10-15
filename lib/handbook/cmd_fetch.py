@@ -7,11 +7,13 @@ words), also when it was saved before, unless someone cleared it. Run `hb prepar
 from __future__ import annotations
 import argparse
 import hashlib
+import re
+import urllib.parse
 
-from . import fetch, render
+from . import fetch, readers, render
 from .cli import command_parser, open_project
 from .folder import HandbookError, write_json
-from .hosts import classify_host
+from .hosts import classify_host, on_results_site
 
 
 def _size(n: int) -> str:
@@ -47,6 +49,8 @@ def main(argv) -> int:
     parser.add_argument("--how", required=True, choices=("plan", "search", "last_year", "provided"),
                         help="how it was found: the where-to-look plan, a search, last year's list, "
                              "or a link the owner provided")
+    parser.add_argument("--date", default=None, metavar="YYYY-MM-DD",
+                        help="the date it speaks as at, when the document says so, over its file date")
     parser.add_argument("--weak", default=None, metavar="WHY", type=_why,
                         help="mark it a weak source and say why in one line, for example "
                              "\"A news report, not the organisation's own words\"")
@@ -55,7 +59,10 @@ def main(argv) -> int:
         parser.error("give --row ROW, --group LABEL=VALUE, or both")
     project = open_project(args.project)
     rows = fetch.resolve_rows(project, args.row, args.group)       # checked before any fetching
-    save_url(project, args.url, rows, args.how, args.weak)
+    doc = save_url(project, args.url, rows, args.how, args.weak)
+    if args.date:
+        fetch.set_as_at(project, doc, args.date)
+        print(f"Dated {doc} {args.date}: the date it speaks as at.")
     return 0
 
 
@@ -64,12 +71,19 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     document id. What happened goes to `say`, one sentence at a time. Raises HandbookError when the
     page does not load or is not something the handbook can read; nothing is saved then."""
     url = url.strip()
+    site = on_results_site(url, project.read("project").get("results_sites"))
+    if site:
+        raise HandbookError(f"{url} is on {site}, where the benchmark publishes its results, so it was not "
+                            "saved: the scorer must answer from the organisation's own documents.")
     doc = fetch.doc_id_for_url(url)
 
     if fetch.has_document(project, doc):
         meta = project.documents()[doc]
         title = meta.get("title") or doc
         added = fetch.add_to_found(project, rows, doc)
+        refused = [r for r in rows if doc in (project.found(r).get("removed") or [])]
+        if refused:
+            say(f"{doc} was taken off {_rows_text(refused)} before (found --remove), so it was not filed there again.")
         if added:
             say(f"Already have {doc} ({title}), so it was not fetched again. "
                 f"Added it to {_rows_text(added)}.")
@@ -86,18 +100,40 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     result = fetch.fetch_bytes(url)
     if result.failure == "too-large":
         raise HandbookError(f"Could not fetch {url}: {fetch.TOO_LARGE}.")
+    archived_note = None
     if not result.ok:
-        raise HandbookError(f"Could not fetch {url}: {fetch.describe_failure(result)}. Nothing was saved.")
-    kind = fetch.kind_of(result.content, result.content_type)
-    if kind is None:
-        raise HandbookError(f"{url} gave {result.content_type or 'something'}, which the handbook "
-                            "cannot read. Nothing was saved. Download it as a PDF or text file and "
-                            "use add-document.")
+        # A site that blocks robots (EUR-Lex's 202), refuses, or fails: the archive's capture from
+        # before the cut-off, when there is one, is the same document.
+        cutoff = project.read("project").get("cutoff")
+        copy = render.archive_copy(url, cutoff)
+        if copy is None or not copy.ok:
+            raise HandbookError(f"Could not fetch {url}: {fetch.describe_failure(result)}, and "
+                                f"{render.archive_why_not(url, cutoff)}. Nothing was saved.")
+        archived_note = (f"The site would not give the page ({fetch.describe_failure(result)}), so the web "
+                         f"archive's capture was kept: {copy.url}")
+        result = fetch.FetchResult(url, 200, copy.content, copy.content_type)
+        archive_from_copy = copy.url
+    name = urllib.parse.urlsplit(url).path.rsplit("/", 1)[-1]
+    kind = fetch.kind_of(result.content, result.content_type, name)
+    refusal = readers.cannot_read(name, result.content_type, result.content)
+    if kind is None or refusal:
+        raise HandbookError(f"{url} gave {result.content_type or 'something'}, which the tool "
+                            f"cannot read. Nothing was saved. "
+                            + (refusal or f"It reads {readers.READABLE_WORDS} files: if you can save it as one of "
+                                          "those, add that with add-document."))
     title = (fetch.html_title(result.content) if kind == "html" else "") or fetch.title_from_url(url)
     if kind == "html" and fetch.misleading_title(title, fetch.extract_text_html(result.content)):
         title = fetch.title_from_url(url)   # e.g. "Not Found | joejuice.com" on a page that holds the policy
+    landed = on_results_site(result.final_url, project.read("project").get("results_sites")) if result.final_url else None
+    if landed:
+        # HSUS (15 Oct 2026): the owner's old results post now redirects to its new domain, which fetch saved.
+        raise HandbookError(f"{url} leads to {result.final_url}, on {landed}, where the benchmark publishes its "
+                            "results, so it was not saved.")
     host_type, _, archive_url = classify_host(url)
     content, notes, text_source, not_kept_why = result.content, [], None, None
+    if archived_note:
+        archive_url = archive_from_copy
+        notes.append(archived_note)
     if kind == "html" and render.is_shell(fetch.extract_text_html(content)):
         # The server sent a script shell: the words the finder saw are not in it. Try the page
         # rendered, then the archive, before giving up on it.
@@ -120,6 +156,12 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
                           provided=how == "provided")
     if text_source:
         meta["text_source"] = text_source
+    stamp = re.search(r"/(?:web|ukgwa)/(\d{8})\d*", archive_url or "")
+    if stamp:
+        # An archive copy existed on its capture date, so it was published by then: a date to check the
+        # cut-off against when the page gives none (four format tests, 15 Oct 2026, had null dates here).
+        s = stamp.group(1)
+        meta["date"], meta["date_basis"] = f"{s[:4]}-{s[4:6]}-{s[6:8]}", "archive capture"
     if weak:
         meta["weak"] = {"why": weak}
     if not_kept_why is not None:
@@ -128,9 +170,9 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         folder.mkdir(parents=True, exist_ok=True)
         write_json(folder / "meta.json", meta)          # filed by address only: no copy, no text
     else:
-        fetch.store_document(project, meta, content, fetch.EXTENSIONS[kind])
+        fetch.store_document(project, meta, content, readers.stored_extension(kind, content, name))
     fetch.add_to_found(project, rows, doc)
-    label = {"pdf": "PDF", "html": "web page", "text": "text"}[kind]
+    label = readers.LABELS[kind]
     say(f"Fetched {url} as {doc} ({label}, {_size(len(content))}), titled \"{title}\". "
         f"Filed for {_rows_text(rows)}.")
     for note in notes:

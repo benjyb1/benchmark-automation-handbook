@@ -513,7 +513,18 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const of = isNum(top) ? " of " + fmtNum(top) : "";
       const out = { c, state: c.state, pts, top, step: 0, kinds: extra.kinds, rests: extra.rules, stale: Boolean(c.out_of_date) };
       let words;
-      if (c.state === "answered" || c.state === "no_evidence") {
+      if ((c.state === "answered" || c.state === "no_evidence") && HB.isFigureQuestion(q)) {
+        // A figure (EggTrack's 73%): the cell shows it, shaded by where it sits between min and max.
+        const a = q.answer;
+        const fig = isNum(c.value);
+        out.text = fig ? HB.figureText(q, c.value) : String(c.value == null ? "?" : c.value);
+        out.step = fig && isNum(a.min) && isNum(a.max) && a.max > a.min ? step(c.value - a.min, a.max - a.min) : 0;
+        words = (c.state === "no_evidence" ? "no evidence found, " : "") + out.text;
+      } else if ((c.state === "answered" || c.state === "no_evidence") && !top && c.value != null) {
+        // Levels worth no points (a tracker's statuses): show the level itself, not "0 of 0 points".
+        out.text = String(c.value);
+        words = (c.state === "no_evidence" ? "no evidence found, " : "") + String(c.value);
+      } else if (c.state === "answered" || c.state === "no_evidence") {
         out.text = pts === null ? "?" : fmtNum(pts);
         out.step = step(pts, top);
         words = (c.state === "no_evidence" ? "no evidence found, " : "") + (pts === null ? "points not recorded" : fmtNum(pts) + of + " points");

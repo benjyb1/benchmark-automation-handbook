@@ -2,7 +2,8 @@
    Handbook viewer: data.js, the one way to read the page's data.
    The bundle sits in the page as <script type="application/json" id="hb-data">;
    the saved text of cited pages and Claude's notes sit beside the page in
-   evidence/<row>.json and are fetched only when a panel needs them.
+   evidence/<row>.json (past 400 rows, shared evidence/part-NN.json files) and are
+   fetched only when a panel needs them.
 
    HB.data.bundle()             the parsed bundle (parsed once), or null when the
                                 page holds nothing readable
@@ -152,12 +153,26 @@
     });
   }
 
+  const isEvidence = (data) => Boolean(data && typeof data === "object" && data.pages && typeof data.pages === "object");
+  const getJson = (name) => fetch(name).then((res) => (res.ok ? res.json() : null)).catch(() => null);
+
+  /* Past 400 rows with answers, rows share evidence files (bundle.py evidence_part): the sum of the
+     row id's character codes, mod 100. */
+  function evidencePart(row) {
+    let sum = 0;
+    for (let i = 0; i < row.length; i += 1) sum += row.charCodeAt(i);
+    return "part-" + String(sum % 100).padStart(2, "0");
+  }
+
   function evidence(row) {
     if (typeof row !== "string" || !ROW_ID.test(row)) return Promise.resolve(null);
     if (!evidenceCache.has(row)) {
-      const promise = fetch("evidence/" + row + ".json")
-        .then((res) => (res.ok ? res.json() : null))
-        .then((data) => (data && typeof data === "object" && data.pages && typeof data.pages === "object" ? data : null))
+      const promise = getJson("evidence/" + row + ".json")
+        .then((data) => (isEvidence(data) ? data
+          : getJson("evidence/" + evidencePart(row) + ".json").then((part) => {
+            const ev = part && part.rows && typeof part.rows === "object" ? part.rows[row] : null;
+            return isEvidence(ev) ? ev : null;
+          })))
         .catch(() => null);
       evidenceCache.set(row, promise);
     }

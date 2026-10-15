@@ -83,6 +83,21 @@ recommendation.
 - **Free-text answers** (a description or comment, not a level): propose levels whose meanings
   say how they judge it today, with `from: "proposed by Claude"`. Text that is not scored stays
   out of the questions; each answer's quote carries it anyway.
+- **A scale with only some levels written down** (A to G, with only what earns an A described):
+  keep the owner's scale, because every result they have published is on it; never collapse it
+  to yes or no. Transcribe the levels that are written; propose meanings for the rest, marked
+  `from: "proposed by Claude"`, and raise a rule asking the owner to check them.
+- **Levels you write yourself** must cover every case between them: walk two or three real rows
+  through the ladder and add a level, or a rule, where one falls between (ALDF: "a vet must report,
+  with no immunity" fitted no level).
+- **A rating a panel gives** (Food-EPI: experts vote on each indicator): the tool proposes a rating
+  with its quotes; the panel decides. Say so in `plain`, and hold back the panel's ratings as last
+  results (with `tolerance` when they are means).
+- **Figures from statistics** (FAO tables, government data): published statistics are revised, so
+  this year's database will not give last edition's figures. Ask for the extract the owner used
+  as a data need, to be added as a document, and say the comparison depends on it.
+- **A reference that is not evidence** (international best-practice examples to rate against):
+  it goes in each question's rule or as a document for every row, never as the row's evidence.
 - **Scores without a scoring sheet:** rebuild it ("scoresheet.json").
 - **Anything else** (a tracker of statuses with no total, a list of pledges): describe it in
   their terms and propose the nearest fit.
@@ -93,6 +108,7 @@ recommendation.
 
 ```json
 {"name": "Example Benchmark", "slug": "example-benchmark-2025", "edition": "2025",
+ "results_sites": ["examplebenchmark.org"],
  "unit_word": "company", "unit_word_plural": "companies", "cutoff": null,
  "labels": ["brand", "country", "parent_group"], "group_labels": ["brand", "parent_group"],
  "group_by": "brand", "stage": "setup",
@@ -106,7 +122,14 @@ recommendation.
 
 - `unit_word`: the owner's word for one row. `labels`: ordered, the most useful first.
 - `group_labels`: the labels whose values name an organisation that may publish one document for
-  several rows, narrow to wide. `group_by` is the first of them. Both must be in `labels`.
+  several rows, narrow to wide. `group_by` is the first of them. Both must be in `labels`. For
+  rows that are not companies, look for the body whose documents serve several rows: the EU for
+  member states (its regulations apply in each), a federal government for states, a parent company
+  for national arms, a scheme owner for its certified sites.
+- `results_sites`: the web hosts where the benchmark publishes its results or profiles of the rows
+  with their scores (`["elephantstandards.com"]`, `["data.eggtrack.com"]`). Finders cannot save
+  from them and the where-to-look plan may not point at them. Never list such a page as a place to
+  look, even with a note to ignore the score: the finder saves the whole page.
 - `provided[].role`: `questions | units | methodology | last_results | source_list |
   held_document | last_report | other`.
 - Leave `stage` alone; the trial and run commands set it.
@@ -145,11 +168,26 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
 ```
 
 - `id`: the owner's numbering where there is one. `short`: a few words of your own.
-- `answer.kind`: `yes_no` (exactly the levels `"yes"` and `"no"`) or `levels` (whole-number
-  values). A numeric measure (a reported share, a count) becomes levels with the ranges in their
-  meanings.
+- `answer.kind`: `yes_no` (exactly the levels `"yes"` and `"no"`), `levels` (whole-number
+  values) or `number`. A letter grade (A to G) is `levels`, best first with the highest value
+  (A is 7, G is 1), the letter at the start of each meaning ("A: ...").
+- `number`: when the owner publishes the figure itself (a share, a count, a year), keep it:
+  `{"kind": "number", "unit": "%", "min": 0, "max": 100, "decimals": 1, "levels": [...]}`, where
+  `decimals` is how many places they publish and `levels` holds only the answers that are not
+  figures, as text with points and a meaning (`{"value": "NR", "points": 0, "meaning": "Commitment,
+  no progress published"}`). A figure adds no points, so a benchmark built from figures usually
+  has `computable: false`. When the owner's scheme turns ranges into points (0 to 49% scores 1),
+  use `levels` with the ranges in their meanings instead.
 - `no_evidence_value`: the level a cell takes when nothing is found; usually the lowest. Ask if
-  the methodology does not say.
+  the methodology does not say. For a `number` question it is a text level ("ND", "no figure
+  found"), never a figure: a worst-case figure for nothing found reads as a real result (Seafood
+  Watch: oysters, which have no feed, were stored as a feed ratio of 4.0). When nothing found would
+  give the best level, say so in a rule: a missed document then scores best.
+- `may_not_apply` (optional, true): the documents can show the question does not apply to a row,
+  which no label tells in advance (a criterion on riding, for a camp that offers none). The scorer
+  may then answer not applicable, with the evidence, and the cell drops out of the row's maximum.
+  When a label does tell (a retailer never reports ingredient eggs), use `applies_to` instead: look
+  for columns of last edition's results that are always empty for some kind of row.
 - `applies_to`: null for every row, or `{label: [values]}` ("only for France" becomes
   `{"country": ["France"]}`). `variants`: the first match replaces `wording` and/or `rule`.
 - `evidence`: your plain description of what would show the answer; step 5 works from it.
@@ -163,7 +201,10 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
             "status": "draft", "from": "results spreadsheet"}]}
 ```
 
-Ids are unique, lowercase letters, digits and dashes, and never change once set. Every label key
+A row may carry its own `cutoff` (`"cutoff": "2025-03-12"`) when rows are assessed at different
+dates (a camp's audit, an assessment's publication); it replaces the project's cut-off for that row.
+Ids are unique, lowercase letters, digits and dashes, and never change once set. Spell accented
+letters plainly (Intermarché is `intermarche`, Kılıç is `kilic`), never by dropping them. Every label key
 must be in the project's `labels`. Propose labels from the columns you find; ask about any row
 whose value you cannot see.
 
@@ -179,10 +220,15 @@ whose value you cannot see.
  "computable": true, "status": "draft"}
 ```
 
-- `rounding`: `none | half_up_int | half_up_1dp` (halves always round up).
+- `rounding`: `none | half_up_int | half_up_1dp | half_up_2dp` (halves always round up).
 - `overall.method`: `sum_points` (with `percent` true, total over maximum times 100) or
   `weighted_mean_of_section_percents`.
 - Bands are matched on the rounded score: the highest band whose `min` the score reaches.
+- A band can also need sections met in full: `{"name": "Gold", "min": 80, "requires_full": ["M"]}`
+  is Gold only when every applicable question in section M is at its top level (ACES: every
+  mandatory criterion met). A practice that rules a row out goes in such a section as a question
+  whose top level is "does not do it". Put the mandatory questions in their own section with
+  weight 0 when they carry no points of their own.
 - A row's section maximum is worked out per row from the questions that apply to it.
 - If the scheme does not fit, write it in `plain` and set `computable: false`; the viewer then
   says totals cannot be computed. Tell the owner.
@@ -237,7 +283,9 @@ whose value you cannot see.
 ## Last edition's results (held back)
 
 Write the normalised file to `inbox/` (the `hold-back` command moves it, and the owner's file, out
-of the inbox):
+of the inbox). In the page's chat, save it with the part `last_results` instead (`{file, results}`).
+Results given only as overall grades or tiers (a rankings page) are still worth holding back, at
+`band` level: the rebuild check and the comparison then cover the bands.
 
 ```json
 {"level": "section", "edition": "2024",
@@ -247,8 +295,21 @@ of the inbox):
 
 - Keys per row: question ids, section ids, `overall`, `band:<of>` (a band name). Values are
   numbers, band names for band keys, or null where the owner's file has a gap.
+- A question's value is the POINTS the answer earned (a weighted mark of 1.15, not "tier 1"), or the
+  level itself as text ("yes", "NR"); a number question's value is the figure. Never a level's number
+  standing in for its points: the comparison reads numbers as points (Council Climate Scorecards,
+  15 Oct 2026). Penalties the owner applied go in too, never as null.
+- A rule the owner applies when marking (a right of reply that overrides an FOI answer, the edition
+  whose clarifications hold) is a rule the scorer sees, never only a data need.
 - `level` is the finest level present: `question | section | total | band`. `hold-back` fills
-  `original` itself.
+  `original` itself. At `question` level an answer may be text (a level that is not a figure,
+  such as "NR").
+- Ranks: when the results publish a rank, hold it back as a number under `rank:overall` (never as a
+  band name like "Rank 4"); compare then checks whether fully scored rows keep that order. Rows ranked
+  in separate lists (ALDF's states 1 to 50 and territories 1 to 6) use `rank:overall@<label>`, ranked
+  only against rows with the same value of that label.
+- `tolerance` (optional): how far apart an answer may be from the published one and still agree,
+  for results that are averages (a panel's mean rating of 4.1 against a level of 4: 0.5).
 - Map every row to a unit id. Tell the owner about rows in the results that are not in the row
   list, and leave them out. Copy figures exactly as published; never round or correct them.
 

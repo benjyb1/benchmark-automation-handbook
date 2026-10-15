@@ -37,13 +37,6 @@
   const { h, fmtInt, fmtNum } = HB;
   const SHORT = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
   const LONG = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", timeZone: "UTC" });
-  const TYPES = {
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsm: "application/vnd.ms-excel.sheet.macroEnabled.12",
-    xls: "application/vnd.ms-excel", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    doc: "application/msword", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", html: "text/html", htm: "text/html",
-    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", eml: "message/rfc822", msg: "application/vnd.ms-outlook",
-  };
   const REPLY_WORDS = { Agree: "Agrees", Disagree: "Disagrees" };
   // A round made for a demo, with invented replies (settings.sample, set only by handbook/dev/fixture_feedback.py).
   const SAMPLE = "Sample replies, invented for this demo. No company sent these.";
@@ -341,7 +334,7 @@
     const sent = [];
     const failed = [];
     for (const file of files) {
-      const type = TYPES[extOf(file.name)] || file.type || "application/octet-stream";
+      const type = HB.uploadTypes[extOf(file.name)] || file.type || "application/octet-stream";
       try {
         const up = await assets.upload(file, { type });
         sent.push({ asset: up.id, name: file.name });
@@ -405,7 +398,7 @@
   function dropZone(opts) {
     const o = opts || {};
     const input = h("input", { type: "file", multiple: true, class: "visually-hidden", id: o.id || "fb-file",
-      accept: ".xlsx,.xlsm,.xls,.pdf,.doc,.docx,.pptx,.txt,.csv,.html,.png,.jpg,.jpeg,.eml,.msg",
+      accept: HB.uploadAccept,
       onchange: () => { o.take(input.files); input.value = ""; } });
     const zone = h("label", { class: ["fb-drop", o.small && "fb-drop--small"], for: o.id || "fb-file", "data-busy": String(Boolean(ui.busy)) },
       input,

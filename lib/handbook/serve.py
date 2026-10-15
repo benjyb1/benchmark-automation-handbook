@@ -53,6 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from . import readers
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home, user_id
 from .page import VIEWER_SRC, json_for_script
@@ -68,18 +69,13 @@ MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
 ROW_RE = re.compile(r"^[a-z0-9-]+\Z")
 ASSET_RE = re.compile(r"^[a-f0-9]{16,32}\Z")
-UPLOAD_TYPES = {"application/pdf": ".pdf", "text/plain": ".txt", "text/markdown": ".md", "text/csv": ".csv",
-                "text/html": ".html",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
-                # What businesses send back in the feedback round: their reply in Excel (old and macro
-                # formats too, so the page can say what to do with them), and what they attach.
-                "application/vnd.ms-excel": ".xls",
-                "application/vnd.ms-excel.sheet.macroenabled.12": ".xlsm",
-                "application/msword": ".doc",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
-                "image/png": ".png", "image/jpeg": ".jpg", "message/rfc822": ".eml",
-                "application/vnd.ms-outlook": ".msg"}
+# The content types an upload may carry: every kind the tool reads (readers.UPLOAD_MIME is the one list, which
+# the upload boxes' own lists are checked against) and the other types browsers send for them.
+UPLOAD_TYPES = {}
+for _ext, _mime in readers.UPLOAD_MIME.items():
+    UPLOAD_TYPES.setdefault(_mime.lower(), _ext)
+UPLOAD_TYPES.update(readers.MIME_ALIASES)
+UPLOAD_GENERIC = ("", "application/octet-stream", "binary/octet-stream")   # a browser that did not know the type
 
 
 def now_iso() -> str:
@@ -1213,14 +1209,16 @@ class Handler(BaseHTTPRequestHandler):
         if not parts or parts == [""]:
             if method == "POST":
                 ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                raw = unquote(self.headers.get("X-Filename") or "upload")
                 ext = UPLOAD_TYPES.get(ctype)
+                if not ext and ctype in UPLOAD_GENERIC and Path(raw).suffix.lower() in readers.UPLOAD_MIME:
+                    ext = Path(raw).suffix.lower()          # a HEIC or Markdown file a browser sent with no type
                 if not ext:
                     return self.fail(400, "Send a PDF, Word, Excel, text, picture or email file.", "unsupported_type")
                 try:
                     data = self.body(MAX_UPLOAD)
                 except HandbookError:
                     return self.fail(413, "That file is over 40 MB.", "too_large")
-                raw = unquote(self.headers.get("X-Filename") or "upload")
                 stem = re.sub(r"[^A-Za-z0-9._-]+", "-", Path(raw).stem).strip("-.")[:60] or "upload"
                 asset_id = secrets.token_hex(16)
                 folder.mkdir(parents=True, exist_ok=True)

@@ -18,12 +18,13 @@ from __future__ import annotations
 import re
 from datetime import date
 
+from . import answers
 from .fetch import is_weak
 from .folder import HandbookError, ID_RE, Project
 # The grounding test lives in quotecheck.py, which the kit also carries, so the scorer's own check
 # and this one are the same code. The names stay importable from here.
-from .quotecheck import (MIN_RUN, SHORT_MIN, capture_id, is_grounded, longest_run,  # noqa: F401
-                         normalise, source_join, tokens)
+from .quotecheck import (MIN_RUN, SHORT_MIN, capture_id, is_grounded, is_grounded_ocr,  # noqa: F401
+                         longest_run, normalise, source_join, tokens)
 from .shapes import FLAGS, is_date
 
 # A second read is only worth its cost where rows of one group answered the same question
@@ -65,6 +66,31 @@ class _Documents:
                 cid = capture_id(p.get("text") or "" for p in pages if isinstance(p, dict)) if pages else None
             self._current[doc] = cid
         return self._current[doc]
+
+    def pages(self, doc: str, capture: str | None = None) -> list[dict]:
+        """The pages `source` reads: the current ones, or the named capture's when that is another one."""
+        if capture and capture != self.current_capture(doc):
+            return self.project.capture(doc, capture) or []
+        return self.project.pages(doc)
+
+    def has_ocr(self, doc: str, capture: str | None = None) -> bool:
+        """Whether any page of the document (as it was scored) holds words read from a picture."""
+        return any(isinstance(p, dict) and p.get("ocr") for p in self.pages(doc, capture))
+
+    def found(self, doc: str, quote: str, capture: str | None = None) -> bool | None:
+        """Whether the quote is on the document as it was scored: word for word, or, on a page read from a
+        picture (OCR), word for word but for a slip of a letter. None when the capture is not on file."""
+        src = self.source(doc, capture)
+        if src is None:
+            return None
+        text = normalise(quote)
+        if is_grounded(text, src):
+            return True
+        if not self.has_ocr(doc, capture):
+            return False
+        ocr_text = source_join(p.get("text") or "" for p in self.pages(doc, capture)
+                               if isinstance(p, dict) and p.get("ocr"))
+        return is_grounded_ocr(text, ocr_text)
 
     def source(self, doc: str, capture: str | None = None) -> str | None:
         """The matching text of `doc`: its current pages, or the capture `capture` when that is
@@ -164,6 +190,11 @@ def compute_checks(project: Project) -> dict[str, dict]:
     units = {u.get("id"): u for u in project.read("units").get("units", []) if isinstance(u, dict)}
     docs = _Documents(project)
     order = _question_order(project)
+    qmap = {q.get("id"): q for q in project.read("questions").get("questions", []) if isinstance(q, dict)}
+
+    def same(qid, a, b) -> bool:
+        q = qmap.get(qid)
+        return answers.same_answer(q, a, b) if answers.is_number(q) else _same_value(a, b)
 
     cells = {row: _scored_cells(project, row) for row in scored_rows(project)}
     flags: dict[str, dict[str, set]] = {row: {qid: set() for qid in cs} for row, cs in cells.items()}
@@ -175,8 +206,11 @@ def compute_checks(project: Project) -> dict[str, dict]:
                 mine.add("judgement")
             if isinstance(c.get("owner"), dict):
                 mine.add("owner_changed")     # the owner's answer; the bundle says whether Claude agreed
+            # A row may carry its own cut-off (each ACES camp's audit, each Seafood Watch assessment).
+            row_cutoff = (units.get(row) or {}).get("cutoff")
+            row_cutoff = row_cutoff if is_date(row_cutoff) else cutoff
             for doc in dict.fromkeys(_cited(c)):
-                if _after_cutoff(docs.meta.get(doc), cutoff):
+                if _after_cutoff(docs.meta.get(doc), row_cutoff):
                     mine.add("after_cutoff")
             if _cited(c) and all(is_weak(docs.meta.get(doc)) for doc in _cited(c)):
                 mine.add("weak_source")
@@ -186,11 +220,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
                 scored = e.get("capture") if isinstance(e.get("capture"), str) else None
                 if scored and scored != docs.current_capture(e["doc"]):
                     mine.add("document_changed")      # the saved copy is not the text this was scored from
-                src = docs.source(e["doc"], scored)
-                if src is None:
-                    continue                  # the capture it was scored from is gone: nothing to match against
-                if not is_grounded(normalise(e.get("quote") or ""), src):
-                    mine.add("quote_not_found")
+                if docs.found(e["doc"], e.get("quote") or "", scored) is False:
+                    mine.add("quote_not_found")   # (None: the capture it was scored from is gone, nothing to match)
 
     # group_differs: same first-group-label value, same question, a cited document in common,
     # different values. Every such cell is flagged, whichever row was scored first.
@@ -206,7 +237,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
     for (_, qid), group_members in members.items():
         for i, (row_a, docs_a, value_a) in enumerate(group_members):
             for row_b, docs_b, value_b in group_members[i + 1:]:
-                if docs_a & docs_b and value_a != value_b:
+                if docs_a & docs_b and (not same(qid, value_a, value_b) if answers.is_number(qmap.get(qid))
+                                        else value_a != value_b):
                     flags[row_a][qid].add("group_differs")
                     flags[row_b][qid].add("group_differs")
 
@@ -224,7 +256,7 @@ def compute_checks(project: Project) -> dict[str, dict]:
                 if "first" in second and not _same_value(second["first"], current):
                     second = None             # the cell was scored again: this read is of an old answer
                 else:
-                    second = {**second, "agrees": _same_value(second.get("value"), current)}
+                    second = {**second, "agrees": same(qid, second.get("value"), current)}
             mine = flags[row][qid]
             if second is not None and second.get("agrees") is False:
                 mine.add("reads_disagree")
@@ -323,15 +355,16 @@ def record_second_read(project: Project, row: str, run: str, data) -> list[dict]
             if not _same_value(value, q.get("no_evidence_value")):
                 problems.append(f"question {qid}: no_evidence takes the value {q.get('no_evidence_value')!r}")
                 continue
-        elif not any(_same_value(value, v) for v in _level_values(q)):
-            problems.append(f"question {qid}: {value!r} is not one of its answers "
-                            f"({', '.join(repr(v) for v in _level_values(q))})")
+        elif not (any(_same_value(value, v) for v in _level_values(q)) or answers.figure_ok(q, value)):
+            problems.append(f"question {qid}: {value!r} is not one of its answers ({answers.describe(q)})")
             continue
         mine = stored.get(qid)
         if not isinstance(mine, dict) or mine.get("state") not in SCORED_STATES:
             problems.append(f"question {qid}: {row} has no answer for it, so there is nothing to compare")
             continue
-        results.append({"question": qid, "value": value, "agrees": _same_value(value, mine.get("value")),
+        agrees = (answers.same_answer(q, value, mine.get("value")) if answers.is_number(q)
+                  else _same_value(value, mine.get("value")))
+        results.append({"question": qid, "value": value, "agrees": agrees,
                         "first": mine.get("value")})
     if problems:
         raise HandbookError(f"Nothing was stored. The second-read file for {row} has "
@@ -360,8 +393,8 @@ def record_second_read(project: Project, row: str, run: str, data) -> list[dict]
 def second_finds(project: Project) -> list[dict]:
     """The rows that still need their one second search: `found` has `expected_not_found` entries,
     or an answer has `unsure.why == "document"` and is not handled, and `second_search` is null.
-    Shape: `[{"row", "why": ["expected_not_found", "unsure_document"], "questions": [qid, ...]}]`
-    (`questions` are the cells unsure about a document; empty when that is not a reason)."""
+    Shape: `[{"row", "why": ["expected_not_found", "unsure_document", "after_cutoff"], "questions": [qid, ...]}]`
+    (`questions` are the cells unsure about a document or citing one dated after the cut-off)."""
     order = _question_order(project)
     rows = _order(project, {u.get("id") for u in project.read("units").get("units", [])
                             if isinstance(u, dict) and isinstance(u.get("id"), str)
@@ -379,6 +412,12 @@ def second_finds(project: Project) -> list[dict]:
                   and c["unsure"].get("why") == "document" and not c["unsure"].get("handled")]
         if doubts:
             why.append("unsure_document")
+        # An answer resting on a document dated after the cut-off needs the version current at the
+        # cut-off (the fish scorecard, 14 Oct 2026: such cells never prompted a second search).
+        late = [qid for qid, c in (project.checks(row).get("cells") or {}).items()
+                if isinstance(c, dict) and "after_cutoff" in (c.get("flags") or [])]
+        if late:
+            why.append("after_cutoff")
         if why:
-            out.append({"row": row, "why": why, "questions": _sorted_ids(doubts, order)})
+            out.append({"row": row, "why": why, "questions": _sorted_ids(list(dict.fromkeys(doubts + late)), order)})
     return out

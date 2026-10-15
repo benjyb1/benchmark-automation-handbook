@@ -11,14 +11,15 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
+from . import answers
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, ID_RE, Project
 
 STAGES = ("setup", "trial", "running", "done")
 ROLES = ("questions", "units", "methodology", "last_results", "source_list", "held_document",
          "last_report", "other")
 ITEM_STATUSES = ("draft", "confirmed")
-ANSWER_KINDS = ("yes_no", "levels")
-ROUNDINGS = ("none", "half_up_int", "half_up_1dp")
+ANSWER_KINDS = ("yes_no", "levels", "number")
+ROUNDINGS = ("none", "half_up_int", "half_up_1dp", "half_up_2dp")
 OVERALL_METHODS = ("sum_points", "weighted_mean_of_section_percents")
 RULE_KINDS = ("scoring", "scope", "evidence")
 RULE_STATUSES = ("open", "decided", "skipped")
@@ -26,9 +27,9 @@ RAISED_BY = ("setup", "trial", "run")
 VIA = ("chat", "viewer")
 NEED_STATUSES = ("needed", "supplied", "waived")
 HOW = ("plan", "search", "last_year", "provided")
-DATE_BASES = ("pdf metadata", "page text", "http header", "owner")
+DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "archive capture")
 HOST_TYPES = ("issuer", "repository", "third_party", "test_server", "none")
-TEXT_SOURCES = ("rendered", "archive", "archive_rendered")
+TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr")
 CELL_STATES = ("answered", "no_evidence", "not_applicable", "not_run")
 UNSURE_WHY = ("rule", "document")
 FLAGS = ("quote_not_found", "after_cutoff", "reads_disagree", "group_differs", "judgement",
@@ -258,6 +259,10 @@ def check_project(d) -> list[str]:
     group_by = d.get("group_by")
     if group_by is not None and group_by not in labels:
         out.append(f"project: group_by {_show(group_by)} is not in labels")
+    for site in out.str_list(d, "results_sites", w, required=False, nullable=True):
+        if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/\S*)?", site.strip().lower()):
+            out.append(f"project: results_sites {_show(site)} must be a web host, such as elephantstandards.com, "
+                       "or a host and path, such as aldf.org/us-state-rankings")
     out.enum(d, "stage", STAGES, w)
     checklist = d.get("checklist")
     if out.obj(checklist, "project: checklist"):
@@ -291,10 +296,8 @@ def _level_values(q) -> list | None:
 
 
 def _level_points(q, value):
-    for lv in (q.get("answer") or {}).get("levels") or []:
-        if isinstance(lv, dict) and lv.get("value") == value and type(lv.get("value")) is type(value):
-            return lv.get("points")
-    return _MISSING
+    points = answers.points_for(q, value)
+    return _MISSING if points is answers.MISSING else points
 
 
 def check_questions(d, scoresheet=None) -> list[str]:
@@ -322,9 +325,20 @@ def check_questions(d, scoresheet=None) -> list[str]:
         values = []
         if out.obj(answer, f"{w}: answer"):
             out.enum(answer, "kind", ANSWER_KINDS, f"{w}: answer")
-            levels = out.list_of(answer, "levels", f"{w}: answer")
-            if not levels:
+            kind = answer.get("kind")
+            levels = out.list_of(answer, "levels", f"{w}: answer", required=kind != "number")
+            if not levels and kind != "number":
                 out.append(f"{w}: answer has no levels")
+            if kind == "number":
+                for key in ("min", "max"):
+                    if answer.get(key) is not None and not _is_num(answer.get(key)):
+                        out.append(f"{w}: answer {key} must be a number or null, found {_show(answer.get(key))}")
+                if _is_num(answer.get("min")) and _is_num(answer.get("max")) and answer["min"] > answer["max"]:
+                    out.append(f"{w}: answer min is above its max")
+                d = answer.get("decimals")
+                if d is not None and not (_is_int(d) and d >= 0):
+                    out.append(f"{w}: answer decimals must be a whole number from 0, or null")
+                out.text(answer, "unit", f"{w}: answer", required=False, nullable=True, empty_ok=True)
             for j, lv in enumerate(levels):
                 wl = f"{w}: level {j + 1}"
                 if not out.obj(lv, wl):
@@ -336,7 +350,13 @@ def check_questions(d, scoresheet=None) -> list[str]:
                 if not _is_num(lv.get("points")):
                     out.append(f"{wl}: points must be a number, found {_show(lv.get('points'))}")
                 out.text(lv, "meaning", wl, empty_ok=True)
-            kind = answer.get("kind")
+            if kind == "number":
+                for v in values:
+                    if not isinstance(v, str):
+                        out.append(f"{w}: a number answer's levels are the answers that are not figures, "
+                                   f"such as \"NR\"; {_show(v)} must be text")
+                if len(set(map(_show, values))) != len(values):
+                    out.append(f"{w}: two levels share a value")
             if kind == "yes_no" and (sorted(map(str, values)) != ["no", "yes"]
                                      or not all(isinstance(v, str) for v in values)):
                 out.append(f"{w}: a yes_no answer needs exactly the levels \"yes\" and \"no\", "
@@ -350,10 +370,15 @@ def check_questions(d, scoresheet=None) -> list[str]:
         nev = q.get("no_evidence_value", _MISSING)
         if nev is _MISSING:
             out.append(f"{w}: no_evidence_value is missing")
+        elif isinstance(answer, dict) and answer.get("kind") == "number":
+            if not answers.accepts(q, nev):
+                out.append(f"{w}: no_evidence_value {_show(nev)} is not an answer it accepts ({answers.describe(q)})")
         elif values and not any(nev == v and type(nev) is type(v) for v in values):
             out.append(f"{w}: no_evidence_value {_show(nev)} is not one of its levels "
                        f"({', '.join(_show(v) for v in values)})")
         out.text(q, "rule", w, required=False, nullable=True, empty_ok=True)
+        if "may_not_apply" in q and not isinstance(q.get("may_not_apply"), bool):
+            out.append(f"{w}: may_not_apply must be true or false")
         out.label_filter(q.get("applies_to"), w, "applies_to")
         for j, variant in enumerate(out.list_of(q, "variants", w, required=False)):
             wv = f"{w}: variant {j + 1}"
@@ -389,6 +414,8 @@ def check_units(d, project) -> list[str]:
         if _text(uid) and not ID_RE.match(uid):
             out.append(f"{w}: id must use only lowercase letters, digits and dashes")
         out.text(u, "name", w)
+        if u.get("cutoff") is not None and not is_date(u.get("cutoff")):
+            out.append(f"{w}: cutoff must be a date like 2025-09-01, or left out")
         ul = u.get("labels", _MISSING)
         if ul is _MISSING:
             out.append(f"{w}: labels is missing")
@@ -471,6 +498,9 @@ def check_scoresheet(d, questions=None) -> list[str]:
                 names.add(band["name"])
             if not _is_num(band.get("min")):
                 out.append(f"{wbb}: min must be a number, found {_show(band.get('min'))}")
+            for sid in out.str_list(band, "requires_full", wbb, required=False, nullable=True):
+                if sid not in ids:
+                    out.append(f"{wbb}: requires_full names {_show(sid)}, which is not a section")
     qs = _items(questions, "questions")
     if qs:
         used = {q["section"] for q in qs if isinstance(q, dict) and isinstance(q.get("section"), str)}
@@ -630,6 +660,9 @@ def check_meta(d) -> list[str]:
     out.text(d, "capture", w, required=False, nullable=True)    # the id of the current pages
     out.enum(d, "text_source", TEXT_SOURCES, w, required=False, nullable=True)   # where a shell's words came from
     out.text(d, "not_kept_why", w, required=False, nullable=True)                 # why there is no copy
+    ocr_pages = d.get("ocr_pages")      # pages whose words were read from a picture (text_source "ocr")
+    if ocr_pages is not None and not (isinstance(ocr_pages, list) and all(_is_int(n) and n >= 1 for n in ocr_pages)):
+        out.append(f"{w}: ocr_pages must be a list of page numbers, found {_show(ocr_pages)}")
     pages = d.get("pages")
     if pages is not None and not (_is_int(pages) and pages >= 0):
         out.append(f"{w}: pages must be a whole number or null, found {_show(pages)}")
@@ -657,6 +690,10 @@ def check_pages(d) -> list[str]:
                 out.append(f"{w}: page must be a whole number of 1 or more")
             if not isinstance(page.get("text"), str):
                 out.append(f"{w}: text must be text")
+            if "ocr" in page and not isinstance(page["ocr"], bool):
+                out.append(f"{w}: ocr must be true or false, found {_show(page['ocr'])}")
+            if "images" in page and not (isinstance(page["images"], list) and all(_text(x) for x in page["images"])):
+                out.append(f"{w}: images must be a list of file names, found {_show(page['images'])}")
     return out
 
 
@@ -702,7 +739,7 @@ def _check_cell(out, qid, c, q):
             level_points = _level_points(q, value)
             if level_points is _MISSING:
                 out.append(f"{w}: value {_show(value)} is not one of the question's levels "
-                           f"({', '.join(_show(v) for v in _level_values(q) or [])})")
+                           f"({answers.describe(q)})")
             elif _is_num(points) and points != level_points:
                 out.append(f"{w}: points {_show(points)} do not match level {_show(value)}, "
                            f"which is worth {_show(level_points)}")
@@ -902,8 +939,12 @@ def check_held_back(d, history: bool = False) -> list[str]:
                 elif key.startswith("band:"):
                     if v is not None and not isinstance(v, str):
                         out.append(f"{wr}: {key} must be a band name, found {_show(v)}")
-                elif v is not None and not _is_num(v):
+                elif v is not None and not _is_num(v) and not (d.get("level") == "question" and _text(v)):
+                    # At question level an answer may be text: a level that is not a figure (NR, NC).
                     out.append(f"{wr}: {key} must be a number, found {_show(v)}")
+    tol = d.get("tolerance")
+    if tol is not None and not (_is_num(tol) and tol >= 0):
+        out.append(f"{w}: tolerance must be a number of 0 or more, or null, found {_show(tol)}")
     out.text(d, "original", w, required=False, nullable=True)
     out.text(d, "notes", w, required=False, nullable=True, empty_ok=True)
     return out
@@ -1282,10 +1323,31 @@ def check_folder(project: Project) -> list[str]:
         _add(probs, "units.json", check_units(files["units"], proj))
     if scoresheet is not None:
         _add(probs, "scoresheet.json", check_scoresheet(scoresheet, questions))
+        # A section sharing a question's id makes every figure ambiguous (the fish scorecard, 14 Oct
+        # 2026: tiers shown as "1%" because question 1 was read as section 1).
+        for s in _list(scoresheet.get("sections") if isinstance(scoresheet, dict) else None):
+            if isinstance(s, dict) and isinstance(s.get("id"), str) and s["id"] in qids:
+                probs.append(f"scoresheet.json: section {_show(s.get('id'))} has the same id as a question; "
+                             "give the section its own id, such as S1")
     rules = files["rules"] if isinstance(files["rules"], dict) else {}
     rule_ids = _ids(rules, "rules")
     if files["rules"] is not None:
         _add(probs, "rules.json", check_rules(files["rules"], questions, units))
+
+    sites = [x for x in _list(proj.get("results_sites")) if isinstance(x, str)]
+    wtl = files["where_to_look"] if isinstance(files["where_to_look"], dict) else {}
+    if sites:
+        from .hosts import on_results_site
+        places = [(f"plan entry {i + 1}", pl.get("url")) for i, e in enumerate(_list(wtl.get("plan")))
+                  if isinstance(e, dict) for pl in _list(e.get("places")) if isinstance(pl, dict)]
+        places += [(f"last_year entry {i + 1}", e.get("url")) for i, e in enumerate(_list(wtl.get("last_year")))
+                   if isinstance(e, dict)]
+        for where, url in places:
+            site = on_results_site(url, sites) if isinstance(url, str) else None
+            if site:
+                probs.append(f"where_to_look.json: {where} points at {site}, where the benchmark publishes its "
+                             "results: a finder would save the answers for the scorer. Point it at the "
+                             f"{proj.get('unit_word') or 'row'}'s own documents instead")
 
     docs = {}
     doc_root = root / "documents"

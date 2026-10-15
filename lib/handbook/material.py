@@ -1,23 +1,23 @@
 """The owner's set-up material: the files dropped into the Set-up tab (`inbox/uploads/`), read as text
 for the page's Claude (the fit check) and for the background set-up draft.
 
-PDFs through `prepare.pdfium_read`, Excel (.xlsx) sheet by sheet as tab-separated rows, Word (.docx)
-paragraph by paragraph from its XML, web pages through `fetch.extract_text_html`, and text as it is.
-Old .xls and .doc files are not read: the owner saves them as .xlsx or .docx.
+Every kind in readers.py is read here as it is for a document (a PDF page by page, pictures by OCR), with two
+richer readings of the owner's own: Excel (.xlsx) sheet by sheet as tab-separated rows, and web pages with
+their pictures' names and their links (see `_xlsx` and `_html`).
 """
 from __future__ import annotations
 import html
 import re
-import zipfile
 from pathlib import Path
 
-from . import fetch, prepare
+from . import fetch, readers
 from .folder import Project
 
 FOLDER = ("inbox", "uploads")
-KINDS = {".pdf": "PDF", ".xlsx": "Excel", ".docx": "Word", ".csv": "table", ".txt": "text", ".md": "text",
-         ".html": "web page", ".htm": "web page"}
-ROWS_PER_SHEET = 400
+KINDS = dict(readers.OWNER_LABELS)
+# A scorecard can be the whole of the owner's material (EggTrack's is 602 rows), and the draft takes
+# its row list from it, so a sheet is read whole up to this many rows; the page's chat reads it in parts.
+ROWS_PER_SHEET = 5000
 
 
 def files(project: Project) -> list[Path]:
@@ -30,49 +30,87 @@ def name_of(path: Path) -> str:
     return path.name.split("--", 1)[-1]
 
 
+def _cell(cell) -> str:
+    """A cell as the owner sees it in Excel: a share formatted as a percentage reads 73%, not 0.73, and a
+    date reads 2025-07-31, not a timestamp."""
+    v = getattr(cell, "value", None)
+    if v is None:
+        return ""
+    fmt = str(getattr(cell, "number_format", "") or "")
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and "%" in fmt:
+        return f"{round(v * 100, 4):g}%"
+    if hasattr(v, "isoformat"):
+        return v.date().isoformat() if hasattr(v, "date") and not any(c in fmt.lower() for c in "hs") else v.isoformat()
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v).strip()
+
+
+def xlsx_sheets(path: Path) -> list[tuple[str, str]]:
+    """[(sheet title, its rows as tab-separated lines)] for every sheet with something in it."""
+    from openpyxl import load_workbook
+    book = load_workbook(path, read_only=True, data_only=True)
+    out = []
+    for sheet in book.worksheets:
+        lines = []
+        for n, row in enumerate(sheet.iter_rows()):
+            if n >= ROWS_PER_SHEET:
+                lines.append(f"(sheet continues beyond {ROWS_PER_SHEET} rows)")
+                break
+            cells = [_cell(c) for c in row]
+            if any(cells):
+                lines.append("\t".join(cells).rstrip())
+        if lines:
+            out.append((sheet.title, "\n".join(lines)))
+    return out
+
+
 def _xlsx(path: Path) -> str:
     from openpyxl import load_workbook
     book = load_workbook(path, read_only=True, data_only=True)
     out = []
     for sheet in book.worksheets:
-        out.append(f"## Sheet: {sheet.title}")
-        for n, row in enumerate(sheet.iter_rows(values_only=True)):
+        lines, width, more = [], 0, False
+        for n, row in enumerate(sheet.iter_rows()):
             if n >= ROWS_PER_SHEET:
-                out.append(f"(sheet continues beyond {ROWS_PER_SHEET} rows)")
+                more = True
                 break
-            cells = ["" if v is None else str(v).strip() for v in row]
+            cells = [_cell(c) for c in row]
             if any(cells):
-                out.append("\t".join(cells).rstrip())
+                lines.append("\t".join(cells).rstrip())
+                width = max(width, max(i + 1 for i, c in enumerate(cells) if c))
+        out.append(f"## Sheet: {sheet.title} ({len(lines)}{'+' if more else ''} rows, {width} columns)")
+        out.extend(lines)
+        if more:
+            out.append(f"(sheet continues beyond {ROWS_PER_SHEET} rows)")
     return "\n".join(out)
 
 
-def _docx(path: Path) -> str:
-    with zipfile.ZipFile(path) as z:
-        xml = z.read("word/document.xml").decode("utf-8", "replace")
-    paras = []
-    for p in re.findall(r"<w:p[ >].*?</w:p>", xml, flags=re.S):
-        text = "".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", p))
-        paras.append(html.unescape(text))
-    return "\n".join(t for t in paras if t.strip())
+def _html(data: bytes) -> str:
+    """A saved web page as the owner sees it, for set-up only: `fetch.html_text` with each picture as its alt text
+    or file name and each link followed by where it goes, and a closing note when the page builds content with a
+    script, which a saved copy does not hold (VACI's tables)."""
+    raw = fetch.decode_html(data)
+    scripts = re.findall(r"(?is)<script[^>]*>(.*?)</script>", raw)
+    text = fetch.html_text(raw, links=True, pictures=True)
+    script_chars = sum(len(x) for x in scripts)
+    if script_chars > 2000 and script_chars > len(text):
+        text += ("\n\n(Note: this page builds part of its content with a script, so tables or figures drawn "
+                 "that way are missing from this saved copy. Ask the owner for them as a file, or read the "
+                 "page's data another way.)")
+    return text
 
 
 def read_text(path: Path) -> str:
     """The whole file as text; raises ValueError for a kind it cannot read."""
     ext = path.suffix.lower()
-    if ext == ".pdf":
-        if prepare.pdf_reader() != "pdfium":
-            raise ValueError("PDF reading needs the tool's launcher.")
-        texts, _ = prepare.pdfium_read(path)
-        return "\n".join(f"[page {i}]\n{t}" for i, t in enumerate(texts, 1))
     if ext == ".xlsx":
         return _xlsx(path)
-    if ext == ".docx":
-        return _docx(path)
     if ext in (".html", ".htm"):
-        return fetch.extract_text_html(path.read_bytes())
+        return _html(path.read_bytes())
     if ext in (".txt", ".md", ".csv"):
         return fetch.decode_html(path.read_bytes())
-    raise ValueError(f"{ext or 'This kind of'} files can't be read: save it as PDF, Word (.docx) or Excel (.xlsx).")
+    return readers.text_of(path)
 
 
 def listing(project: Project) -> list[dict]:

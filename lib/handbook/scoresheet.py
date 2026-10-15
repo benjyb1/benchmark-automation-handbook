@@ -8,33 +8,42 @@ the keys the owner's results also give. It never reads `answers/`.
 from __future__ import annotations
 from decimal import ROUND_HALF_UP, Decimal
 
+from . import answers
 from .folder import HandbookError, Project, applies, now_stamp, read_json
 from .shapes import check_held_back
 
-ROUNDING_STEPS = {"half_up_int": Decimal("1"), "half_up_1dp": Decimal("0.1")}
+ROUNDING_STEPS = {"half_up_int": Decimal("1"), "half_up_1dp": Decimal("0.1"), "half_up_2dp": Decimal("0.01")}
 SCORED = ("answered", "no_evidence")
 
 
 def round_half_up(x, mode: str):
     """`x` rounded by a score-sheet rounding mode: "none" keeps it, "half_up_int" gives a whole
-    number, "half_up_1dp" one decimal place. Halves always go up (never banker's rounding), and
+    number, "half_up_1dp" one decimal place, "half_up_2dp" two (ALI publishes 8.45). Halves always go up (never banker's rounding), and
     float noise such as 72.49999999999999 is treated as the half it stands for."""
     if x is None:
         return None
     if mode in (None, "none"):
-        return x
+        # No rounding, but float noise is not a figure: 7.949999999999999 is 7.95 (ALI, 14 Oct 2026).
+        return round(x, 9) if isinstance(x, float) else x
     if mode not in ROUNDING_STEPS:
-        raise ValueError(f"unknown rounding {mode!r}; expected none, half_up_int or half_up_1dp")
+        raise ValueError(f"unknown rounding {mode!r}; expected none, half_up_int, half_up_1dp or half_up_2dp")
     d = Decimal(repr(round(float(x), 9))).quantize(ROUNDING_STEPS[mode], rounding=ROUND_HALF_UP)
     return int(d) if mode == "half_up_int" else float(d)
 
 
-def band_for(score, bands: list[dict]) -> str | None:
-    """The name of the first band, in descending `min`, whose `min` is at or below `score`."""
+def band_for(score, bands: list[dict], full=None) -> str | None:
+    """The name of the first band, in descending `min`, whose `min` is at or below `score` and whose
+    `requires_full` sections are all fully met (`full`: the ids of the row's fully met sections; None
+    when not known, and then a band group with conditions gives no band). ACES (14 Oct 2026): Gold
+    needs 80% of the advanced points AND every mandatory criterion met."""
     if score is None:
         return None
-    for band in sorted(bands or [], key=lambda b: b.get("min", 0), reverse=True):
-        if band.get("min") is not None and band["min"] <= score:
+    ordered = sorted(bands or [], key=lambda b: b.get("min", 0), reverse=True)
+    if full is None and any(b.get("requires_full") for b in ordered):
+        return None
+    for band in ordered:
+        if band.get("min") is not None and band["min"] <= score \
+                and all(s in full for s in band.get("requires_full") or []):
             return band.get("name")
     return None
 
@@ -42,15 +51,12 @@ def band_for(score, bands: list[dict]) -> str | None:
 # --- the calculation, shared by row_totals and rebuild_check ----------------------------------
 
 def _top(question: dict):
-    return max((lvl.get("points") or 0 for lvl in (question.get("answer") or {}).get("levels") or []),
-               default=0)
+    return answers.top_points(question)
 
 
 def _level_points(question: dict, value):
-    for lvl in (question.get("answer") or {}).get("levels") or []:
-        if lvl.get("value") == value:
-            return lvl.get("points")
-    return None
+    points = answers.points_for(question, value)
+    return None if points is answers.MISSING else points
 
 
 def _section_score(section: dict, entry: dict):
@@ -114,12 +120,19 @@ def _weighted_mean(overall: dict, percents: dict):
     return round_half_up(sum(w * p for w, p in pairs) / total_weight, overall.get("rounding"))
 
 
-def _bands(sheet: dict, overall, section_scores: dict) -> dict:
+def _full(sections: dict) -> set:
+    """The sections a row meets in full: every applicable question at its top points. A section where
+    nothing applies is not met (ACES re-test, 15 Oct 2026: all 20 conservation criteria not applicable
+    turned every Gold camp into Conservation)."""
+    return {sid for sid, e in sections.items() if e["max"] > 0 and e["points"] >= e["max"]}
+
+
+def _bands(sheet: dict, overall, section_scores: dict, full=None) -> dict:
     out = {}
     for group in sheet.get("bands") or []:
         of = group.get("of")
         score = overall if of == "overall" else section_scores.get(of)
-        out[of] = band_for(score, group.get("bands"))
+        out[of] = band_for(score, group.get("bands"), full)
     return out
 
 
@@ -160,7 +173,7 @@ def row_totals(project: Project, row, cells: dict) -> dict | None:
     sections, raw, partial = _sections(sheet, questions, unit, points_for)
     overall = _overall_from_sections(sheet, sections, raw)
     scores = {s["id"]: _section_score(s, sections[s["id"]]) for s in sheet.get("sections") or []}
-    return {"sections": sections, "overall": overall, "bands": _bands(sheet, overall, scores),
+    return {"sections": sections, "overall": overall, "bands": _bands(sheet, overall, scores, None if partial else _full(sections)),
             "partial": partial}
 
 
@@ -193,7 +206,7 @@ def _same(ours, theirs, mode=None) -> bool:
     if mode in ROUNDING_STEPS:
         return round_half_up(ours, mode) == theirs
     places = _decimals(theirs)
-    mode = "half_up_int" if places == 0 else ("half_up_1dp" if places == 1 else None)
+    mode = {0: "half_up_int", 1: "half_up_1dp", 2: "half_up_2dp"}.get(places)
     if mode:
         return round_half_up(ours, mode) == theirs
     return abs(ours - theirs) < 10 ** -places / 2
@@ -204,12 +217,19 @@ def _derive(sheet: dict, questions: list[dict], unit: dict, values: dict, level:
     section_list = sheet.get("sections") or []
     if level == "question":
         def points_for(q):
-            return values.get(q.get("id"))      # held-back values are points; null adds nothing
+            # Held-back values are points; null adds nothing. A number question's value is the figure
+            # itself, which adds no points (answers.py).
+            value = values.get(q.get("id"))
+            if answers.is_number(q) and value is not None:
+                return _level_points(q, value) or 0
+            if isinstance(value, str):             # a level held as text: worth its level's points
+                return _level_points(q, value)
+            return value
         sections, raw, _ = _sections(sheet, questions, unit, points_for)
         scores = {s["id"]: _section_score(s, sections[s["id"]]) for s in section_list}
         overall = _overall_from_sections(sheet, sections, raw)
         return {**scores, "overall": overall,
-                **{f"band:{of}": name for of, name in _bands(sheet, overall, scores).items()}}
+                **{f"band:{of}": name for of, name in _bands(sheet, overall, scores, _full(sections)).items()}}
     if level == "section":
         scores = {s["id"]: values.get(s["id"]) for s in section_list}
         overall_cfg = sheet.get("overall") or {}
@@ -225,7 +245,9 @@ def _derive(sheet: dict, questions: list[dict], unit: dict, values: dict, level:
                 all(v is not None for v in scores.values()):
             out["overall"] = round_half_up(sum(scores.values()), overall_cfg.get("rounding"))
         overall = out.get("overall", values.get("overall"))
-        for of, name in _bands(sheet, overall, scores).items():
+        full = {s["id"] for s in section_list if s.get("percent", True) and scores.get(s["id"]) == 100} \
+            if all(s.get("percent", True) and scores.get(s["id"]) is not None for s in section_list) else None
+        for of, name in _bands(sheet, overall, scores, full).items():
             out[f"band:{of}"] = name
         return out
     if level == "total":

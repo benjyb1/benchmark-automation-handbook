@@ -29,6 +29,12 @@ def main(argv) -> int:
     summary = data["summary"]
     print(f"Compared {summary['rows']} of {expected} {word} with last edition's results, at "
           f"{data['level']} level. Written to compare/compare.json.")
+    order = data.get("rank_order")
+    if order:
+        # ALDF re-test (15 Oct 2026): the rank check ran but nothing printed it.
+        print(f"  Rank order ({order['key']}): {order['same_order']} of {order['pairs']} pairs of fully scored "
+              f"{word} keep last edition's order" + (f"; swapped: {', '.join(' over '.join(p[::-1]) for p in order['swapped'][:5])}"
+                                                    if order["swapped"] else "."))
     for key, n in list(summary["agree"].items())[:SHOW]:
         print(f"  {key}: {n} of {summary['of'][key]} agree")
     if len(summary["agree"]) > SHOW:

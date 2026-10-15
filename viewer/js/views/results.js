@@ -414,11 +414,14 @@
     const rows = (b.questions || []).map((q) => {
       const levels = (((q.answer || {}).levels) || []).slice().sort((x, y) => (x.points || 0) - (y.points || 0));
       const counts = levels.map(() => 0);
+      const figureQ = HB.isFigureQuestion(q);
       let notRun = 0;
+      let figures = 0;
       units.forEach((u) => {
         const c = (cells[u.id] || {})[q.id];
         if (!c || c.state === "not_applicable") return;
         if (!HB.data.isScored(c)) { notRun += 1; return; }
+        if (figureQ && typeof c.value === "number") { figures += 1; return; }   // EggTrack's 73%
         const i = levels.findIndex((l) => String(l.value) === String(c.value));
         if (i >= 0) counts[i] += 1;
       });
@@ -428,6 +431,7 @@
         return { label: `${String(l.value).replace(/^./, (c) => c.toUpperCase())} (${plural(l.points || 0, "point", "points")})${meaning}`,
           value: counts[i], tone: tone.fill, ink: tone.ink };
       }).reverse();
+      if (figureQ) parts.unshift({ label: HB.figureWords(q), value: figures, tone: "var(--step-2)", ink: undefined });
       parts.push({ label: "Not scored yet", value: notRun, tone: NONE });
       return { label: `${q.id}${q.short ? " " + q.short : ""}`, parts };
     }).filter((r) => r.parts.some((p) => p.value > 0));

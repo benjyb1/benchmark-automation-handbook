@@ -22,7 +22,7 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from .bundle import downloads_rows, evidence_files, make_bundle
+from .bundle import downloads_rows, evidence_data_files, make_bundle
 from .contract import validate
 from .folder import HandbookError, Project
 
@@ -194,7 +194,7 @@ def build(project: Project, now: datetime, out=None) -> dict:
                                 "(the build already writes viewer/ there).")
 
     bundle = make_bundle(project, now)
-    data_files = {f"evidence/{row}.json": _text(ev) for row, ev in evidence_files(project).items()}
+    data_files = {name: _text(ev) for name, ev in evidence_data_files(project).items()}
     data_files["downloads.json"] = _text(downloads_rows(project, bundle))
     styles = VIEWER_SRC / "styles.css"
     page = render(_read(VIEWER_SRC / "index.html"), title=page_title(bundle["project"]),

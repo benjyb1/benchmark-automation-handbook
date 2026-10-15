@@ -1,15 +1,17 @@
 """hb prepare [--doc ID]: read every saved document that has no text yet into `pages.json` (one page
-per PDF page, one page for a web page or a text file). With --doc, read that one document, again if
+per PDF page, slide or sheet; one page for a web page, a picture or a text file). The words in a picture
+or on a scanned page are read with the Mac's own text reader. With --doc, read that one document, again if
 it was already read. Documents known only by their web address, with no saved copy, are skipped
 and counted.
 """
 from __future__ import annotations
 
+from . import readers
 from .cli import command_parser, open_project
 from .folder import HandbookError
 from .prepare import find_original, pending_documents, prepare_document, unsaved_documents
 
-LABELS = {"pdf": "PDF", "html": "web page", "text": "text"}
+LABELS = readers.LABELS
 
 
 def _plural(n: int, word: str) -> str:
@@ -49,10 +51,20 @@ def main(argv) -> int:
                 problems.append(str(e))
     print(f"{_plural(len(todo), 'document')} needed text; read {len(done)}.")
     for d in done:
-        line = f"  {d['doc']}: {LABELS[d['kind']]}, {_plural(d['pages'], 'page')}"
+        line = f"  {d['doc']}: {LABELS.get(d['kind'], d['kind'])}, {_plural(d['pages'], 'page')}"
         if d["language"]:
             line += f", {d['language']}"
-        if d["empty_pages"]:
+        if d.get("ocr_pages"):
+            line += (f". Words read from a picture on {d['ocr_pages']} of {d['pages']} "
+                     "(OCR: a letter or figure can be wrong)")
+            if d.get("ocr_quality") is not None:
+                line += f", the reader's own confidence {round(d['ocr_quality'] * 100)}%"
+        if d.get("pictures"):
+            line += f". {_plural(d['pictures'], 'picture')} kept for the scorer to look at"
+        if d.get("unread_pictures"):
+            line += (". The words in the picture could not be read (no text reader on this computer), "
+                     "so it can only be looked at")
+        elif d["empty_pages"]:
             line += (f". No text on {d['empty_pages']} of {d['pages']} "
                      "(a scan or pictures? it will need another route)")
         if d.get("stub"):
@@ -60,6 +72,9 @@ def main(argv) -> int:
                      "cannot be quoted. Record it as not found so the second search looks for a "
                      "readable copy (an archived one, or a PDF)")
         print(line)
+        for note in d.get("notes") or []:
+            if "could not be read" not in note and not note.startswith("Read the words"):   # said above
+                print(f"    {note}")
     if not args.doc and skipped:
         print(f"{_plural(len(skipped), 'document')} with no saved copy, skipped: {', '.join(skipped)}.")
     for problem in problems:

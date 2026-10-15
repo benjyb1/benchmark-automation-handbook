@@ -25,6 +25,13 @@ you hesitated. Sort each rule into one of three kinds.
 - A figure the method needs that is not reported: score the lowest level, or infer it? (Inferring
   needs a stated rule; recommend the lowest level unless the methodology says otherwise.)
 - A numeric measure scored by ranges: which figure, which year, rounded how.
+- Proving that something is absent (no ag-gag law, no cages anywhere): what a scorer must have
+  read before saying so (the whole chapter, the code's index), and that a quote of an unrelated
+  clause is not proof. When nothing found would score the best level, say so in the rule: a missed
+  document then scores best.
+- A rule names the questions it is about. Never attach one rule to every question unless it truly
+  governs every one: scorers apply what they are given, and a blanket rule overrides levels it
+  was never meant to touch (ALDF: a rule on partial species coverage rewrote question 1).
 
 **Scope** (whose documents and which parts count)
 - What one row is, when a parent and its brands, or a brand and its franchisees, could be one row

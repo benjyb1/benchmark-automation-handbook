@@ -45,14 +45,15 @@ EXTRA_REPOSITORY = (
 # any other address on an archive (archive.today and its mirrors, a Wayback address with no
 # timestamp, a search) is a copy on someone else's site: third party.
 ARCHIVE_HOSTS = ("archive.org", "archive.today", "archive.ph", "archive.is", "archive.li",
-                 "archive.vn", "archive.fo", "archive.md")
+                 "archive.vn", "archive.fo", "archive.md", "webarchive.nationalarchives.gov.uk")
 
 TEST_PREFIXES = ("test.", "staging.")
 
 # web.archive.org/web/<stamp>/<original>: <stamp> is digits, optionally followed by a flag such as
 # id_ or if_; <original> may lack its scheme.
-_WEB_ARCHIVE = re.compile(r"(?:https?://)?web\.archive\.org/web/\d+[a-z_]*/(?P<original>\S.*)",
-                          re.IGNORECASE)
+# The UK Government Web Archive keeps the same shape: webarchive.nationalarchives.gov.uk/ukgwa/<stamp>/<original>.
+_WEB_ARCHIVE = re.compile(r"(?:https?://)?(?:web\.archive\.org/web|webarchive\.nationalarchives\.gov\.uk(?:/ukgwa)?)"
+                          r"/\d+[a-z_]*/(?P<original>\S.*)", re.IGNORECASE)
 
 # A host is dot-separated labels of letters, digits and inner hyphens, ending in a name (not a
 # number), or an IPv4 address. Text that gives none ("N/A", "URL not recorded", a list of
@@ -63,8 +64,11 @@ _IPV4 = re.compile(r"\d{1,3}(?:\.\d{1,3}){3}")
 _SCHEME = re.compile(r"[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 # Without a scheme, "Guide.pdf" is a file name, not a host on a "pdf" domain. (None of these is a
 # top-level domain, so an address without a scheme on a real domain is never mistaken for one.)
-FILE_EXTENSIONS = ("pdf", "doc", "docx", "odt", "rtf", "txt", "csv", "xls", "xlsx", "ods", "json",
-                   "xml", "htm", "html", "ppt", "pptx", "png", "jpg", "jpeg", "gif")
+# These are the kinds of file a link can lead to; readers.py is what the tool can read of them (every
+# kind here but ppt, which it asks to be saved as pptx, and video and audio, which it does not read yet).
+FILE_EXTENSIONS = ("pdf", "doc", "docx", "odt", "rtf", "txt", "csv", "tsv", "xls", "xlsx", "xlsm", "ods", "json",
+                   "xml", "htm", "html", "ppt", "pptx", "odp", "png", "jpg", "jpeg", "gif", "webp", "heic",
+                   "heif", "tif", "tiff", "eml", "msg", "mp4", "mp3", "m4a", "wav")
 
 
 def _matches(host: str, suffixes) -> bool:
@@ -120,3 +124,25 @@ def classify_host(url):
     if not host:
         return "none", "", None
     return _type_of(host), host, (text if _matches(host, ARCHIVE_HOSTS) else None)
+
+
+def on_results_site(url, sites) -> str | None:
+    """The results site `url` is on (one of `sites`, the hosts where the benchmark publishes its
+    results, subdomains included), judging a web-archive copy by the page it copies; None when it is
+    on none of them."""
+    text = (url or "").strip()
+    archived = _WEB_ARCHIVE.fullmatch(text)
+    page = archived.group("original") if archived else text
+    host = _host(page)
+    if not host:
+        return None
+    path = urllib.parse.urlsplit(page if "://" in page else "https://" + page).path.lower()
+    for site in sites or []:
+        # A site may name a path ("aldf.org/us-state-rankings"): only that part of the host holds the
+        # results, so the owner's own other documents there stay usable (ALDF re-test, 15 Oct 2026).
+        site = str(site).strip().lower().removeprefix("https://").removeprefix("http://").removeprefix("www.")
+        site_host, _, site_path = site.partition("/")
+        if site_host and (host == site_host or host.endswith("." + site_host)) \
+                and (not site_path or path.startswith("/" + site_path.rstrip("/"))):
+            return site
+    return None

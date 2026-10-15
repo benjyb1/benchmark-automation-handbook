@@ -23,10 +23,11 @@ from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, HandbookError, Project
 from .shapes import ROLES, check_folder
 from .stakes import rule_stakes
 
-BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels", "group_labels", "group_by")
+BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels", "group_labels", "group_by",
+          "results_sites")
 WHOLE = {"questions": "questions", "units": "units", "scoresheet": "scoresheet",
          "where_to_look": "where_to_look", "needs": "needs"}
-PARTS = ("basics", "provided", "rules", "feedback") + tuple(WHOLE)
+PARTS = ("basics", "provided", "rules", "last_results", "feedback") + tuple(WHOLE)
 FEEDBACK_FIELDS = ("private_evidence", "sender", "language")    # the business round's three set-up answers
 LOCKED_ONCE_SCORED = ("questions", "units")
 SETUP_RULE_FIELDS = ("kind", "question_ids", "rows", "ask", "options", "recommended", "why", "last_year_note")
@@ -86,6 +87,8 @@ def write_part(project: Project, part: str, data) -> dict:
                                           "Set-up tab instead."], "said": None}
     if not isinstance(data, dict):
         return {"ok": False, "problems": [f"The {part} must be an object."], "said": None}
+    if part == "last_results":
+        return _last_results(project, data)
     if part == "feedback":
         return _write_feedback(project, data)
     p = project.read("project")
@@ -154,6 +157,64 @@ def write_part(project: Project, part: str, data) -> dict:
     return {"ok": not problems, "problems": problems[:20], "said": None if problems else f"Saved {said} as a draft."}
 
 
+def _last_results(project: Project, data: dict) -> dict:
+    """Last edition's results, normalised by the chat ({file, results}): held back as `hb hold-back` does,
+    with the owner's file (named as Your material lists it) kept as the original and taken out of Your
+    material, then rebuilt with the score sheet when it can compute totals. Returns {ok, problems, said,
+    rebuild}, rebuild being {checked, matched, mismatches} or None."""
+    from . import material
+    from .cmd_hold_back import store
+    from .folder import write_json
+    from .scoresheet import rebuild_check
+    name = str(data.get("file") or "").strip()
+    path = next((f for f in material.files(project)
+                 if name and name in (f.name, material.name_of(f), f.name.split("--")[0])), None)
+    if path is None:
+        return {"ok": False, "problems": [f"There is no file {name!r} in Your material: give the file's name as "
+                                          "read_material lists it."], "said": None, "rebuild": None}
+    results = data.get("results")
+    if not isinstance(results, dict):
+        return {"ok": False, "problems": ["results must be the normalised results, in the held-back shape."],
+                "said": None, "rebuild": None}
+    from .cmd_hold_back import check_against
+    try:
+        text = material.read_text(path)
+    except Exception:  # noqa: BLE001 (a file the reader cannot read is simply not checked)
+        text = ""
+    try:
+        store(project, results, path)
+    except HandbookError as e:
+        lines = str(e).split("\n- ")
+        return {"ok": False, "problems": lines[1:] or lines, "said": None, "rebuild": None}
+    rows = results.get("rows") or {}
+    units = {u.get("id") for u in project.read("units").get("units", [])}
+    unknown = [r for r in rows if r not in units]
+    said = (f"Kept last edition's results aside: {len(rows)} rows at {results.get('level')} level"
+            + (f" ({len(unknown)} not in the list: {', '.join(unknown[:5])})" if unknown else "") + ".")
+    check = check_against(project, results, text) if text else []
+    if check:
+        said += (f" Check {len(check)} row{'s' if len(check) != 1 else ''} against the file: "
+                 + "; ".join(f"{c['row']} {c['key']} kept as {c['held']}"
+                             + (f", the file has {c['near']} beside it" if c["near"] is not None else "")
+                             for c in check[:8]) + ".")
+    rebuild = None
+    sheet = project.read("scoresheet")
+    if sheet and sheet.get("computable") is not False and project.read("questions").get("questions"):
+        try:
+            rebuild = rebuild_check(project)
+            write_json(project.held_back / "rebuild.json", rebuild)
+            rebuild = {k: rebuild[k] for k in ("checked", "matched", "mismatches")}
+            rebuild["mismatches"] = rebuild["mismatches"][:30]
+            if rebuild["checked"]:
+                said += f" The score sheet gives the same figures for {rebuild['matched']} of {rebuild['checked']} rows."
+            else:
+                said += (f" They are {results.get('level')}s only, with nothing finer to rebuild them from, so the score "
+                         "sheet cannot be checked against them yet; scored rows will be compared with them.")
+        except HandbookError as e:
+            said += f" The score sheet could not be checked against them: {e}"
+    return {"ok": True, "problems": [], "said": said, "rebuild": rebuild, "check": check}
+
+
 def set_status(project: Project, key: str, status: str) -> dict:
     """The owner confirmed (or skipped) one checklist item in the chat or on the page."""
     if key not in CHECKLIST_KEYS:
@@ -219,10 +280,10 @@ SKILL = Path(__file__).resolve().parents[2] / "skills" / "setup"
 
 
 def guide() -> str:
-    """The file formats (drafting.md, from project.json to where_to_look.json and needs.json) and how to
-    write a rule (grill.md), for the chat's instructions."""
+    """The file formats (drafting.md, from project.json to last edition's results) and how to write a
+    rule (grill.md), for the chat's instructions."""
     text = (SKILL / "drafting.md").read_text(encoding="utf-8")
-    start, end = text.find("## project.json"), text.find("## Last edition's results")
+    start, end = text.find("## project.json"), text.find("## Chat edits")
     formats = text[start:end if end > start else None].strip() if start >= 0 else text
     grill = (SKILL / "grill.md").read_text(encoding="utf-8") if (SKILL / "grill.md").is_file() else ""
     return formats + ("\n\n" + grill.strip() if grill else "")

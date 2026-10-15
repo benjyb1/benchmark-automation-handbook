@@ -64,6 +64,7 @@
     none: "No rounding",
     half_up_int: "Whole numbers, halves round up",
     half_up_1dp: "One decimal place, halves round up",
+    half_up_2dp: "Two decimal places, halves round up",
   };
 
   /* ---- Small helpers ------------------------------------------------------------ */
@@ -292,10 +293,17 @@
 
   function levelsList(q) {
     const levels = q.answer && Array.isArray(q.answer.levels) ? q.answer.levels : [];
-    if (!levels.length) return h("span", { class: "muted" }, "No answer levels yet.");
+    const figure = HB.isFigureQuestion(q)
+      ? h("li", { class: "su-level" }, h("span", { class: "su-level__value" }, HB.figureWords(q)),
+          h("span", { class: "su-level__points" }, "No points"),
+          h("span", { class: "su-level__meaning" }, "The figure the evidence gives, tracked but not added to any total.",
+            HB.isNum(q.no_evidence_value) ? h("span", { class: "su-level__tag" }, "Used when no evidence is found") : null))
+      : null;
+    if (!levels.length && !figure) return h("span", { class: "muted" }, "No answer levels yet.");
     return h(
       "ul",
       { class: "su-levels" },
+      figure,
       levels.map((level) =>
         h(
           "li",
@@ -634,11 +642,6 @@
 
   /* ---- Your material: files for the set-up, and Draft my set-up (only under hb serve) --------------------------------------- */
 
-  const MATERIAL_TYPES = {
-    pdf: "application/pdf", txt: "text/plain", md: "text/markdown", csv: "text/csv", html: "text/html", htm: "text/html",
-    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  };
   const material = { files: null, line: "", busy: false };
 
   async function loadMaterial(box) {
@@ -665,8 +668,8 @@
     const failed = [];
     const added = [];
     for (const f of picked) {
-      const type = MATERIAL_TYPES[(f.name.split(".").pop() || "").toLowerCase()];
-      if (!type) { failed.push(f.name + " (save it as PDF, Word or Excel)"); continue; }
+      const type = HB.uploadTypes[(f.name.split(".").pop() || "").toLowerCase()];
+      if (!type) { failed.push(f.name + " (save it as PDF, Word, Excel or a picture)"); continue; }
       try { await tool.upload(f, { type }); added.push(f.name); } catch (e) { failed.push(f.name); }
     }
     material.busy = false;
@@ -693,11 +696,11 @@
       control stays hidden inside it. */
   function materialDrop(box) {
     const input = h("input", { type: "file", class: "visually-hidden", multiple: true, id: "su-material-input",
-      accept: ".pdf,.docx,.xlsx,.csv,.txt,.md,.html", onchange: () => { addMaterial(box, input.files); } });
+      accept: HB.uploadAccept, onchange: () => { addMaterial(box, input.files); } });
     const zone = h("label", { class: "su-drop", for: "su-material-input", "data-busy": String(material.busy) },
       input,
       h("span", { class: "su-drop__lead" }, material.busy ? "Adding\u2026" : "Drop files here, or ", material.busy ? null : h("span", { class: "su-drop__pick" }, "choose them")),
-      h("span", { class: "su-drop__hint" }, "PDF, Word, Excel or text"));
+      h("span", { class: "su-drop__hint" }, "PDF, Word, Excel, pictures or text"));
     const over = (on) => (e) => { e.preventDefault(); zone.classList.toggle("is-over", on); };
     zone.addEventListener("dragenter", over(true));
     zone.addEventListener("dragover", over(true));

@@ -35,7 +35,9 @@ def main(argv) -> int:
     kept = sum(1 for d in docs if any(d.glob("p*.txt")))
     what = "second-reading kit" if args.second else "scorer kit"
     brief = kit / "second" / "brief.md" if args.second else kit / "brief.md"
+    pictures = sum(1 for _ in (kit / "docs").glob("*/p*.jpg"))
     print(f"Wrote the {what} for {args.row}: {len(docs)} document(s), {kept} with page files, "
-          f"{len(docs) - kept} without. The brief is {brief}")
+          f"{len(docs) - kept} without{f', {pictures} picture(s) beside their pages' if pictures else ''}. "
+          f"The brief is {brief}")
     print(kit)
     return 0

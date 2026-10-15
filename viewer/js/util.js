@@ -185,6 +185,28 @@
     return fmtInt(n) + " " + (Math.round(n) === 1 ? word : pluralWord || word + "s");
   }
 
+  /* ---- Answers that are figures (answers.py) ------------------------------- */
+
+  function isFigureQuestion(q) {
+    return Boolean(q && q.answer && q.answer.kind === "number");
+  }
+
+  /* A figure with its unit, as the owner writes it: 73%, 1,200 hens. */
+  function figureText(q, value) {
+    const unit = q && q.answer && q.answer.unit ? String(q.answer.unit) : "";
+    const text = fmtNum(value, 4, Math.abs(value) >= 10000);     // 2025 is a year, not "2,025"
+    return !unit ? text : unit === "%" ? text + "%" : text + " " + unit;
+  }
+
+  /* What a number question takes, in words: "A figure from 0 to 100 (%)". */
+  function figureWords(q) {
+    const a = (q && q.answer) || {};
+    const lo = isNum(a.min) ? fmtNum(a.min, 4, Math.abs(a.min) >= 10000) : null;
+    const hi = isNum(a.max) ? fmtNum(a.max, 4, Math.abs(a.max) >= 10000) : null;
+    const span = lo != null && hi != null ? " from " + lo + " to " + hi : lo != null ? " of at least " + lo : hi != null ? " of at most " + hi : "";
+    return "A figure" + span + (a.unit ? " (" + a.unit + ")" : "");
+  }
+
   /* ---- Storage: per-viewer conveniences only ------------------------------ */
 
   const STORE_PREFIX = "hb:";
@@ -375,6 +397,9 @@
     fmtNum,
     fmtPct,
     plural,
+    isFigureQuestion,
+    figureText,
+    figureWords,
     store,
     copyText,
   });
@@ -453,3 +478,25 @@
   HB.factualFlags = factualFlags;
   HB.flagGlyph = flagGlyph;
 })((window.HB = window.HB || {}));
+
+/* The kinds of file an upload box takes, by extension, with the content type a browser sends for each.
+   It is the list in handbook/lib/handbook/readers.py (UPLOAD_MIME); tests/test_handbook_readers.py checks the two agree.
+   HB.uploadTypes   {extension: content type}      HB.uploadAccept   ".pdf,.png,..." for an input's accept */
+(function (HB) {
+  const TYPES = {
+    pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif",
+    heic: "image/heic", heif: "image/heif", tif: "image/tiff", tiff: "image/tiff",
+    html: "text/html", htm: "text/html", xhtml: "application/xhtml+xml",
+    txt: "text/plain", text: "text/plain", md: "text/markdown", csv: "text/csv", tsv: "text/tab-separated-values",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsm: "application/vnd.ms-excel.sheet.macroEnabled.12",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    json: "application/json", jsonl: "application/x-ndjson", xml: "application/xml", svg: "image/svg+xml",
+    doc: "application/msword", rtf: "application/rtf", xls: "application/vnd.ms-excel",
+    odt: "application/vnd.oasis.opendocument.text", odp: "application/vnd.oasis.opendocument.presentation",
+    ods: "application/vnd.oasis.opendocument.spreadsheet",
+    eml: "message/rfc822", msg: "application/vnd.ms-outlook",
+  };
+  HB.uploadTypes = TYPES;
+  HB.uploadAccept = Object.keys(TYPES).map((ext) => "." + ext).join(",");
+})(window.HB = window.HB || {});

@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pypdfium2>=5,<6", "openpyxl>=3.1,<4", "playwright>=1.45,<2"]
+# dependencies = ["pypdfium2>=5,<6", "openpyxl>=3.1,<4", "playwright>=1.45,<2", "pillow>=10,<13", "xlrd>=2.0.1,<3", "olefile>=0.47,<1"]
 # ///
 """Entry point: `handbook/lib/hb <command> [--project FOLDER] [args]` runs this with the Python and
 libraries listed above (fetched by uv); `python3 handbook/lib/hb.py ...` also works where they are

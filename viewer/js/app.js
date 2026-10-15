@@ -196,7 +196,8 @@
     }
     head.replaceChildren(
       h("h1", { class: "hb-head__title" }, p.name ? String(p.name) : "Benchmark tool",
-        p.edition ? [" ", h("span", { class: "hb-head__edition" }, String(p.edition))] : null),
+        p.edition && !String(p.name || "").includes(String(p.edition))      // "EggTrack 2025", not "EggTrack 2025 2025"
+          ? [" ", h("span", { class: "hb-head__edition" }, String(p.edition))] : null),
       facts.length ? h("p", { class: "hb-head__facts" }, facts) : null,
     );
   }

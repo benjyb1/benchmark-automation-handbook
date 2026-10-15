@@ -57,28 +57,17 @@ def _place(new: dict, old: dict | None) -> str:
     return "newer" if ka > kb else "older"
 
 
-def main(argv) -> int:
-    parser = command_parser("hold-back", "Store a past edition's results where the scorers cannot "
-                                         "see them.")
-    parser.add_argument("--file", required=True,
-                        help="the results, already normalised to the held-back shape (JSON)")
-    parser.add_argument("--original", required=True,
-                        help="the owner's original results file, kept as it was")
-    args = parser.parse_args(argv)
-    project = open_project(args.project)
-
-    source, original = Path(args.file).expanduser(), Path(args.original).expanduser()
-    if not source.is_file():
-        raise HandbookError(f"There is no normalised results file at {source}.")
-    if not original.is_file():
-        raise HandbookError(f"There is no original results file at {original}.")
-    data = read_json(source)
+def store(project, data: dict, original: Path, source: Path | None = None) -> dict:
+    """Hold back `data` (already in the held-back shape), keeping a copy of the owner's `original`
+    file; `source`, the normalised file, is removed from the inbox with the original. Used by the
+    command and by the page's set-up chat. Returns {place, edition, target, original, moved,
+    old_edition}. Raises HandbookError, storing nothing, when `data` is not in the held-back shape."""
     problems = check_held_back(data)
     if problems:
-        raise HandbookError(f"{source.name} is not in the held-back shape, so nothing was stored. "
+        what = source.name if source else "These results"
+        raise HandbookError(f"{what} is not in the held-back shape, so nothing was stored. "
                             f"{len(problems)} problem{'s' if len(problems) != 1 else ''}:\n- "
                             + "\n- ".join(problems))
-
     held = project.held_back
     latest_path = held / "results.json"
     old = read_json(latest_path) if latest_path.is_file() else None
@@ -103,27 +92,148 @@ def main(argv) -> int:
             if path.exists():
                 path.unlink()
 
+    # A file that is also the methodology or last report stays where the owner put it (ALDF Canada,
+    # 15 Oct 2026: the one report PDF held both, and hold-back removed it from the owner's material).
+    other_roles = {str(x.get("file") or "") for x in project.read("project").get("provided") or []
+                   if isinstance(x, dict) and x.get("role") not in (None, "last_results")}
+    keep = {original.name, original.name.split("--", 1)[-1]} & other_roles
     moved = []
     for path in (original, source):
-        if _in_inbox(project, path) and path.exists():
+        if path is original and keep:
+            continue
+        if path is not None and _in_inbox(project, path) and path.exists():
             path.unlink()
             moved.append(path.name)
 
     proj = project.read("project")
     proj.setdefault("checklist", {})["last_results"] = "confirmed"
     project.write("project", proj)
+    return {"place": place, "edition": edition, "target": target, "original": name, "moved": moved,
+            "old_edition": old.get("edition") if old else None}
 
+
+# --- checking the held-back figures against the owner's file ---------------------------------------
+# The Animal Protection Index (14 Oct 2026): the page's chat transcribed 50 grades from the rankings
+# page and shifted nine by a row; nothing caught it. Each held value is looked for beside its row's
+# name in the owner's file: on the row's line when the row has several figures, else as the nearest
+# of that column's values.
+
+NEAR = 200
+
+
+def _tokens(text: str, value) -> list[int]:
+    """Where `value` stands alone in `text` (a grade "B", "NR", or a number however written: 73, 73.0, 73%)."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        out = []
+        for m in re.finditer(r"(?<![\w.])(\d+(?:[.,]\d+)?)(?![\w])", text):
+            try:
+                if abs(float(m.group(1).replace(",", ".")) - float(value)) < 1e-6:
+                    out.append(m.start())
+            except ValueError:
+                pass
+        return out
+    v = str(value).strip()
+    if not v:
+        return []
+    return [m.start() for m in re.finditer(rf"(?<![\w]){re.escape(v)}(?![\w])", text)]
+
+
+def check_against(project, data: dict, text: str) -> list[dict]:
+    """[{row, key, held, near}] for held values the owner's file does not put beside the row's name;
+    rows whose name is not in the file, or whose values cannot be placed, are not judged."""
+    rows = data.get("rows") or {}
+    names = {u.get("id"): u.get("name") for u in project.read("units").get("units", []) if isinstance(u, dict)}
+    columns: dict = {}
+    for values in rows.values():
+        for k, v in (values or {}).items():
+            if v is not None:
+                columns.setdefault(k, set()).add(v)
+    lines = text.splitlines()
+    out = []
+    for row, values in rows.items():
+        held = {k: v for k, v in (values or {}).items() if v is not None}
+        name = names.get(row) or row
+        if not held or not name:
+            continue
+        pattern = re.compile(rf"(?<![\w]){re.escape(name)}(?![\w])", re.I)
+        spans = [m.span() for m in pattern.finditer(text)]
+        if not spans:
+            continue
+        if len(held) > 1:
+            mine = [ln for ln in lines if pattern.search(ln)]
+            best = max(mine, key=lambda ln: sum(bool(_tokens(ln, v)) for v in held.values()), default="")
+            if sum(bool(_tokens(best, v)) for v in held.values()) * 2 < len(held):
+                continue                                   # its line is not in the file: cannot judge
+            out += [{"row": row, "key": k, "held": v, "near": None} for k, v in held.items() if not _tokens(best, v)]
+            continue
+        (key, value), = held.items()
+        # Judge only where it can be judged (ALDF, 15 Oct 2026: 29 false warnings out of 56 on a report whose
+        # state names recur in the prose; 13 on tier names set as headings over many rows).
+        if len(spans) > 2:
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            # Numbers (ranks 1 to 56) also stand for pages and statute sections: judge them only from the
+            # row's own line, never from the nearest number.
+            mine = [ln for ln in lines if pattern.search(ln)]
+            if any(_tokens(ln, value) for ln in mine):
+                continue
+            near = next((c for ln in mine for c in columns[key] if c != value and _tokens(ln, c)), None)
+            if near is not None and len(mine) == 1:
+                out.append({"row": row, "key": key, "held": value, "near": near})
+            continue
+        holders = sum(1 for v in rows.values() if (v or {}).get(key) == value)
+        if isinstance(value, str) and holders > 1 and len(_tokens(text, value)) * 2 < holders:
+            continue                                       # a heading over its rows, not a cell beside each
+        placed = [(abs(p - (a if p < a else b)), cand) for a, b in spans for cand in columns[key]
+                  for p in _tokens(text, cand) if (a - NEAR) <= p <= (b + NEAR)]
+        if not placed:
+            continue
+        nearest = min(placed, key=lambda x: x[0])[1]
+        if nearest != value:
+            out.append({"row": row, "key": key, "held": value, "near": nearest})
+    return out
+
+
+def main(argv) -> int:
+    parser = command_parser("hold-back", "Store a past edition's results where the scorers cannot "
+                                         "see them.")
+    parser.add_argument("--file", required=True,
+                        help="the results, already normalised to the held-back shape (JSON)")
+    parser.add_argument("--original", required=True,
+                        help="the owner's original results file, kept as it was")
+    args = parser.parse_args(argv)
+    project = open_project(args.project)
+
+    source, original = Path(args.file).expanduser(), Path(args.original).expanduser()
+    if not source.is_file():
+        raise HandbookError(f"There is no normalised results file at {source}.")
+    if not original.is_file():
+        raise HandbookError(f"There is no original results file at {original}.")
+    data = read_json(source)
+    try:
+        from . import material
+        text = material.read_text(original)
+    except Exception:  # noqa: BLE001 (a file the reader cannot read is simply not checked)
+        text = ""
+    got = store(project, data, original, source)
+    for c in check_against(project, data, text) if text else []:
+        print(f"Check {c['row']} {c['key']}: held back as {c['held']}"
+              + (f", but the owner's file has {c['near']} beside its name." if c["near"] is not None
+                 else ", but that figure is not on its line in the owner's file."))
+    place, edition, held, name, moved, old = (got["place"], got["edition"], project.held_back, got["original"],
+                                              got["moved"], got["old_edition"])
+    target = got["target"]
     rows = data.get("rows") or {}
     units = {u.get("id") for u in project.read("units").get("units", [])}
     unknown = [r for r in rows if r not in units]
     count = f"{len(rows)} row{'s' if len(rows) != 1 else ''} at {data.get('level')} level"
     if place == "older":
         print(f"Kept the {edition} edition as an older edition: {count}, in "
-              f"{target.relative_to(held.parent)}. The latest past edition is still {old['edition']}: "
+              f"{target.relative_to(held.parent)}. The latest past edition is still {old}: "
               "the comparison and the rebuild check use that one, and older editions show as trends.")
     elif place == "newer":
         print(f"Held back the {edition} edition as the latest past edition: {count}, in {held}. "
-              f"The {old['edition']} edition is kept as an older edition, in history/.")
+              f"The {old} edition is kept as an older edition, in history/.")
     else:
         label = f" (edition {edition})" if edition else ""
         verb = "Replaced last edition's held-back results with these" if place == "same" \

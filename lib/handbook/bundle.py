@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 
-from .checks import _Documents, is_grounded, normalise
+from .checks import _Documents
 from .fetch import weak_why
 from . import control, corrections, feedback
 from .folder import Project, applies, effective_question, read_json
@@ -87,8 +87,10 @@ def _cell(answer: dict | None, check: dict | None, documents: dict, sources=None
             for item in cell["evidence"]:
                 doc = item.get("doc")
                 if (isinstance(doc, str) and sources.kept(doc)
-                        and not is_grounded(normalise(item.get("quote") or ""), sources.source(doc))):
+                        and not sources.found(doc, item.get("quote") or "")):
                     item["not_found"] = True
+                    if sources.has_ocr(doc):
+                        item["ocr"] = True      # some of its pages were read from a picture
     if answer is not None or check:
         check = check or {}
         second = check.get("second_read")
@@ -172,12 +174,16 @@ def make_bundle(project: Project, now: datetime) -> dict:
 
 def evidence_files(project: Project) -> dict[str, dict]:
     """Row id -> {"row", "pages": {"<doc>#<page>": page text}, "notes": {qid: scorer's note}} for
-    every row, holding only the pages its cells cite (kept documents, known page numbers) and the
-    notes that are not empty."""
+    every row with an answer, holding only the pages its cells cite (kept documents, known page
+    numbers) and the notes that are not empty. A row with no answer yet has no file: a long list
+    (EggTrack's 601 rows) would otherwise pass the page's 500 data files before anything is scored."""
     documents = project.documents()
     texts: dict[str, dict] = {}
     out = {}
     for unit, qids, answers, _ in _rows(project):
+        if not any(isinstance(answers.get(q), dict) and (answers[q].get("state") in ("answered", "no_evidence")
+                   or answers[q].get("evidence")) for q in qids):     # not_applicable with evidence counts
+            continue
         pages = {}
         for q in qids:
             for e in (answers.get(q) or {}).get("evidence") or []:
@@ -192,6 +198,30 @@ def evidence_files(project: Project) -> dict[str, dict]:
         out[unit.get("id")] = {"row": unit.get("id"), "pages": dict(sorted(pages.items())),
                                "notes": {q: n for q, n in notes.items() if isinstance(n, str) and n.strip()}}
     return out
+
+
+# Past this many rows with answers, rows share evidence files: a published page may hold at most 500
+# data files, and EggTrack's full run would have 601 rows (14 Oct 2026).
+EVIDENCE_ROW_FILES = 400
+EVIDENCE_PARTS = 100
+
+
+def evidence_part(row: str) -> str:
+    """The shared evidence file a row's evidence goes in: the sum of its id's character codes, mod 100
+    (the page works out the same: viewer/js/data.js)."""
+    return f"part-{sum(map(ord, row)) % EVIDENCE_PARTS:02d}"
+
+
+def evidence_data_files(project: Project) -> dict[str, dict]:
+    """{"evidence/<name>.json": data}: one file per row with answers, or, past EVIDENCE_ROW_FILES rows,
+    shared files {"rows": {row: evidence}} named by evidence_part."""
+    files = evidence_files(project)
+    if len(files) <= EVIDENCE_ROW_FILES:
+        return {f"evidence/{row}.json": ev for row, ev in files.items()}
+    parts: dict[str, dict] = {}
+    for row, ev in files.items():
+        parts.setdefault(f"evidence/{evidence_part(row)}.json", {"rows": {}})["rows"][row] = ev
+    return parts
 
 
 # --- download sheets ------------------------------------------------------------------------

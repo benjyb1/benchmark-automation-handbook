@@ -12,6 +12,8 @@ def _reason(entry: dict) -> str:
         parts.append("a document was expected but not found")
     if "unsure_document" in entry["why"]:
         parts.append("unsure about a document on question " + ", ".join(entry["questions"]))
+    if "after_cutoff" in entry["why"]:
+        parts.append("an answer cites a document dated after the cut-off: look for the version current then")
     return "; ".join(parts)
 
 

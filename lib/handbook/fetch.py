@@ -23,14 +23,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from . import readers
 from .folder import HandbookError, now_stamp, write_json
 
 USER_AGENT = "Mozilla/5.0 (compatible; HandbookFetcher/0.1; a benchmark's document collection)"
+# Some government sites refuse any agent that is not a browser (India's mha.gov.in, 14 Oct 2026): a
+# 403 is tried once more as the browser a person would read the page in.
+BROWSER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                 "Chrome/126.0 Safari/537.36")
 TIMEOUT_S = 30.0
-MAX_BYTES = 25_000_000      # guidelines and reports can be large PDFs; bound pathological responses
-TOO_LARGE = "File is larger than 25 MB and was not saved"       # said when a response passes MAX_BYTES
+# Guidelines and reports can be large PDFs (Eroski's annual report is 25.2 MB); bound pathological responses.
+MAX_BYTES = 60_000_000
+TOO_LARGE = "File is larger than 60 MB and was not saved"       # said when a response passes MAX_BYTES
 RETRY_WAIT_S = 2.0
-EXTENSIONS = {"pdf": ".pdf", "html": ".html", "text": ".txt"}
+EXTENSIONS = readers.EXTENSIONS          # the extension each kind is saved with (a picture keeps its own)
+# Where the Mac keeps its trusted certificates: the tool's own Python may not know them all
+# (7-Eleven's site, 14 Oct 2026: refused by the tool, fetched by curl).
+SYSTEM_CERTS = "/etc/ssl/cert.pem"
 
 
 # --- fetching -----------------------------------------------------------------------------------
@@ -42,19 +51,47 @@ class FetchResult:
     content: bytes
     content_type: str                 # lower case, without parameters
     failure: Optional[str] = None     # None on success; else "http-404" or "request-error: X"
+    final_url: Optional[str] = None   # where the request ended up after redirects, when known
 
     @property
     def ok(self) -> bool:
         return self.failure is None and self.status_code == 200 and bool(self.content)
 
 
-def _get_once(url: str, timeout: float) -> FetchResult:
-    """One GET. Never raises: trouble comes back as a FetchResult with `failure` set."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "*/*"})
+def _cert_failure(exc) -> bool:
+    import ssl
+    reason = getattr(exc, "reason", exc)
+    return isinstance(reason, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(reason)
+
+
+def _landed_home(asked: str, final: str) -> bool:
+    """Whether a link to a page deep in a site was sent to the site's home page instead (CPF's old
+    report links, 14 Oct 2026: five addresses saved as five copies of the new home page)."""
+    if not final or final == asked:
+        return False
+    homes = ("", "index.html", "index.htm", "index.php", "home", "en", "en/home")
+    a, f = urllib.parse.urlsplit(asked), urllib.parse.urlsplit(final)
+    a_path, f_path = a.path.strip("/").lower(), f.path.strip("/").lower()
+    same_host = a.netloc.lower().removeprefix("www.") == f.netloc.lower().removeprefix("www.")
+    if same_host and (a_path == f_path or a_path in homes):
+        return False                   # a slash or www gained, or a home page asked for (code review)
+    return f_path in homes and not f.query
+
+
+def _get_once(url: str, timeout: float, context=None, agent: str = USER_AGENT) -> FetchResult:
+    """One GET. Never raises: trouble comes back as a FetchResult with `failure` set. A certificate
+    the tool's Python cannot check is tried once more against the Mac's own trusted certificates."""
+    req = urllib.request.Request(url, headers={"User-Agent": agent, "Accept": "*/*"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opened = (urllib.request.urlopen(req, timeout=timeout, context=context) if context is not None
+                  else urllib.request.urlopen(req, timeout=timeout))
+        with opened as resp:
             content = resp.read(MAX_BYTES + 1)          # one byte over tells us the file is too big
             status = getattr(resp, "status", 200) or 200
+            final = resp.geturl() if hasattr(resp, "geturl") else url
+            if _landed_home(url, final):
+                return FetchResult(url, 0, b"", "", failure="redirected-home")
+            final_url = final if final and final != url else None
             ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
             if len(content) > MAX_BYTES:
                 return FetchResult(url, status, b"", ctype, failure="too-large")
@@ -66,14 +103,59 @@ def _get_once(url: str, timeout: float) -> FetchResult:
     except urllib.error.HTTPError as exc:
         return FetchResult(url, exc.code, b"", "", failure=f"http-{exc.code}")
     except Exception as exc:  # noqa: BLE001  (URLError, socket timeout, bad scheme)
+        if _cert_failure(exc):
+            if context is None and os.path.isfile(SYSTEM_CERTS):
+                import ssl
+                return _get_once(url, timeout, ssl.create_default_context(cafile=SYSTEM_CERTS), agent)
+            return _curl(url, timeout) or FetchResult(url, 0, b"", "", failure="ssl-cert")
         return FetchResult(url, 0, b"", "", failure=f"request-error: {type(exc).__name__}")
-    return FetchResult(url, status, content, ctype, failure=None if status == 200 else f"http-{status}")
+    return FetchResult(url, status, content, ctype, failure=None if status == 200 else f"http-{status}",
+                       final_url=final_url)
+
+
+def _curl(url: str, timeout: float) -> Optional[FetchResult]:
+    """The Mac's own curl, which checks certificates with the system's store: INAO's site failed the
+    tool's Python even with the Mac's certificate file, and curl fetched it in under a second (ALI,
+    14 Oct 2026). None when curl is missing or fails too."""
+    import shutil
+    import subprocess
+    curl = shutil.which("curl") or ("/usr/bin/curl" if os.path.isfile("/usr/bin/curl") else None)
+    if not curl:
+        return None
+    try:
+        proc = subprocess.run([curl, "-sSL", "--proto", "=http,https", "--proto-redir", "=http,https",
+                               "--max-time", str(int(timeout)), "--max-filesize", str(MAX_BYTES),
+                               "-A", BROWSER_AGENT, "-w", "\n%{http_code} %{content_type} %{url_effective}",
+                               "--url", url],
+                              capture_output=True, timeout=timeout + 10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode == 63:                         # curl: the file is over --max-filesize
+        return FetchResult(url, 0, b"", "", failure="too-large")
+    body, _, tail = proc.stdout.rpartition(b"\n")
+    parts = tail.decode("ascii", "replace").split(" ", 2)
+    if proc.returncode != 0 or not parts[0].isdigit():
+        return None
+    if len(body) > MAX_BYTES:                         # no length sent, so curl could not stop it
+        return FetchResult(url, 0, b"", "", failure="too-large")
+    status, ctype = int(parts[0]), (parts[1] if len(parts) > 1 else "").split(";")[0].strip().lower()
+    if len(parts) > 2 and _landed_home(url, parts[2].strip()):
+        return FetchResult(url, 0, b"", "", failure="redirected-home")
+    return FetchResult(url, status, body if status == 200 else b"", ctype,
+                       failure=None if status == 200 and body else f"http-{status}")
 
 
 def fetch_bytes(url: str, timeout: float = TIMEOUT_S, retries: int = 1) -> FetchResult:
     """Polite GET: a real User-Agent, a 30-second timeout and one retry when the site did not
     answer, said it was busy (429) or failed (5xx). Anything else (404, 403) is final."""
+    url = url.strip().replace(" ", "%20")            # an address copied with spaces (ALI, 14 Oct 2026)
     result = _get_once(url, timeout)
+    if result.status_code == 403:
+        result = _get_once(url, timeout, agent=BROWSER_AGENT)
+    if result.status_code == 403:
+        # Some sites refuse Python's own connection whatever it calls itself (carrefour.com, OWA test,
+        # 15 Oct 2026) but serve the Mac's curl.
+        result = _curl(url, timeout) or result
     for _ in range(retries):
         if result.ok or not (result.status_code in (0, 429) or result.status_code >= 500):
             break
@@ -85,6 +167,12 @@ def fetch_bytes(url: str, timeout: float = TIMEOUT_S, retries: int = 1) -> Fetch
 def describe_failure(result: FetchResult) -> str:
     if result.failure == "too-large":
         return TOO_LARGE[0].lower() + TOO_LARGE[1:]
+    if result.failure == "ssl-cert":
+        return "the site's security certificate could not be checked"
+    if result.failure == "redirected-home":
+        return "the site sent the address to its home page, so the page is no longer there"
+    if result.failure == "http-202":
+        return "the site answered 202 (it often means a check for robots, with no page sent)"
     if result.failure and result.failure.startswith("http-"):
         return f"the site answered {result.failure[5:]}"
     if result.failure:
@@ -123,19 +211,48 @@ def decode_html(data: bytes) -> str:
         return data.decode("cp1252", errors="replace")
 
 
-def extract_text_html(content: str | bytes, url: str = "") -> str:
-    """The text of an HTML page: comments, scripts and styles dropped, tags stripped, entities
-    decoded, whitespace collapsed to single spaces."""
+_BLOCK = r"(?:p|div|br|li|ul|ol|h[1-6]|tr|table|section|article|header|footer|dt|dd|blockquote|pre|hr|form|nav|aside|main|figure|figcaption|details|summary|fieldset|caption|thead|tbody|tfoot)"
+
+
+def html_text(content: str | bytes, links: bool = False, pictures: bool = False) -> str:
+    """The text of an HTML page as a reader sees it: a line for each block (paragraph, heading, list item, table
+    row, line break), a tab between table cells, runs of spaces collapsed inside a line and empty lines left out.
+    Comments, scripts and styles are dropped and entities decoded. `links`: each link followed by where it goes
+    ("the BAP standard (https://bap.example/std)"). `pictures`: each picture as its alt text or file name (ACES
+    gives each camp's level only as a logo)."""
     if isinstance(content, bytes):
         content = decode_html(content)
     if not content:
         return ""
-    text = re.sub(r"(?s)<!--.*?-->", " ", content)
-    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
-    text = re.sub(r"(?s)<[^>]+>", " ", text)
-    text = html.unescape(text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    body = re.sub(r"(?s)<!--.*?-->", " ", content)
+    body = re.sub(r"(?is)<(script|style|noscript)[^>]*>.*?</\1>", " ", body)
+    if pictures:
+        def picture(m):
+            tag = m.group(0)
+            alt = re.search(r"""alt\s*=\s*["']([^"']*)["']""", tag, re.I)
+            src = re.search(r"""src\s*=\s*["']([^"']*)["']""", tag, re.I)
+            name = (alt.group(1).strip() if alt else "") or (src.group(1).rsplit("/", 1)[-1].split("?")[0] if src else "")
+            return f" [picture: {html.unescape(name)}] " if name else " "
+        body = re.sub(r"(?is)<img\b[^>]*>", picture, body)
+    if links:
+        def link(m):
+            href = html.unescape(m.group(1))
+            return f"{m.group(2)} ({href})" if href.startswith("http") and href not in m.group(2) else m.group(2)
+        body = re.sub(r"""(?is)<a\b[^>]*?href\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a>""", link, body)
+    body = re.sub(rf"(?is)</?{_BLOCK}\b[^>]*>", "\n", body)
+    body = re.sub(r"(?is)</t[dh]\s*>", "\t", body)
+    body = re.sub(r"(?s)<[^>]+>", " ", body)
+    body = html.unescape(body)
+    lines = [re.sub(r"[ \u00a0\r\f\v]+", " ", ln).strip(" ") for ln in body.split("\n")]
+    lines = ["\t".join(c.strip() for c in ln.split("\t")).strip("\t") for ln in lines]
+    return "\n".join(ln for ln in lines if ln.strip())
+
+
+def extract_text_html(content: str | bytes, url: str = "") -> str:
+    """The text of an HTML page, a line for each paragraph, heading, list item, table row and line break (see
+    `html_text`). It used to run every line together; the quote check does not care, but a scorer reading a
+    page of rules or a table does."""
+    return html_text(content)
 
 
 def html_title(content: str | bytes) -> str:
@@ -158,21 +275,10 @@ def title_from_url(url: str) -> str:
     return title_from_name(parts.path.rstrip("/").rsplit("/", 1)[-1]) or parts.netloc or url
 
 
-def kind_of(content: bytes, content_type: str = "") -> Optional[str]:
-    """"pdf", "html" or "text" for what the handbook can read; None for anything else."""
-    if b"%PDF-" in content[:1024]:
-        return "pdf"
-    ctype = (content_type or "").lower()
-    if "html" in ctype:
-        return "html"
-    if ctype.startswith("text/"):
-        return "text"
-    if ctype:
-        return None
-    head = content[:2048].lower()                       # no content type: look at the bytes
-    if b"<html" in head or b"<!doctype html" in head:
-        return "html"
-    return None if b"\x00" in content[:2048] else "text"
+def kind_of(content: bytes, content_type: str = "", name: str = "") -> Optional[str]:
+    """What the handbook can read the file as: "pdf", "image", "html", "text", "sheet" and the other
+    kinds in readers.py; None for anything else. One list for fetch, add-document and the Set-up uploads."""
+    return readers.kind_of(content, content_type, name)
 
 
 # --- ids ----------------------------------------------------------------------------------------
@@ -240,10 +346,14 @@ def resolve_rows(project, rows=None, group=None) -> list[str]:
 
 
 def add_to_found(project, rows, doc_id: str) -> list[str]:
-    """Put `doc_id` in `found/<row>.json` for each row; returns the rows it was newly added to."""
+    """Put `doc_id` in `found/<row>.json` for each row; returns the rows it was newly added to. A row it
+    was taken off (`found --remove`) is skipped: re-fetching the page must not put it back (ACES re-test,
+    15 Oct 2026: a page giving the camp's ACES level came back on the next fetch)."""
     added = []
     for row in rows:
         found = project.found(row)
+        if doc_id in (found.get("removed") or []):
+            continue
         found["row"] = row
         docs = found.setdefault("documents", [])
         if doc_id not in docs:
@@ -275,9 +385,31 @@ def misleading_title(title: str, text: str) -> bool:
     return bool(title and _NOT_FOUND_TITLE.search(title)) and len((text or "").strip()) > 4 * STUB_CHARS
 
 
+def held_back_copy(project, data: bytes) -> Optional[str]:
+    """The name of the owner's held-back file that `data` is a copy of, or None. OWA (15 Oct 2026): the
+    tracker's whole key, a Google Sheet export served from docs.google.com, was fetched as a document,
+    byte for byte the file the owner gave as last results."""
+    held = getattr(project, "held_back", None)
+    if held is None or not held.is_dir():
+        return None
+    digest = hashlib.sha1(data).hexdigest()
+    squeeze = (lambda b: re.sub(rb"\s+", b"", b))
+    small = squeeze(data) if len(data) < 30_000_000 else None
+    for f in held.rglob("*"):
+        if f.is_file() and f.suffix.lower() != ".json":
+            raw = f.read_bytes()
+            if hashlib.sha1(raw).hexdigest() == digest or (small is not None and small and squeeze(raw) == small):
+                return f.name
+    return None
+
+
 def store_document(project, meta: dict, data: bytes, extension: str) -> Path:
     """Write `documents/<id>/original<extension>`, then meta.json (its presence marks the
-    document as filed). Returns the folder."""
+    document as filed). Returns the folder. Refuses a copy of the owner's held-back results."""
+    copy = held_back_copy(project, data)
+    if copy:
+        raise HandbookError(f"This file is a copy of last edition's results the owner gave ({copy}), which "
+                            "scorers must never see, so it was not saved.")
     folder = project.doc_dir(meta["id"])
     folder.mkdir(parents=True, exist_ok=True)
     target = folder / f"original{extension}"
@@ -286,6 +418,20 @@ def store_document(project, meta: dict, data: bytes, extension: str) -> Path:
     os.replace(tmp, target)
     write_json(folder / "meta.json", meta)
     return folder
+
+
+def set_as_at(project, doc_id: str, when: str) -> None:
+    """Record the date a document speaks as at, given by whoever filed it (`date_basis` "owner"):
+    it outranks the PDF's own date, which is often when the file was saved, not what it states
+    (ALDF's compendium: saved 2026-01-24, the law as at 1 September 2025)."""
+    from .folder import read_json
+    from .shapes import is_date
+    if not is_date(when):
+        raise HandbookError(f"--date must be a date like 2025-09-01, not {when!r}.")
+    path = project.doc_dir(doc_id) / "meta.json"
+    meta = read_json(path)
+    meta["date"], meta["date_basis"] = when, "owner"
+    write_json(path, meta)
 
 
 def has_document(project, doc_id: str) -> bool:

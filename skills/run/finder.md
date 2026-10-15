@@ -43,8 +43,16 @@ Row mode, one command per document:
 `python3 "LIB/hb.py" fetch URL --project "PROJECT" --row ROW_ID --how plan`
 
 - `--how plan` when the plan led you there, `last_year` when last year's list did, `search` otherwise.
+- `--date YYYY-MM-DD` when the document states the date it speaks as at ("the law as at 1 September
+  2025", "data for 2024"): that date, not the file's, is checked against the cut-off.
 - Group mode: `--group LABEL=VALUE` in place of `--row`, only for documents that speak for every row with that value.
 - Weak sources: when what you save is not in the organisation's own words (a news article, blog post, aggregator, directory listing, or someone else's write-up), add `--weak "WHY"` with one line saying why, for example `--weak "A news report of the policy, not the company's own words"`. A copy on a third-party site counts as weak without it. The scorer still uses weak sources; the owner sees which answers rest only on them.
+- A picture (a menu poster, a screenshot, a scanned page) is saved the same way: `fetch` keeps it and `prepare` reads the words in it, so an organisation that publishes its allergen table or its policy only as a JPG is not a missing document. The same goes for Word, PowerPoint, Excel, JSON, XML, rich text and email files. Video and audio are not read yet: look for a transcript.
+- If fetch cannot get or read the address and you can download it another way, file the download
+  with `python3 "LIB/hb.py" add-document FILE --project "PROJECT" --rows ROW_ID --url URL`, so it
+  keeps where it came from.
+- A document saved by mistake (dated after the cut-off, another organisation's, a page giving the
+  benchmark's own result): `python3 "LIB/hb.py" found --project "PROJECT" --row ROW_ID --remove DOC`.
 - If fetch cannot get or read the address, try one archived copy. If that fails too, record it as not found (below) and name the address in `--looked`.
 - When fetch says the page is a script shell, it has already tried the page as a browser shows it and the archive's capture. If it still says "Not kept", do not try that address again: record it as not found with the address in `--looked`, and look for the same words elsewhere (a PDF, a press release, a page the site serves as text).
 - Do not run `prepare` or any other command; the controller does.

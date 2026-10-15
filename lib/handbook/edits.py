@@ -92,6 +92,13 @@ class _Folder:
             self.touch(row)
 
     def save(self) -> None:
+        if "rules" in self.dirty and self.rules and all(r.get("status") in ("decided", "skipped")
+                                                        for r in self.rules.values()):
+            # Every rule settled: the checklist item is done (ALI, 14 Oct 2026: it stayed "draft").
+            checklist = self.docs["project"].setdefault("checklist", {})
+            if checklist.get("rules") not in ("confirmed", "skipped", "not_needed"):
+                checklist["rules"] = "confirmed"
+                self.dirty.add("project")
         for name in ("project", "questions", "units", "rules"):
             if name in self.dirty:
                 self.project.write(name, self.docs[name])
@@ -220,6 +227,12 @@ def _decide(f: _Folder, d: dict, via: str) -> str | None:
     for row, qid, cell in f.live_cells():
         if rid in (cell.get("rules") or []):
             f.flag(row, qid, cell)
+            # The cell no longer rests on Claude's own reading once its rules are settled (ChickenTrack,
+            # 15 Oct 2026: 'judgement 32' after every rule was decided).
+            still_open = any((f.rules.get(r) or {}).get("status") in ("open", "skipped") for r in cell.get("rules") or [])
+            if cell.get("judgement") is True and not still_open:
+                cell["judgement"] = False
+                f.touch(row)
     return None
 
 

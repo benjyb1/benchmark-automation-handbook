@@ -201,6 +201,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
 
   function valueWord(q, value) {
     if (value == null) return "no value";
+    if (HB.isFigureQuestion(q)) return isNum(value) ? HB.figureText(q, value) : String(value);
     if (q && q.answer && q.answer.kind === "yes_no") {
       const s = String(value);
       return s.charAt(0).toUpperCase() + s.slice(1);
@@ -1151,6 +1152,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     }
     const onPage = bad.length ? bad.some((i) => isNum(items[i].page)) : items.some((e) => isNum(e.page));
     text += " The answer may still be right: " + (onPage ? "check the saved page." : "open the source and look for " + (bad.length > 1 ? "the quotes." : "the quote."));
+    // A saved page whose words were read from a picture (a poster, a scan) can hold a wrong letter; the check allows a slip, but not this one.
+    if ((bad.length ? bad.map((i) => items[i]) : items).some((e) => e.ocr)) text += " Its words were read from a picture, so look at the picture as well.";
     const jumps = n > 1 && bad.length < n && quotes ? bad.map((i) => h("button", { type: "button", class: "cellp-link", onclick: () => quotes.show(i) }, "Show quote " + num(i))) : [];
     return [text, jumps.length ? h("span", { class: "cellp-jump" }, jumps) : null];
   }

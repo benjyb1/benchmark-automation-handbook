@@ -34,12 +34,60 @@ ARCHIVE_CDX = ("https://web.archive.org/cdx/search/cdx?url={url}&output=json&fil
 ARCHIVE_RAW = "https://web.archive.org/web/{stamp}id_/{url}"       # id_: the page as captured, no toolbar
 ARCHIVE_PAGE = "https://web.archive.org/web/{stamp}/{url}"         # the page as the archive shows it
 
+# Run in the page before its text is taken: open every <details>, every section a button marks
+# aria-expanded="false" (accordions, "read more"), and show each tab's panel in turn. A page that keeps its
+# words behind these shows none of them in innerText (Common Sense's privacy policies: 7 of 9 misses). The
+# words of every state are joined, each line once, the open page first. Clicks are skipped on links that
+# lead elsewhere, menus and dialogs. Returns the text.
+EXPAND_JS = r"""
+async () => {
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const seen = new Set();
+  const lines = [];
+  const take = () => {
+    const text = document.body ? document.body.innerText : '';
+    for (const raw of text.split('\n')) {
+      const t = raw.trim();
+      if (t && !seen.has(t)) { seen.add(t); lines.push(t); }
+    }
+  };
+  const safe = (el) => {
+    if (el.matches('a[href]')) {
+      const href = el.getAttribute('href') || '';
+      if (!(href.startsWith('#') || href.startsWith('javascript'))) return false;
+    }
+    return !el.hasAttribute('aria-haspopup') || el.getAttribute('aria-haspopup') === 'false';
+  };
+  for (const d of document.querySelectorAll('details:not([open])')) d.open = true;
+  for (let round = 0; round < 3; round++) {
+    const closed = [...document.querySelectorAll('[aria-expanded="false"]')].filter(safe).slice(0, 80);
+    if (!closed.length) break;
+    for (const el of closed) { try { el.click(); } catch (e) { /* a button that will not click */ } }
+    await sleep(150);
+    for (const d of document.querySelectorAll('details:not([open])')) d.open = true;
+  }
+  for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
+    panel.hidden = false;
+    if (getComputedStyle(panel).display === 'none') panel.style.display = 'block';
+  }
+  take();
+  const tabs = [...document.querySelectorAll('[role="tab"]')].filter((t) => t.getAttribute('aria-selected') !== 'true' && safe(t)).slice(0, 40);
+  for (const tab of tabs) {
+    try { tab.click(); } catch (e) { continue; }
+    await sleep(120);
+    take();
+  }
+  return lines.join('\n');
+}
+"""
+
 # Run in the interpreter that has Playwright: print the page's visible text as JSON (one string),
 # or nothing and exit 3 when the page cannot be opened.
 _SCRIPT = r"""
 import json, sys
 from playwright.sync_api import sync_playwright
 url = sys.argv[1]
+EXPAND_JS = sys.argv[2]
 with sync_playwright() as p:
     try:
         browser = p.chromium.launch(channel="chrome", headless=True)
@@ -54,7 +102,10 @@ with sync_playwright() as p:
         except Exception:
             browser.close(); sys.exit(3)
     page.wait_for_timeout(1500)
-    text = page.evaluate("() => document.body ? document.body.innerText : ''")
+    try:
+        text = page.evaluate(EXPAND_JS)
+    except Exception:
+        text = page.evaluate("() => document.body ? document.body.innerText : ''")
     title = page.title()
     browser.close()
 print(json.dumps({"title": title, "text": text}))
@@ -80,12 +131,12 @@ def renderer() -> Optional[str]:
 
 def render_text(url: str, python: Optional[str] = None) -> Optional[dict]:
     """`{"title", "text"}` of the page as a browser shows it, or None when there is no renderer or
-    the page would not open. `text` is whitespace-collapsed."""
+    the page would not open. `text` keeps its lines (runs of spaces collapsed, blank lines dropped)."""
     python = python or renderer()
     if python is None:
         return None
     try:
-        got = subprocess.run([python, "-c", _SCRIPT, url], capture_output=True, text=True,
+        got = subprocess.run([python, "-c", _SCRIPT, url, EXPAND_JS], capture_output=True, text=True,
                              timeout=RENDER_TIMEOUT_S)
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -96,7 +147,8 @@ def render_text(url: str, python: Optional[str] = None) -> Optional[dict]:
     except (json.JSONDecodeError, IndexError):
         return None
     return {"title": re.sub(r"\s+", " ", out.get("title") or "").strip()[:200],
-            "text": re.sub(r"\s+", " ", out.get("text") or "").strip()}
+            "text": "\n".join(ln for ln in (re.sub(r"[ \t\u00a0\r\f\v]+", " ", x).strip()
+                                           for x in (out.get("text") or "").split("\n")) if ln)}
 
 
 def archive_captures(url: str, before: Optional[str] = None, limit: int = 3) -> list[str]:
@@ -109,14 +161,37 @@ def archive_captures(url: str, before: Optional[str] = None, limit: int = 3) -> 
     probe = fetch.fetch_bytes(query, retries=2)          # the index answers empty now and then
     if not probe.ok or not probe.content.strip():
         probe = fetch.fetch_bytes(query, retries=1)
+    global LAST_ARCHIVE_STATE
     if not probe.ok:
+        LAST_ARCHIVE_STATE = "unreachable"
         return []
     try:
         rows = json.loads(probe.content.decode("utf-8", "replace"))
     except json.JSONDecodeError:
+        LAST_ARCHIVE_STATE = "unreachable"
         return []
     stamps = [r[1] for r in rows[1:] if isinstance(r, list) and len(r) > 1 and re.fullmatch(r"\d{14}", str(r[1]))]
+    LAST_ARCHIVE_STATE = "found" if stamps else "none"
     return sorted(stamps, reverse=True)
+
+
+# What the last archive_captures call met: "found", "none" (the index answered with no capture before
+# the date), or "unreachable" (the index did not answer). ChickenTrack (15 Oct 2026): an archive that
+# refused connections was reported as having no copy.
+LAST_ARCHIVE_STATE = "none"
+
+
+def archive_why_not(url: str, before: Optional[str]) -> str:
+    """Why the archive gave no usable copy, in words: unreachable, no capture at all, or only captures
+    after the cut-off (with the earliest)."""
+    if LAST_ARCHIVE_STATE == "unreachable":
+        return "the web archive did not answer (try again later)"
+    if before:
+        later = archive_captures(url, None, limit=1)
+        if later:
+            return (f"the web archive has no copy from before the cut-off (its latest is from "
+                    f"{later[0][:4]}-{later[0][4:6]}-{later[0][6:8]})")
+    return "the web archive has no copy of it"
 
 
 ARCHIVE_NEAR_DAYS = 365   # an archive capture this close before a past cut-off is preferred to today's page
@@ -148,7 +223,7 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
     when the documents had to be out, not as it is today (`prefer_archive`, by default whether the
     cut-off has passed). Then the live page rendered, then the archive's raw capture, then that
     capture rendered. Returns
-    `{"kind": "text"|"html"|None, "content": bytes, "title", "text_source": "rendered"|"archive"|
+    `{"kind": "text"|"html"|"pdf"|None, "content": bytes, "title", "text_source": "rendered"|"archive"|
     "archive_rendered"|None, "archive_url", "tried": [...], "why": ...}`; `kind` None means nothing
     readable was found and `why` says what was tried, for meta.json's `not_kept_why`."""
     tried = []
@@ -158,6 +233,10 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
     if prefer_archive and before:
         for stamp in [x for x in archive_captures(url, before) if _near(x, before)][:2]:
             raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+            if raw.ok and fetch.kind_of(raw.content, raw.content_type) == "pdf":     # the file the link is for
+                out.update(kind="pdf", content=raw.content, title="", text_source="archive",
+                           archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
+                return out
             if raw.ok and not is_shell(fetch.extract_text_html(raw.content)):
                 out.update(kind="html", content=raw.content, title=fetch.html_title(raw.content),
                            text_source="archive", archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
@@ -186,6 +265,10 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
         tried.append("the archive has no capture of it")
     for stamp in stamps[:2]:
         raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+        if raw.ok and fetch.kind_of(raw.content, raw.content_type) == "pdf":
+            out.update(kind="pdf", content=raw.content, title="", text_source="archive",
+                       archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
+            return out
         if raw.ok and not is_shell(fetch.extract_text_html(raw.content)):
             out.update(kind="html", content=raw.content, title=fetch.html_title(raw.content),
                        text_source="archive", archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
@@ -202,20 +285,64 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
     return out
 
 
+_CHALLENGE = re.compile(rb"(?i)(captcha|cf-chl|challenge-platform|verify you are (?:a )?human|are you a robot|"
+                        rb"checking your browser|ddos protection|access denied|request rejected|radware|"
+                        rb"bot (?:detection|protection))")
+
+
+def is_challenge(content: bytes) -> bool:
+    """Whether a short page is a robot check or a refusal rather than the document."""
+    return len(content) < 60_000 and bool(_CHALLENGE.search(content[:60_000]))
+
+
+# A short page that is only a cookie banner or a location picker is not the menu (Patty Battles,
+# 15 Oct 2026: Whataburger's and three Burger King pages, 316 to 896 characters, kept as menus).
+_GATE = re.compile(r"(?:select|choose|pick|find|enter) (?:a|your) (?:location|restaurant|store|address|zip)|"
+                   r"to (?:view|see) (?:the |our )?menu|we use cookies|cookie (?:settings|preferences|policy)|"
+                   r"accept (?:all )?cookies|enable location|"
+                   # Firewall blocks, login walls and 'needs JavaScript' notices in other languages (Global
+                   # Tobacco Index, 15 Oct 2026: all three were kept as documents).
+                   r"requested url was rejected|access denied|request rejected|support id is|"
+                   r"(?:log|sign) ?in to (?:continue|view|access)|please (?:log|sign) ?in|"
+                   r"javascript (?:ist )?(?:erforderlich|deaktiviert)|activer (?:le )?javascript|"
+                   r"javascript (?:est )?(?:désactivé|requis)|habilite (?:o |el )?javascript", re.I)
+GATE_CHARS = 2000
+# A country, region or language chooser served in place of the document (Beyond Compliance, 15 Oct 2026: a .pdf
+# link gave 9,447 characters starting "Please select your country / region", kept as the document). It is a list
+# of short names, so it can run far past GATE_CHARS: it is a gate when it opens with the prompt and is mostly
+# short lines.
+_SELECTOR = re.compile(r"(?:select|choose|pick) (?:your |a |the )?(?:country|region|language|market|location|site)|"
+                       r"country\s*/\s*region|region\s*/\s*language|(?:country|region) selector", re.I)
+
+
+def _mostly_short_lines(text: str) -> bool:
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return len(lines) >= 15 and sum(1 for ln in lines if len(ln) <= 40) >= 0.7 * len(lines)
+
+
 def is_shell(text: str) -> bool:
-    """Whether a page's text is a script shell or an error page rather than its words."""
+    """Whether a page's text is a script shell, a gate (cookie banner, location or country chooser) or an error
+    page rather than its words."""
     from .prepare import is_stub                     # prepare imports fetch; keep the cycle lazy
+    if len((text or "").strip()) < GATE_CHARS and (_GATE.search(text or "") or _SELECTOR.search(text or "")):
+        return True
+    if _SELECTOR.search((text or "")[:400]) and _mostly_short_lines(text):
+        return True
     return is_stub([text]) or bool(re.search(
         r"page (?:you (?:were|are) looking for )?(?:was |has |could not be |cannot be )?(?:not found|moved|"
-        r"doesn't exist|does not exist|found)|site can.t be reached", text or "", re.I))
+        r"doesn't exist|does not exist|found)|site can.t be reached|"
+        r"^\W*(?:fatal error|parse error|internal server error|service unavailable|bad gateway)\b", text or "", re.I))
 
 
 def archive_copy(url: str, before: Optional[str] = None) -> Optional[fetch.FetchResult]:
     """The raw page of the Wayback Machine's latest capture of `url` on or before `before`, as a
     FetchResult whose `url` is the archive address; None when there is no capture or it could not
     be fetched."""
-    for stamp in archive_captures(url, before):
+    for stamp in archive_captures(url, before, limit=6):
         got = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
-        if got.ok:
+        # A capture of a robot check or an error is not the page (Planalto's 30-31 Dec 2019 captures,
+        # 14 Oct 2026): try an earlier one.
+        if got.ok and not (fetch.kind_of(got.content, got.content_type) == "html"
+                           and (is_shell(fetch.extract_text_html(got.content)) or is_challenge(got.content))):
             return got
     return None
