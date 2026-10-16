@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents
 from .fetch import weak_why
-from . import control, corrections, feedback
+from . import control, corrections, edition
 from .folder import Project, applies, effective_question, read_json
 from .custom_charts import read_charts
 from .deck import checked_decks
@@ -116,10 +116,12 @@ def _results(project: Project) -> dict:
     with a comparison that has past editions, also `history` (compare.json's own, for the charts
     that draw trends)."""
     compare = read_json(project.file("compare/compare"))
+    if isinstance(compare, dict) and edition.is_free():      # the free edition compares with one edition and shows no trends
+        compare = {k: v for k, v in compare.items() if k != "history"}
     out = {"report": _text_or_none(project.path / "report" / "report.md"),
            "facts": read_json(project.file("report/facts")), "compare": compare,
            "charts": read_charts(project), "drafting": drafting(project)}
-    if isinstance(compare, dict) and compare.get("history"):
+    if isinstance(compare, dict) and compare.get("history") and edition.is_full():
         out["history"] = compare["history"]
     return out
 
@@ -131,14 +133,17 @@ def make_bundle(project: Project, now: datetime) -> dict:
     documents = project.documents()
     sources = _Documents(project)
     cells, totals, found, unchecked = {}, {}, {}, {}
+    feedback = edition.optional("feedback")        # None in the free edition: it has no feedback round
     for unit, qids, answers, checks in _rows(project):
         row = unit.get("id")
-        unchecked[row] = feedback.unchecked_questions(answers, checks, qids)
+        if feedback:
+            unchecked[row] = feedback.unchecked_questions(answers, checks, qids)
         cells[row] = {q: _cell(answers.get(q), checks.get(q), documents, sources) for q in qids}
         totals[row] = row_totals(project, unit, answers)
         found[row] = project.found(row)
     out = {
         "contract": CONTRACT,
+        "edition": edition.edition(),        # "free" or "full": the page words what it offers by it
         "generated": stamp(now),
         "project": {k: v for k, v in proj.items() if k != "provided"},
         "provided": [{"name": PurePosixPath(str(p.get("file") or "")).name, "role": p.get("role"),
@@ -166,7 +171,7 @@ def make_bundle(project: Project, now: datetime) -> dict:
         "decks": checked_decks(project),
     }
     # The feedback round (packs sent, replies, the owner's decisions), once it has started.
-    part = feedback.bundle_part(project, unchecked)
+    part = feedback.bundle_part(project, unchecked) if feedback else None
     if part is not None:
         out["feedback"] = part
     return out

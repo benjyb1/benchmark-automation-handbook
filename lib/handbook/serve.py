@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import readers
+from . import edition, readers
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home, user_id
 from .page import VIEWER_SRC, json_for_script
@@ -88,7 +88,7 @@ def page_claude_text() -> str:
         text = PAGE_CLAUDE.read_text(encoding="utf-8")
     except OSError:
         return ""
-    return re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
+    return re.sub(r"<!--.*?-->", "", edition.for_this_edition(text), flags=re.S).strip()
 
 
 def open_folder(project: Project, folder: str) -> dict:
@@ -941,7 +941,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "state" and method == "GET":
             name = srv.config.user_name()
             p = srv.project.read("project")
-            return self.json({**srv.worker.state(), "user": {"name": name, "id": user_id(name)},
+            return self.json({**srv.worker.state(), "edition": edition.edition(), "user": {"name": name, "id": user_id(name)},
                               "project": {"name": p.get("name"), "path": str(srv.project.path)}})
         if parts[0] == "material" and method == "GET":
             from . import material
@@ -955,6 +955,8 @@ class Handler(BaseHTTPRequestHandler):
         if parts[0] == "setup":
             return self._setup(method, parts[1:])
         if parts[0] == "feedback":
+            if not edition.has_feedback():                       # the free edition has no feedback round
+                return self.fail(404, edition.in_full("The feedback round"), "not_found")
             return self._feedback(method, parts[1:])
         if path == "page-claude" and method == "GET":
             return self.json({"text": page_claude_text()})

@@ -209,7 +209,7 @@ def prepare_document(project, doc: str) -> dict:
                                           f"the tool cannot read {path.suffix or 'this kind of'} files. It reads "
                                           f"{readers.READABLE_WORDS} files."))
     try:
-        reading = readers.read(path)
+        reading = readers.read(path, evidence=True)
     except HandbookError as e:
         if str(e) == PDF_MISSING:
             raise                                     # said once, not once per PDF

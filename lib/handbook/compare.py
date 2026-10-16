@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from . import answers
+from . import answers, edition
 from .folder import HandbookError, Project, read_json, write_json
 from .scoresheet import round_half_up, row_totals
 from .shapes import REASONS, check_compare, check_held_back, is_date
@@ -106,8 +106,11 @@ def edition_key(edition) -> tuple:
 
 def read_history(project: Project) -> list[dict]:
     """The older editions in the held-back `history/` folder, checked, oldest first ([] when there
-    are none). Raises HandbookError naming the file when one is invalid."""
+    are none). Raises HandbookError naming the file when one is invalid. The free edition keeps no history:
+    it compares with the latest past edition only, and shows no trends."""
     out = []
+    if edition.is_free():
+        return out
     for path in sorted((project.held_back / "history").glob("*.json")):
         data = read_json(path)
         problems = check_held_back(data, history=True)

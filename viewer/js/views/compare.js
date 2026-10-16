@@ -946,7 +946,9 @@
   /* ---- Past editions ----------------------------------------------------------------- */
 
   /** compare.json's history: {editions (oldest first, the latest last), levels, rows: {row: {key: {edition: figure}}}, this_run}. */
-  const historyOf = (c) => (c && c.history) || (bundle().results || {}).history || null;
+  // The free edition compares with one previous edition: no history, so no trends and no older editions.
+  const isFree = () => bundle().edition === "free";
+  const historyOf = (c) => (isFree() ? null : (c && c.history) || (bundle().results || {}).history || null);
   const olderEditions = (hist) => (hist && Array.isArray(hist.editions) && hist.editions.length > 1 ? hist.editions.slice(0, -1) : []);
   const sameFigure = (a, b) => (isNum(a) && isNum(b) ? Math.abs(a - b) < 1e-9 : String(a) === String(b));
 
@@ -983,6 +985,12 @@
     });
     return { level: (hist.levels || {})[edition] || c.level, edition, rows, disagreements: [], big_moves: [],
       summary: { rows: rows.length, agree, of, not_compared: notCompared } };
+  }
+
+  /** The free edition's one line about past editions: this comparison is with one previous edition. */
+  function freeNote() {
+    return h("p", { class: "small muted cmp-free" },
+      "This compares with one previous edition. Following results across several past editions, with trends over time, is in the Full version of the benchmark tool.");
   }
 
   /** "Compare with: 2024 | 2023 | 2022", newest first, when there are older editions. */
@@ -1039,7 +1047,7 @@
     const editions = (hist ? hist.editions : []).filter((e) => isNum(past[e]));
     const now = ((hist && hist.this_run && hist.this_run[mv.row]) || {})[key];
     const nowValue = isNum(now) ? now : isNum(mv.ours) ? mv.ours : null;
-    const trend = mv.trend === "breaks" ? HB.statusChip("warning", "Outside its past range")
+    const trend = isFree() ? null : mv.trend === "breaks" ? HB.statusChip("warning", "Outside its past range")
       : h("span", { class: "small muted" }, mv.trend === "within" ? "Within its past range" : "Too few past editions for a trend");
     const figures = editions.map((e) => `${e} ${figureText(past[e], key)}`).concat(isNum(nowValue) ? [`this run ${figureText(nowValue, key)}`] : []);
     return h("li", { class: "cmp-first__move" },
@@ -1518,7 +1526,7 @@
     const m = picked ? makeModel(c) : mLatest;
     const nouns = parts().unitNouns();
     const first = checkFirst(latest, hist, ctx, mLatest);
-    const editions = editionPicker(hist, ctx);
+    const editions = isFree() ? freeNote() : editionPicker(hist, ctx);
     if (!m.levels.length) {
       root.appendChild(h("div", { class: "stack stack--loose" }, first, editions, agreement(c, m),
         HB.notice("neutral", "No figure is in both editions, so there is nothing to set side by side."), notCompared(c)));

@@ -72,7 +72,6 @@ When the owner asks for a chart ("show the overall scores by country"), write a 
    - `rows`: one line per unit. One column per label, named as the label; one per score-sheet section, named by its id, holding the percent; `overall`; and `band_<of>` for each band set, holding the band's name. Scores are empty for a unit with questions still to score.
    - `cells`: one line per unit and question that applies. `question`, `state` (`Answered`, `No evidence`, `Not applicable`, `Not run`), `value`, `points`, `flags` (flag words joined by commas, empty when none).
    - `compare`: one line per unit and key compared with last edition. `key` (a section id, `overall`, `band:<of>` or a question id), `ours`, `theirs`, `agree` (true or false), `reason` (in words, empty when they agree).
-   - `history`: one line per unit, key and edition. `key`, `edition`, `value`, `source` (`past` or `this run`).
 3. Write the chart file in the scratchpad, not in the project: `{"id", "title", "description", "dataset", "spec"}`. The id is lower case with dashes. The title and a one-sentence description go in the file, not in the spec. Leave out `width`, colours and fonts: the page sizes and colours every chart.
 4. Run `chart add --file <that file>`. It refuses a spec with `data`, `url` or `datasets` anywhere, a spec with no `mark`, and a field the dataset does not have (names a transform makes with `as` are fine). Fix what it lists and add again. Adding the same id again replaces the chart.
 5. Build and publish, then tell the owner where to find it.

@@ -15,6 +15,7 @@ import re
 import shutil
 from pathlib import Path
 
+from . import edition as editions
 from .cli import command_parser, open_project
 from .compare import edition_key
 from .folder import HandbookError, read_json, write_json
@@ -72,6 +73,10 @@ def store(project, data: dict, original: Path, source: Path | None = None) -> di
     latest_path = held / "results.json"
     old = read_json(latest_path) if latest_path.is_file() else None
     place = _place(data, old)
+    if place in ("older", "newer") and not editions.is_full():
+        # The free edition compares with one previous edition. A second one (older, for the trends, or newer,
+        # which would push the first into history) is a Full version feature; nothing is stored.
+        raise HandbookError(editions.past_editions_refusal(old.get("edition") if old else None, data.get("edition")))
     edition = data.get("edition")
     target = held / "history" / f"{_safe(edition)}.json" if place == "older" else latest_path
     replaced = read_json(target, {}).get("original") if target.is_file() and place != "newer" else None

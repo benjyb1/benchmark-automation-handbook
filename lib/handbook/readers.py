@@ -30,7 +30,7 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import ocr
+from . import edition, ocr
 from .folder import HandbookError
 
 try:
@@ -604,11 +604,12 @@ def _render_poppler(path: Path, n: int) -> "_Image.Image | None":
         return im.convert("RGB")
 
 
-def read_pdf(path: Path) -> Reading:
+def read_pdf(path: Path, scans: bool = True) -> Reading:
     """A PDF as pages of text. A page with no text of its own is drawn and read as a picture (OCR); a page
     that is mostly picture with little text is drawn too, its picture kept for the scorer and the words
     in it added to its text. Raises HandbookError when no PDF reader is installed or the file cannot be
-    opened."""
+    opened. With `scans` False (a document read as evidence in the free edition) no page is read from a
+    picture: the reading says how many pages were left unread."""
     reader = pdf_reader()
     if reader is None:
         raise HandbookError(PDF_MISSING)
@@ -638,7 +639,12 @@ def read_pdf(path: Path) -> Reading:
         if not texts:
             raise HandbookError("the PDF could not be read (damaged, or locked with a password).")
         reading = Reading("pdf", texts, info=info)
-        _read_pictures_of_pdf(path, pdf, reading, features)
+        if scans:
+            _read_pictures_of_pdf(path, pdf, reading, features)
+        else:
+            blank = sum(1 for t in texts if len(t.strip()) < SCAN_CHARS)
+            if blank:
+                reading.notes.append(edition.scanned_pages_note(blank))
     finally:
         if pdf is not None:
             pdf.close()
@@ -724,9 +730,12 @@ def _numbers(pages: list[int], limit: int = 8) -> str:
 
 # --- reading a file ----------------------------------------------------------------------------
 
-def read(path: Path, kind: str | None = None) -> Reading:
+def read(path: Path, kind: str | None = None, evidence: bool = False) -> Reading:
     """The pages of the saved file at `path`. `kind` defaults to what its extension says. Raises
-    HandbookError, in words the owner can act on, for a kind it cannot read."""
+    HandbookError, in words the owner can act on, for a kind it cannot read. `evidence` is True when the
+    file is a document the scorers will quote (prepare), False for the owner's set-up material, which
+    is read in every format in both editions: the free edition reads only PDFs (without their scanned
+    pages), web pages and text as evidence."""
     from . import fetch
     path = Path(path)
     kind = kind or kind_for_name(path.name)
@@ -734,8 +743,12 @@ def read(path: Path, kind: str | None = None) -> Reading:
         why = not_yet(path.name)
         raise HandbookError(why or f"The tool cannot read {path.suffix or 'this kind of'} files yet. "
                                    "Save it as a PDF or a text file and add that.")
+    if evidence:
+        refusal = edition.evidence_refusal(kind)
+        if refusal:
+            raise HandbookError(refusal)
     if kind == "pdf":
-        return read_pdf(path)
+        return read_pdf(path, scans=not evidence or edition.is_full())
     if kind == "image":
         return read_image(path)
     if kind in OFFICE_READERS:

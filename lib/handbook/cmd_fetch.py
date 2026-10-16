@@ -121,6 +121,9 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
                             f"cannot read. Nothing was saved. "
                             + (refusal or f"It reads {readers.READABLE_WORDS} files: if you can save it as one of "
                                           "those, add that with add-document."))
+    from . import edition
+    if edition.evidence_refusal(kind):
+        raise HandbookError(f"{url} gave a {readers.LABELS[kind]}. Nothing was saved. {edition.evidence_refusal(kind)}")
     title = (fetch.html_title(result.content) if kind == "html" else "") or fetch.title_from_url(url)
     if kind == "html" and fetch.misleading_title(title, fetch.extract_text_html(result.content)):
         title = fetch.title_from_url(url)   # e.g. "Not Found | joejuice.com" on a page that holds the policy

@@ -19,6 +19,7 @@ import json
 
 from pathlib import Path
 
+from . import edition
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, HandbookError, Project
 from .shapes import ROLES, check_folder
 from .stakes import rule_stakes
@@ -27,7 +28,7 @@ BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels"
           "results_sites")
 WHOLE = {"questions": "questions", "units": "units", "scoresheet": "scoresheet",
          "where_to_look": "where_to_look", "needs": "needs"}
-PARTS = ("basics", "provided", "rules", "last_results", "feedback") + tuple(WHOLE)
+PARTS = ("basics", "provided", "rules", "last_results", "feedback") + tuple(WHOLE)    # "feedback": the Full edition only
 FEEDBACK_FIELDS = ("private_evidence", "sender", "language")    # the business round's three set-up answers
 LOCKED_ONCE_SCORED = ("questions", "units")
 SETUP_RULE_FIELDS = ("kind", "question_ids", "rows", "ask", "options", "recommended", "why", "last_year_note")
@@ -63,7 +64,10 @@ def _write_feedback(project: Project, data: dict) -> dict:
     """The business round's set-up answers (can businesses back up a reply with their own documents, who the packs say
     replies go to, the packs' language). They live in the round's settings, which the Feedback tab's chat
     changes later; saving them marks the questions as asked, so the set-up asks only once."""
-    from . import feedback
+    feedback = edition.optional("feedback")
+    if feedback is None:
+        return {"ok": False, "problems": [edition.in_full("The round with the organisations you score (packs out, "
+                                                           "replies in)")], "said": None}
     unknown = [k for k in data if k not in FEEDBACK_FIELDS]
     if unknown:
         return {"ok": False, "problems": [f"Not part of the business round's set-up: {', '.join(unknown)}. "
@@ -79,8 +83,11 @@ def _write_feedback(project: Project, data: dict) -> dict:
 
 def write_part(project: Project, part: str, data) -> dict:
     """Save one part of the set-up as a draft. Returns {ok, problems, said}."""
-    if part not in PARTS:
-        raise HandbookError(f"There is no set-up part called {part!r}. Parts: {', '.join(PARTS)}.")
+    if part == "feedback" and not edition.has_feedback():
+        return _write_feedback(project, {})
+    parts = PARTS if edition.has_feedback() else tuple(p for p in PARTS if p != "feedback")
+    if part not in parts:
+        raise HandbookError(f"There is no set-up part called {part!r}. Parts: {', '.join(parts)}.")
     if part in LOCKED_ONCE_SCORED and _scored(project):
         return {"ok": False, "problems": [f"Answers are already scored against the {part}, so the whole list "
                                           "cannot be replaced. Change single items with the Edit buttons on the "
@@ -240,9 +247,12 @@ def set_status(project: Project, key: str, status: str) -> dict:
             "said": None if problems else f"{key.replace('_', ' ').capitalize()}: {status.replace('_', ' ')}."}
 
 
-def _feedback_answers(project: Project) -> dict:
-    """The business round's set-up answers as they stand, and whether the owner has been asked yet."""
-    from . import feedback
+def _feedback_answers(project: Project) -> dict | None:
+    """The business round's set-up answers as they stand, and whether the owner has been asked yet (None in
+    the free edition, which has no such round)."""
+    feedback = edition.optional("feedback")
+    if feedback is None:
+        return None
     s = feedback.read_settings(project)
     return {"asked": bool(s["asked_in_setup"]), "private_evidence": s["private_evidence"], "sender": s["sender"],
             "language": s["language"] or project.read("project").get("language") or "the benchmark's own language (English if none is set)"}
@@ -260,7 +270,7 @@ def describe(project: Project, limit: int = 24000) -> dict:
         "checklist": p.get("checklist") or {},
         "provided": p.get("provided") or [],
         "answers_scored": _scored(project),
-        "feedback": _feedback_answers(project),
+        **({"feedback": _feedback_answers(project)} if edition.has_feedback() else {}),
         "questions": qs,
         "units": {"count": len(units), "first": units[:8]},
         "scoresheet": project.read("scoresheet"),

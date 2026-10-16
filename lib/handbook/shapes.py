@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import answers
+from . import edition as editions
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, ID_RE, Project
 
 STAGES = ("setup", "trial", "running", "done")
@@ -1471,9 +1472,9 @@ def check_folder(project: Project) -> list[str]:
         if data is not None:
             _add(probs, rel, check(data))
     fb_state = _load(root / "feedback" / "state.json", "feedback/state.json", probs)
-    if fb_state is not None:
-        from .feedback import check_state
-        _add(probs, "feedback/state.json", check_state(fb_state))
+    feedback = editions.optional("feedback")
+    if fb_state is not None and feedback is not None:      # the free edition has no feedback round to check
+        _add(probs, "feedback/state.json", feedback.check_state(fb_state))
     for rel in ("estimate.json", "published.json", "report/facts.json"):
         data = _load(root / rel, rel, probs)
         if data is not None and not isinstance(data, dict):

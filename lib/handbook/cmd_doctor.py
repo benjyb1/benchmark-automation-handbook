@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import edition
 from .claude_cli import MIN_VERSION, MODEL, too_old
 from .cli import command_parser
 from .folder import default_root, protected_folder, synced_folder_warning
@@ -54,6 +55,30 @@ def python_checks() -> list[dict]:
                  check("Words in pictures", WARN, "No program on this computer can read the words in a picture, so "
                        "pictures and scanned pages are kept and shown to the scorer but their text is empty.",
                        "On a Mac this is built in. Elsewhere, install tesseract."))
+    return found
+
+
+def edition_checks() -> list[dict]:
+    """Which edition is installed. For the Full edition, whether a download key is saved for updates (and that
+    only its owner can read it); the key itself is never shown."""
+    if edition.is_free():
+        return [check("Edition", OK, "The free version of the benchmark tool.")]
+    found = [check("Edition", OK, "The Full version of the benchmark tool.")]
+    path = edition.key_file()
+    try:
+        saved = path.is_file() and path.stat().st_size > 0
+        mode = path.stat().st_mode & 0o777 if saved else None
+    except OSError:
+        saved, mode = False, None
+    if not saved:
+        found.append(check("Download key", WARN, "No download key is saved on this computer, so the tool cannot "
+                           "fetch updates of the Full version.",
+                           "Ask whoever gave you the Full version for your key, then paste the set-up line again."))
+    elif mode & 0o077:
+        found.append(check("Download key", WARN, "Your download key is saved, but other people on this computer "
+                           "could read the file.", f"Run chmod 600 {path} in Terminal, or ask Claude to do it."))
+    else:
+        found.append(check("Download key", OK, "A download key is saved for updates (it is not shown)."))
     return found
 
 
@@ -246,7 +271,7 @@ def main(argv) -> int:
                              "(uses a few thousand tokens of your plan)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    checks = python_checks() + tool_checks() + render_checks() + claude_checks() + folder_checks(args.folder)
+    checks = edition_checks() + python_checks() + tool_checks() + render_checks() + claude_checks() + folder_checks(args.folder)
     if args.probe and not any(c["state"] == BLOCKED and c["check"] == "Claude Code command line" for c in checks):
         checks += probe()
     ready = not any(c["state"] == BLOCKED for c in checks)

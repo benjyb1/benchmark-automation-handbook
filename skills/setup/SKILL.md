@@ -159,13 +159,6 @@ Handle each extra as soon as it arrives, once step 3 is done, and always before 
   sheet or the normalised results with the owner (a changed score sheet goes back to `draft` and
   is confirmed again), and re-run until every row matches. If the score sheet cannot compute
   totals, tell the owner the check cannot run and why.
-- **Past editions** (results from before last edition): ask for them when the owner has them,
-  because they show each row's trend and help spot big moves nobody can explain. Normalise each
-  one the same way with its `edition` set (the year it covers) and hold it back with the same
-  `hold-back` command. The latest edition stays the one compared with; an older one is kept for
-  the trends; a newer one takes over and the old one is kept. Run `rebuild-check` again only when
-  the latest edition changed. Past editions are held back like last edition's results: never use
-  them in questions, rules, the where-to-look plan or the data needs.
 - **Methodology** arriving after the draft: re-read it, correct the drafts, and ask the owner to
   confirm again whatever changed.
 - **Last year's source list:** into the where-to-look plan's `last_year` entries, as places to

@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from . import fetch, readers
+from . import edition, fetch, readers
 from .cli import command_parser, open_project
 from .folder import HandbookError
 
@@ -45,6 +45,9 @@ def add_file(project, path: Path, rows: list, title: str | None = None, say=prin
         raise HandbookError(readers.cannot_read(path.name, "", data) or
                             f"The tool cannot read {path.suffix or 'this kind of file'} ({path.name}). It reads "
                             f"{readers.READABLE_WORDS} files: save it as one of those and add that.")
+    refusal = edition.evidence_refusal(kind)
+    if refusal:                                  # the free edition takes PDFs, web pages and text as evidence
+        raise HandbookError(refusal)
     rows = fetch.resolve_rows(project, rows)
 
     doc = fetch.doc_id_for_bytes(data)

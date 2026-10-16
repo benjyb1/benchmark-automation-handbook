@@ -19,6 +19,7 @@ import re
 import sys
 from pathlib import Path
 
+from . import edition
 from .folder import HandbookError, Project
 
 HERE = Path(__file__).resolve().parent
@@ -26,7 +27,8 @@ HERE = Path(__file__).resolve().parent
 
 def commands() -> list[str]:
     """Every command name, from the `cmd_*.py` files beside this one."""
-    return sorted(p.stem[len("cmd_"):].replace("_", "-") for p in HERE.glob("cmd_*.py"))
+    return sorted(p.stem[len("cmd_"):].replace("_", "-") for p in HERE.glob("cmd_*.py")
+                  if edition.is_full() or p.stem not in edition.FULL_MODULES)     # the free edition has no packs or feedback
 
 
 def command_parser(command: str, description: str, project: bool = True) -> argparse.ArgumentParser:
@@ -71,6 +73,9 @@ def main(argv=None) -> int:
     if not re.fullmatch(r"[a-z][a-z0-9-]*", name) or not (HERE / f"{module}.py").is_file():
         print(f"Unknown command {name!r}.\n{_usage()}", file=sys.stderr)
         return 2
+    if module in edition.FULL_MODULES and not edition.is_full():
+        print(edition.in_full(f"hb {name}, the round with the organisations you score,"), file=sys.stderr)
+        return 1
     command = importlib.import_module(f"{__package__}.{module}")
     try:
         return _exit_code(command.main(argv[1:]))

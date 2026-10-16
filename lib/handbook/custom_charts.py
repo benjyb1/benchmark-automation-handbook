@@ -20,6 +20,7 @@ anywhere in it, and every figure a chart shows comes from the project's own file
 from __future__ import annotations
 import re
 
+from . import edition
 from .folder import ID_RE, HandbookError, Project, read_json, write_json
 
 # Placeholders in DATASETS["rows"]: one column per label (named as the label, holding the row's
@@ -69,7 +70,8 @@ def columns(project: Project, dataset: str) -> list[str]:
 
 
 def all_columns(project: Project) -> dict[str, list[str]]:
-    return {name: columns(project, name) for name in DATASETS}
+    """Every dataset's columns; the free edition has no `history` (results across past editions)."""
+    return {name: columns(project, name) for name in DATASETS if name != "history" or edition.is_full()}
 
 
 # --- walking a spec --------------------------------------------------------------------------
@@ -156,6 +158,8 @@ def check_chart(chart, project: Project) -> list[str]:
     if not isinstance(chart.get("description", ""), str):
         probs.append("The chart's description must be text (it may be empty).")
     dataset = chart.get("dataset")
+    if dataset == "history" and edition.is_free():
+        return probs + [edition.in_full("A chart of results across past editions")]
     if dataset not in DATASETS:
         probs.append(f"The chart's dataset must be one of {', '.join(DATASETS)}, not {dataset!r}.")
     spec = chart.get("spec")
