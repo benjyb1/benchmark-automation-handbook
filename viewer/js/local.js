@@ -525,9 +525,6 @@
         h("span", { class: "hbl-dot", "aria-hidden": "true" }), w.title + (w.pct != null ? " (" + w.pct + "%)" : "")));
     }
     if (state && state.queued && state.queued.length) bits.push(h("span", { class: "hbl-pill" }, state.queued.length + " waiting"));
-    if (flagText || (state && state.problem) || (state && state.api_key)) {
-      bits.push(h("span", { class: "hbl-pill", "data-tone": "warning" }, "Needs your eye"));
-    }
     const recent = h("button", { type: "button", class: "btn btn--quiet btn--small", id: "hbl-recent", "aria-haspopup": "dialog" }, "Recent changes");
     recent.addEventListener("click", openRecent);
     const dl = h("a", { class: "btn btn--small", id: "hbl-copy", href: "/api/copy", title: "One file of this page, read-only, to email or upload" }, "Download a copy");
@@ -626,7 +623,6 @@
 .hbl-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--s2); }
 .hbl-pill { display: inline-flex; align-items: center; gap: var(--s1); padding: 0.125rem 0.5rem; border: 1px solid var(--rule); border-radius: 999px; background: var(--surface); color: var(--ink-2); font-size: var(--fs-12); white-space: nowrap; }
 .hbl-pill[data-tone="accent"] { border-color: var(--accent); color: var(--ink); }
-.hbl-pill[data-tone="warning"] { border-color: var(--warning); color: var(--ink); }
 .hbl-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--accent); animation: hbl-pulse 1.4s ease-in-out infinite; }
 @keyframes hbl-pulse { 50% { opacity: 0.3; } }
 @media (prefers-reduced-motion: reduce) { .hbl-dot { animation: none; } }
