@@ -5,7 +5,9 @@ The normalised results (already in the held-back shape) go into `<slug>.held-bac
 past edition is `results.json` (what compare and rebuild-check use); older ones are kept as
 `history/<edition>.json` in the same shape, for the trends. A file whose edition is older than
 results.json's goes to `history/`; a newer one replaces results.json and moves the old one to
-`history/`; the same edition replaces it. The owner's original file is copied to `original/`
+`history/`; the same edition replaces it. In the free edition a newer edition replaces the held-back one
+outright (no history: the free edition compares with one previous edition, always the latest one), and
+an older edition is refused with the Full version line. The owner's original file is copied to `original/`
 (with the edition in front of its name when another edition's original already has that name),
 and any of the two files that sat in the project's `inbox/` is removed from it. The checklist item
 `last_results` becomes confirmed.
@@ -73,9 +75,11 @@ def store(project, data: dict, original: Path, source: Path | None = None) -> di
     latest_path = held / "results.json"
     old = read_json(latest_path) if latest_path.is_file() else None
     place = _place(data, old)
-    if place in ("older", "newer") and not editions.is_full():
-        # The free edition compares with one previous edition. A second one (older, for the trends, or newer,
-        # which would push the first into history) is a Full version feature; nothing is stored.
+    free = not editions.is_full()
+    if place == "older" and free:
+        # The free edition compares with one previous edition. An older one (for the trends) is a Full version
+        # feature; nothing is stored. A newer one replaces the held-back edition (below), so that "compare with
+        # your last edition" keeps working year after year.
         raise HandbookError(editions.past_editions_refusal(old.get("edition") if old else None, data.get("edition")))
     edition = data.get("edition")
     target = held / "history" / f"{_safe(edition)}.json" if place == "older" else latest_path
@@ -87,7 +91,7 @@ def store(project, data: dict, original: Path, source: Path | None = None) -> di
     (held / "original").mkdir(parents=True, exist_ok=True)
     shutil.copy2(original, held / name)
     data["original"] = name
-    if place == "newer":
+    if place == "newer" and not free:
         write_json(held / "history" / f"{_safe(old['edition'])}.json", old)
     write_json(target, data)
     if place != "older":
@@ -114,7 +118,9 @@ def store(project, data: dict, original: Path, source: Path | None = None) -> di
     proj.setdefault("checklist", {})["last_results"] = "confirmed"
     project.write("project", proj)
     return {"place": place, "edition": edition, "target": target, "original": name, "moved": moved,
-            "old_edition": old.get("edition") if old else None}
+            "old_edition": old.get("edition") if old else None,
+            "replaced_line": editions.replaced_edition_line(edition, old.get("edition")) if place == "newer" and free
+            else None}
 
 
 # --- checking the held-back figures against the owner's file ---------------------------------------
@@ -236,6 +242,8 @@ def main(argv) -> int:
         print(f"Kept the {edition} edition as an older edition: {count}, in "
               f"{target.relative_to(held.parent)}. The latest past edition is still {old}: "
               "the comparison and the rebuild check use that one, and older editions show as trends.")
+    elif place == "newer" and got["replaced_line"]:
+        print(f"Held back the {edition} edition as last edition: {count}, in {held}. {got['replaced_line']}")
     elif place == "newer":
         print(f"Held back the {edition} edition as the latest past edition: {count}, in {held}. "
               f"The {old} edition is kept as an older edition, in history/.")

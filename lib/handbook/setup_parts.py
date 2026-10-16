@@ -189,7 +189,7 @@ def _last_results(project: Project, data: dict) -> dict:
     except Exception:  # noqa: BLE001 (a file the reader cannot read is simply not checked)
         text = ""
     try:
-        store(project, results, path)
+        got = store(project, results, path)
     except HandbookError as e:
         lines = str(e).split("\n- ")
         return {"ok": False, "problems": lines[1:] or lines, "said": None, "rebuild": None}
@@ -198,6 +198,8 @@ def _last_results(project: Project, data: dict) -> dict:
     unknown = [r for r in rows if r not in units]
     said = (f"Kept last edition's results aside: {len(rows)} rows at {results.get('level')} level"
             + (f" ({len(unknown)} not in the list: {', '.join(unknown[:5])})" if unknown else "") + ".")
+    if got.get("replaced_line"):
+        said += " " + got["replaced_line"]
     check = check_against(project, results, text) if text else []
     if check:
         said += (f" Check {len(check)} row{'s' if len(check) != 1 else ''} against the file: "

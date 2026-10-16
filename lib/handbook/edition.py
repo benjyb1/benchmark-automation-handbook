@@ -142,9 +142,14 @@ def for_this_edition(text: str) -> str:
     return text if is_full() else strip_full_only(text)
 
 
+def replaced_edition_line(new, old) -> str:
+    """The one plain line for the owner when, in the free edition, a newer edition replaces the held-back one."""
+    return f"The {new} edition now replaces {old} as the one compared with."
+
+
 def past_editions_refusal(held: str | None, new: str | None) -> str:
-    """Why the free edition does not hold back a second past edition (`held` is the one it has, `new` the
-    one that was offered)."""
+    """Why the free edition does not hold back an older past edition (`held` is the one it has, `new` the
+    one that was offered). A newer one replaces it instead (replaced_edition_line)."""
     have = f"the {held} edition" if held else "a past edition"
     return (f"The free version of the benchmark tool compares with one previous edition, and {have} is already held "
             f"back{f', so the {new} edition was not added' if new else ''}. "

@@ -44,6 +44,8 @@
    "Compare with" picks an older edition: the views then set this
    run beside it at the levels it holds, with no reasons (those are worked out
    against the latest edition only), and the words say "2023", not "last year".
+   HB.compareView.openDetail(row, ctx) opens one assessment's comparison with the latest edition in the
+   drawer (the Summary's biggest movers use it).
    Reads bundle.results.compare (compare/compare.json), and for the By rule
    view the cells' rules and bundle.rules.
    ========================================================================== */
@@ -1745,5 +1747,15 @@
     return askRerun(rule, Array.isArray(rows) ? rows : []);
   }
 
-  HB.compareView = { render, REASON_WORDS, BY_WORDS, rerun: rerunById, rerunWaiting: (ruleId) => rerunWaiting({ id: String(ruleId) }) };
+  /** The comparison of one assessment with the latest past edition, in the drawer: the same panel the
+      comparison's own rows open. For the Summary's biggest movers. False when there is no comparison or
+      the assessment is not in it. */
+  function openFor(rowId, ctx) {
+    const latest = (bundle().results || {}).compare;
+    if (!latest || !Array.isArray(latest.rows) || !latest.rows.some((r) => r.row === rowId)) return false;
+    latestWords(() => openDetail(rowId, makeModel(latest), ctx));
+    return true;
+  }
+
+  HB.compareView = { render, openDetail: openFor, REASON_WORDS, BY_WORDS, rerun: rerunById, rerunWaiting: (ruleId) => rerunWaiting({ id: String(ruleId) }) };
 })((window.HB = window.HB || {}));

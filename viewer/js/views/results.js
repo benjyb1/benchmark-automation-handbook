@@ -5,7 +5,8 @@
    the default) and "Compare with last edition" (#results~compare and
    #results~compare~<view>, only when the bundle has a comparison; compare.js
    draws it through HB.compareView.render).
-   Summary: Claude's report, drawn from a small, safe markdown subset (with the
+   Summary: the one-page summary first (views/resultsummary.js: the headline figure, units in
+   each band, the biggest movers since last edition), then Claude's report, drawn from a small, safe markdown subset (with the
    Generate report panel, HB.reportDraft); three charts, each with its table; the
    owner's own charts (HB.myCharts.section); then the downloads (HB.downloads.panel).
 
@@ -483,7 +484,7 @@
   }
 
   function drawSummary(box, ctx, rerender) {
-    box.append(...[reportSection(), chartsSection(ctx, rerender), HB.myCharts ? HB.myCharts.section(ctx) : null,
+    box.append(...[HB.resultsSummary ? HB.resultsSummary.block(ctx) : null, reportSection(), chartsSection(ctx, rerender), HB.myCharts ? HB.myCharts.section(ctx) : null,
       HB.downloads ? HB.downloads.panel(ctx) : null].filter(Boolean));
   }
 
