@@ -28,6 +28,7 @@ import unicodedata
 from datetime import datetime
 from pathlib import Path
 
+from .claude_cli import MODEL
 from . import feedback
 from .folder import HandbookError, Project, effective_question
 from .packs import PACK_SHEET, SCORES_SHEET, START_SHEET
@@ -394,7 +395,7 @@ def claude_command(system: str = SYSTEM) -> list[str]:
     session; the prompt goes in on standard input."""
     return ["claude", "-p", "--output-format", "json", "--tools", "", "--permission-mode", "dontAsk",
             "--setting-sources", "", "--safe-mode", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-            "--disable-slash-commands", "--no-session-persistence", "--system-prompt", system]
+            "--disable-slash-commands", "--no-session-persistence", "--model", MODEL, "--system-prompt", system]
 
 
 def run_claude(prompt: str, system: str = SYSTEM) -> dict:

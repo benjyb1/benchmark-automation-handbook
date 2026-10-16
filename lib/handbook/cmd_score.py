@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .claude_cli import MODEL
 from .cli import command_parser
 from .folder import HandbookError, write_json
 
@@ -67,8 +68,7 @@ def command(kit: Path, model: str | None, effort: str | None, max_turns: int | N
            '{"mcpServers":{}}', "--settings", json.dumps(settings(kit)), "--disable-slash-commands",
            "--no-session-persistence", "--output-format", "json", "--permission-mode", "dontAsk",
            "--tools", TOOLS, "--allowed-tools", TOOLS, "--disallowed-tools", NO_TOOLS]
-    if model:
-        cmd += ["--model", model]
+    cmd += ["--model", model or MODEL]
     if effort:
         cmd += ["--effort", effort]
     if max_turns:
@@ -112,7 +112,7 @@ def describe(result: dict) -> str:
 def main(argv) -> int:
     parser = command_parser("score", "Run one blind scorer on a kit in a clean headless session.", project=False)
     parser.add_argument("--kit", required=True, help="the kit folder hb kit printed")
-    parser.add_argument("--model", default=None, help="a model alias, for example sonnet (default: the account's)")
+    parser.add_argument("--model", default=None, help=f"a model id, for example claude-sonnet-5-5 (default: {MODEL}, at its default effort)")
     parser.add_argument("--effort", default=None, help="an effort level, for example low")
     parser.add_argument("--max-turns", type=int, default=None, help="stop the scorer after this many turns")
     args = parser.parse_args(argv)

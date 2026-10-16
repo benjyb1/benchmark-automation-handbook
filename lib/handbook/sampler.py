@@ -24,6 +24,7 @@ that changed (its "now" section moves with the page). Each call's processed toke
 fresh input, output) come from the session's own result and are reported with the answer.
 """
 from __future__ import annotations
+from .claude_cli import MODEL
 import difflib
 import hashlib
 import json
@@ -38,7 +39,9 @@ import time
 from pathlib import Path
 
 BRIDGE = Path(__file__).resolve().parent / "page_tools_bridge.py"
-MODEL_FOR_TIER = {"quick": "haiku", "default": "sonnet", "complex": "opus"}
+# Full model ids, never aliases (claude_cli.py): an older Claude Code maps an alias to an older model
+# without saying so. The page's ordinary tier runs on the tool's model, like the scorers.
+MODEL_FOR_TIER = {"quick": "claude-haiku-5-5", "default": MODEL, "complex": MODEL}
 TIERS = tuple(MODEL_FOR_TIER)
 MAX_INPUT_BYTES = 262_144
 MAX_TOOLS = 24
@@ -285,8 +288,7 @@ class Sampler:
             cmd += ["--allowed-tools", ",".join("mcp__page__" + t["name"] for t in call.tools)]
         else:
             cmd += ["--safe-mode", "--no-session-persistence"]
-        if model:
-            cmd += ["--model", model]
+        cmd += ["--model", model or MODEL]
         if plan["resume"]:
             cmd += ["--resume", plan["resume"]]
         return cmd
@@ -320,8 +322,10 @@ class Sampler:
                             "HB_BRIDGE_TOOLS": str(tmp / "tools.json")}}}}), encoding="utf-8")
                 os.chmod(mcp_file, 0o600)
             result = self._once(call, plan, model, json_mode, mcp_file)
-            if result is None and model and not call.cancelled:     # the model asked for is not open to this plan
-                result = self._once(call, plan, None, json_mode, mcp_file)
+            if result is None and model and not call.cancelled:     # the model was refused: never fall back
+                call.emit({"type": "error", "code": "unavailable", "text": None,       # to an older one quietly
+                           "message": "Claude on this computer is too old for the model the tool uses. "
+                                      "Run `claude update` (or ask Claude to do it), then try again."})
             if result is None:
                 return
         finally:

@@ -18,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .claude_cli import MIN_VERSION, MODEL, too_old
 from .cli import command_parser
 from .folder import default_root, protected_folder, synced_folder_warning
 
@@ -127,7 +128,12 @@ def claude_checks(env=os.environ) -> list[dict]:
             version = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
         except (OSError, subprocess.TimeoutExpired):
             version = ""
-        found.append(check("Claude Code command line", OK, version or f"Installed at {path}."))
+        if too_old(version):
+            found.append(check("Claude Code command line", BLOCKED, f"{version}: too old for the model the tool "
+                               f"uses ({MODEL}), which needs {'.'.join(map(str, MIN_VERSION))} or later.",
+                               "Update it: run `claude update` in Terminal, or ask Claude to do it for you."))
+        else:
+            found.append(check("Claude Code command line", OK, version or f"Installed at {path}."))
         found += sign_in_checks(auth_status(path))
     if env.get("ANTHROPIC_API_KEY"):
         found.append(check("Billing", WARN, "An Anthropic API key is set on this computer (ANTHROPIC_API_KEY), so "
@@ -157,7 +163,7 @@ def folder_checks(folder: str | None) -> list[dict]:
 
 
 def probe_command(path: str, prompt: str = PROBE_PROMPT) -> list[str]:
-    return [path, "-p", prompt, "--safe-mode", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
+    return [path, "-p", prompt, "--model", MODEL, "--safe-mode", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
             "--disable-slash-commands", "--no-session-persistence", "--output-format", "stream-json",
             "--verbose", "--permission-mode", "dontAsk", "--tools", "WebFetch", "--allowed-tools", "WebFetch",
             "--max-turns", "3"]

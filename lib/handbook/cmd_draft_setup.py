@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .claude_cli import MODEL
 from .cli import command_parser, open_project
 from .folder import HandbookError, write_json
 
@@ -86,7 +87,7 @@ def command(project: Path, python: str, held_back: Path | None = None) -> list[s
             '{"mcpServers":{}}', "--settings", json.dumps(settings), "--disable-slash-commands",
             "--no-session-persistence", "--output-format", "json", "--permission-mode", "dontAsk",
             "--tools", TOOLS, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
-            "--add-dir", lib, *extra]
+            "--add-dir", lib, "--model", MODEL, *extra]
 
 
 def main(argv) -> int:
