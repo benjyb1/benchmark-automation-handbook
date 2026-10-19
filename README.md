@@ -4,17 +4,19 @@ For charities and NGOs that run a benchmark by hand: a ranking, scorecard or ind
 
 ## Get started
 
-You need a Mac, the Claude desktop app, and a paid Claude plan (Pro, Max, Team or Enterprise).
-
-Open the Claude app, go to the **Code** tab, and paste this:
+1. Get a paid Claude plan (Pro or Max) and install the Claude desktop app from claude.com/download. The free plan doesn't include the Code tab.
+2. Open the Claude app and click the **Code** tab. If it asks for a folder, pick any one, for example Documents.
+3. Copy this prompt and paste it in:
 
 ```
-Set up the benchmark tool for me: read https://raw.githubusercontent.com/benjyb1/benchmark-automation-handbook/main/INSTALL.md and follow it.
+Set up the benchmark tool on this Mac for me. Download https://raw.githubusercontent.com/benjyb1/benchmark-automation-handbook/main/INSTALL.md, read all of it, and follow it step by step. I'm not technical, so explain each step in plain words and run everything yourself.
 ```
 
-Claude explains each step and asks before installing anything. When it is done, your benchmark's page opens in your browser, and its Claude button (bottom right) walks you through the rest, starting with whether your benchmark suits the tool. To come back another day, double-click **Open <your benchmark>** on your Desktop.
+4. Answer its questions. It asks before installing anything. When it wants to run a step, click **Allow**. After about ten minutes, your benchmark's page opens in your browser.
 
-Using another AI, or a Windows PC? Email benjaminbream@gmail.com.
+From then on everything happens in that page, and its Claude button (bottom right) walks you through the rest, starting with whether your benchmark suits the tool. To come back another day, double-click **Open <your benchmark>** on your Desktop.
+
+It only works on a Mac for now. On Windows? Email benjaminbream@gmail.com.
 
 ## What it works from
 

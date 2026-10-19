@@ -139,6 +139,10 @@ def sign_in_checks(status: dict | None) -> list[dict]:
         return [check("Sign-in", WARN, f"Signed in through {status.get('authMethod') or 'an API account'}, billed "
                       "at API rates rather than your Claude plan.", f"Sign in with your Claude account: {SIGN_IN}")]
     plan = str(status.get("subscriptionType") or "").strip()
+    if plan.lower() == "free":
+        return [check("Sign-in", BLOCKED, "Signed in on Claude's free plan, which cannot run Claude in the "
+                      "background for the tool.", "Upgrade to a paid plan (Pro or Max) at claude.ai/upgrade, "
+                      "then try again.")]
     return [check("Sign-in", OK, "Signed in with your Claude account" + (f" ({plan.title()} plan)." if plan else "."))]
 
 

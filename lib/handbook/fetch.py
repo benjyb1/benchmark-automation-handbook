@@ -377,6 +377,19 @@ def new_meta(doc_id: str, *, title: str, how: str, sha1: str, host_type: str, ur
 _NOT_FOUND_TITLE = re.compile(r"\b(?:not found|404|page (?:not|cannot be) found|error)\b", re.I)
 
 
+# A host's placeholder where the document used to be: the page's title says so and it holds almost no
+# words. Belize, 19 Oct 2026: a headless finder's address had expired and "Account Suspended" was saved.
+_DEAD_TITLE = re.compile(r"\b(?:account (?:has been )?suspended|domain (?:is )?(?:for sale|expired|parked)|this site can.?t be reached|"
+                         r"site (?:not found|unavailable|suspended)|website (?:expired|suspended|coming soon)|"
+                         r"not found|404|page (?:not|cannot be) found|access denied|forbidden|log ?in|sign ?in)\b", re.I)
+
+
+def dead_page(title: str, text: str) -> bool:
+    """A placeholder, error or login page with next to no text of its own, not a document."""
+    from .prepare import STUB_CHARS
+    return bool(title and _DEAD_TITLE.search(title)) and len((text or "").strip()) <= 4 * STUB_CHARS
+
+
 def misleading_title(title: str, text: str) -> bool:
     """A page titled like an error ("Not Found | joejuice.com") whose text is a real page: in the
     Pecking Order fixture a scorer believed such a title and scored a page holding the policy as

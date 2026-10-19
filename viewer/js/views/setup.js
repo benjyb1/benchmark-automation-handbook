@@ -137,6 +137,33 @@
     );
   }
 
+  /* ---- The set-up draft while it runs ------------------------------------------------ */
+
+  // Checklist items the draft writes (the skill's drafting.md); the others stay as they are while it runs.
+  const DRAFTED = new Set(["questions", "units", "scoresheet", "group_labels", "where_to_look", "needs", "rules",
+    "last_results", "methodology", "source_list"]);
+
+  // The "Draft my set-up" job under hb serve, while it waits or runs (local.js polls the server's state),
+  // or for the few seconds between asking and the server picking it up. Null when nothing is drafting.
+  let draftAsked = 0;
+  function draftJob() {
+    const s = HB.local && typeof HB.local.state === "function" ? HB.local.state() : null;
+    if (s && s.job && s.job.kind === "setup") return s.job;
+    const queued = s && Array.isArray(s.queued) ? s.queued.find((j) => j && j.kind === "setup") : null;
+    if (queued) return queued;
+    return Date.now() - draftAsked < 15000 ? { line: "Starting Claude", status: "queued" } : null;
+  }
+
+  // "Reading law-kenya.pdf (4 of 12) · 3 min so far", from the job (serve.py follows the draft's steps).
+  function draftWords(job) {
+    const step = Array.isArray(job.steps) && job.steps[0] ? job.steps[0] : {};
+    const mins = job.started ? Math.floor((Date.now() - Date.parse(job.started)) / 60000) : 0;
+    const bits = [];
+    if (step.files_total) bits.push(fmtInt(step.files_read || 0) + " of " + fmtInt(step.files_total) + " files read");
+    bits.push(mins < 1 ? "just started" : count(mins, "minute", "minutes") + " so far");
+    return { line: job.line || "Claude is reading your files", meta: bits.join(" \u00b7 ") };
+  }
+
   /* ---- Status chips --------------------------------------------------------------- */
 
   // Checklist rows: icon, word and colour together. A missing must-have asks for
@@ -196,6 +223,7 @@
     const known = new Set(MUST_HAVES.concat(EXTRAS));
     const extras = EXTRAS.concat(Object.keys(status).filter((k) => !known.has(k)));
     const stateOf = (key) => (has(status, key) ? status[key] : "missing");
+    const drafting = Boolean(draftJob());
 
     const row = (key, mustHave) => {
       const t = text[key] || [cap(words(key)), ""];
@@ -203,7 +231,8 @@
         "li",
         { class: "su-check", "data-status": stateOf(key) },
         h("div", { class: "su-check__text" }, h("span", { class: "su-check__label" }, t[0]), t[1] ? h("span", { class: "su-check__hint" }, t[1]) : null),
-        h("div", { class: "su-check__chip" }, checklistChip(stateOf(key), mustHave)),
+        h("div", { class: "su-check__chip" }, drafting && stateOf(key) === "missing" && DRAFTED.has(key)
+          ? HB.working("Claude is drafting this", { status: false }) : checklistChip(stateOf(key), mustHave)),
       );
     };
 
@@ -213,7 +242,7 @@
     const missing = MUST_HAVES.length - done - drafts;
     const bits = [];
     if (drafts) bits.push(fmtInt(drafts) + " in draft");
-    if (missing) bits.push(fmtInt(missing) + " missing");
+    if (missing) bits.push(drafting ? "Claude is drafting the rest" : fmtInt(missing) + " missing");
 
     return h(
       "section",
@@ -684,7 +713,9 @@
     material.busy = true;
     try {
       await HB.edits.save("setup", { action: "draft", at: new Date().toISOString() });
-      material.line = "Claude is reading your files and drafting the set-up. Progress shows in the run bar; this page fills in when it is done.";
+      draftAsked = Date.now();
+      material.line = "";
+      if (HB.local && typeof HB.local.refresh === "function") HB.local.refresh();
     } catch (e) {
       material.line = HB.cantSave();
     }
@@ -717,6 +748,7 @@
 
   function paintMaterial(box) {
     const files = material.files;
+    const job = draftJob();
     box.replaceChildren(...[
       sub("Your material", files && files.length ? count(files.length, "file", "files") : ""),
       h("p", { class: "small muted" }, "Add what you have: your questions, the list you score, how scores are worked out, last " +
@@ -725,12 +757,25 @@
       files === null ? h("p", { class: "small muted" }, "Looking\u2026")
         : files.length ? h("ul", { class: "su-files small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
             (f.chars == null ? ": can't be read" : "")))) : null,
-      files && files.length ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
+      files && files.length && !job ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
         disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
         h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
           "and the groups for you to check. " + draftCost(files))) : null,
+      job ? draftingNow(job) : null,
       material.line ? h("p", { class: "small" }, material.line) : null,
     ].filter(Boolean));   // replaceChildren would write a null out as the word "null"
+    // While Claude drafts, say what it is doing now: repaint as the server's line changes.
+    clearTimeout(material.timer);
+    if (job) material.timer = setTimeout(() => { if (box.isConnected) paintMaterial(box); }, 2000);
+    if (job && HB.chat && typeof HB.chat.watchDraft === "function") HB.chat.watchDraft();   // the chat follows it too
+  }
+
+  function draftingNow(job) {
+    const w = draftWords(job);
+    return h("div", { class: "su-drafting stack" },
+      HB.working(w.line, { large: true }),
+      h("p", { class: "small muted" }, w.meta + ". A draft takes several minutes. The checklist fills in as each " +
+        "part is written, and the chat tells you what to check when it is done. You can keep working meanwhile."));
   }
 
   function materialSection() {

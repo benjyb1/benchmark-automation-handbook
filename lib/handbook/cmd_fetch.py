@@ -125,6 +125,8 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     if edition.evidence_refusal(kind):
         raise HandbookError(f"{url} gave a {readers.LABELS[kind]}. Nothing was saved. {edition.evidence_refusal(kind)}")
     title = (fetch.html_title(result.content) if kind == "html" else "") or fetch.title_from_url(url)
+    if kind == "html" and fetch.dead_page(title, fetch.extract_text_html(result.content)):
+        raise HandbookError(f"{url} is a placeholder page (\"{title.strip()[:80]}\"), not the document. Nothing was saved.")
     if kind == "html" and fetch.misleading_title(title, fetch.extract_text_html(result.content)):
         title = fetch.title_from_url(url)   # e.g. "Not Found | joejuice.com" on a page that holds the policy
     landed = on_results_site(result.final_url, project.read("project").get("results_sites")) if result.final_url else None

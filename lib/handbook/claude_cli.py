@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 
 MODEL = "claude-opus-5-5"
+# Finders search and save; they never score, so they run on the cheaper model (host/claude.md).
+FINDER_MODEL = "claude-sonnet-5-5"
 MIN_VERSION = (2, 1, 280)
 
 

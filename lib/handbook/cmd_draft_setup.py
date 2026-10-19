@@ -14,6 +14,8 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .claude_cli import MODEL
@@ -28,6 +30,17 @@ TIMEOUT_S = 2700
 # Not runs/*.json itself: every file there is read as a run (validate listed 12 problems and the page a
 # phantom run after each draft, 14 Oct 2026).
 RECEIPT = ("runs", "receipts", "setup-draft.json")
+# What Claude is doing right now, in the owner's words, for the page's run bar and the corner chat
+# (serve.py reads it while the draft runs). Rewritten after every step; never read back by the draft.
+PROGRESS = ("runs", "receipts", "setup-draft.progress.json")
+# The set-up files whose arrival changes the checklist: the server rebuilds the page when one is written.
+LANDS = {"questions.json": "the questions", "units.json": "the list", "scoresheet.json": "the score sheet",
+         "project.json": "the checklist", "rules.json": "the rules", "needs.json": "what is still needed",
+         "where_to_look.json": "where to look"}
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def prompt_for(project: Path, python: str) -> str:
@@ -85,9 +98,94 @@ def command(project: Path, python: str, held_back: Path | None = None) -> list[s
     extra = ["--add-dir", str(held_back)] if held_back else []
     return ["claude", "-p", prompt_for(project, python), "--safe-mode", "--strict-mcp-config", "--mcp-config",
             '{"mcpServers":{}}', "--settings", json.dumps(settings), "--disable-slash-commands",
-            "--no-session-persistence", "--output-format", "json", "--permission-mode", "dontAsk",
+            "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
             "--tools", TOOLS, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
             "--add-dir", lib, "--model", MODEL, *extra]
+
+
+def upload_names(project: Path) -> dict[str, str]:
+    """Stored upload file name -> the name the owner gave it (uploads are saved as `<id>--<name>`)."""
+    return {f.name: f.name.split("--", 1)[1] for f in project.joinpath("inbox", "uploads").glob("*--*")}
+
+
+def describe(tool: dict, uploads: dict[str, str]) -> tuple[str, str | None, str | None]:
+    """One step of the draft session in the owner's words: (line, upload read, set-up file written)."""
+    name, inp = tool.get("name"), tool.get("input") or {}
+    if name == "Bash":
+        cmd = str(inp.get("command") or "")
+        if "material-text" in cmd:
+            for stored, shown in uploads.items():
+                if stored in cmd:
+                    return f"Reading {shown}", stored, None
+            return "Reading one of your files", None, None
+        for word, line in ((" validate", "Checking the draft for gaps"), (" build", "Building your page"),
+                           ("hold-back", "Setting last edition's results aside"), ("rebuild-check", "Checking last edition's results add up"),
+                           ("raise-rule", "Noting a question for you"), (" need", "Noting something you may need to add")):
+            if word in cmd:
+                return line, None, None
+        return "Working through your files", None, None
+    if name in ("Write", "Edit"):
+        base = Path(str(inp.get("file_path") or "")).name
+        if base in LANDS:
+            return f"Writing {LANDS[base]}", None, base
+        return "Writing part of the set-up", None, None
+    if name in ("Read", "Glob", "Grep"):
+        path = str(inp.get("file_path") or inp.get("path") or "")
+        if "/skills/" in path:
+            return "Reading how to draft a set-up", None, None
+        stored = Path(path).name
+        if stored in uploads:
+            return f"Reading {uploads[stored]}", stored, None
+        return "Looking through the project", None, None
+    return "Thinking about your set-up", None, None
+
+
+def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> dict:
+    """Run the draft session, writing PROGRESS after every step, and return its final result event."""
+    uploads = upload_names(project)
+    path = project.joinpath(*PROGRESS)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {"line": "Starting Claude", "files_total": len(uploads), "files_read": 0, "steps": 0,
+             "wrote": [], "started": now_iso(), "at": now_iso()}
+    read: set[str] = set()
+    write_json(path, state)
+    proc = subprocess.Popen(cmd, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    killer = threading.Timer(timeout, proc.kill)
+    killer.start()
+    result, last = {}, ""
+    try:
+        for raw in proc.stdout:
+            last = raw.strip() or last
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "result":
+                result = event
+                continue
+            if event.get("type") != "assistant":
+                continue
+            for part in (event.get("message") or {}).get("content") or []:
+                if part.get("type") != "tool_use":
+                    continue
+                line, upload, wrote = describe(part, uploads)
+                if upload:
+                    read.add(upload)
+                if wrote and wrote not in state["wrote"]:
+                    state["wrote"].append(wrote)
+                state.update({"line": line, "files_read": len(read), "steps": state["steps"] + 1, "at": now_iso()})
+                if line.startswith("Reading ") and uploads and upload:
+                    state["line"] = f"{line} ({len(read)} of {len(uploads)})"
+                write_json(path, state)
+        proc.wait()
+    finally:
+        killer.cancel()
+    state.update({"line": "Done" if result and not result.get("is_error") else "Stopped", "at": now_iso(), "finished": True})
+    write_json(path, state)
+    if not result:
+        tail = (proc.stderr.read() if proc.stderr else "").strip().splitlines() or [last]
+        raise HandbookError("The set-up draft ended without a result" + (f": {tail[-1][:200]}" if tail and tail[-1] else "."))
+    return result
 
 
 def main(argv) -> int:
@@ -100,13 +198,7 @@ def main(argv) -> int:
     if not any(project.path.joinpath("inbox", "uploads").glob("*--*")):
         raise HandbookError("There are no files to draft from. Add them on the Set-up tab first.")
     project.held_back.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(command(project.path, sys.executable, project.held_back), cwd=project.path, capture_output=True, text=True,
-                          timeout=TIMEOUT_S)
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise HandbookError("The set-up draft ended without a result" + (f": {tail[-1][:200]}" if tail else ".")) from None
+    result = run_streaming(command(project.path, sys.executable, project.held_back), project.path)
     path = project.path.joinpath(*RECEIPT)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, result)

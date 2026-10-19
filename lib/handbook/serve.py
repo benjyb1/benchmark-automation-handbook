@@ -64,7 +64,7 @@ HB = Path(__file__).resolve().parents[1] / "hb.py"
 LOCAL_JS = VIEWER_SRC / "js" / "local.js"
 PAGE_CLAUDE = Path(__file__).resolve().parents[2] / "guide" / "page-claude.md"
 DATA_TAG = '<script type="application/json" id="hb-data">'
-WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons", "setup")
+WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons", "setup", "scoring")
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
@@ -354,6 +354,8 @@ class Worker:
                 rebuild = self._take_reasons(docs["reasons"]) or rebuild
             if "setup" in docs and self._new("setup", docs["setup"]):
                 self._take_setup(docs["setup"])
+            if "scoring" in docs and self._new("scoring", docs["scoring"]):
+                self._take_scoring(docs["scoring"])
             if rebuild:
                 self.build()
         self._queue_reruns()
@@ -512,7 +514,12 @@ class Worker:
         except Exception:  # noqa: BLE001
             job["estimate"] = None
         job.update({"total": 1, "line": "Claude is reading your files and drafting the set-up"})
-        code, out = self.cmd.run("draft-setup", "--json", timeout=2800)
+        done = threading.Event()
+        threading.Thread(target=self._follow_draft, args=(job, done), daemon=True, name="hb-draft-progress").start()
+        try:
+            code, out = self.cmd.run("draft-setup", "--json", timeout=2800)
+        finally:
+            done.set()
         try:
             got = json.loads(out.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):
@@ -527,6 +534,188 @@ class Worker:
             self.note("Your set-up is drafted. Check it on the Set-up tab. " + self.spent(job), "good", got.get("result"))
         else:
             self.note("The set-up draft stopped before it finished. " + self.spent(job), "warning", (got.get("result") or out)[-800:])
+
+    # -- scoring started from the page (the Score button, or the chat) -----------------------------
+
+    def _take_scoring(self, docs: list[dict]) -> None:
+        """`{action: "start", kind: "trial" | "full", rows?, questions?}` from the Score panel: one job
+        that finds the documents and scores, as the trial and run skills do from a Claude Code session."""
+        for d in docs:
+            self.store.delete("scoring", d["id"])
+            if d.get("action") != "start" or d.get("kind") not in ("trial", "full"):
+                continue
+            req = {"id": d["id"], "kind": d["kind"], "rows": [str(r) for r in d.get("rows") or []],
+                   "questions": [str(q) for q in d.get("questions") or []]}
+            title = ("Trying a few " if req["kind"] == "trial" else "Scoring ") + self._plural()
+            self.enqueue("scoring:" + d["id"], "scoring", title, lambda job, r=req: self.score_run(job, r),
+                         estimate=lambda r=req: costs.estimate_rows(self.project, r["rows"] or self._row_ids(), r["questions"] or None))
+
+    def _row_ids(self) -> list[str]:
+        return [u.get("id") for u in self.project.read("units").get("units") or [] if u.get("id")]
+
+    def _plural(self) -> str:
+        return (self.bundle().get("project") or {}).get("unit_word_plural") or "rows"
+
+    def _json_out(self, *args) -> dict:
+        code, out = self.cmd.run(*args, "--json")
+        try:
+            return json.loads(last_line(out)) if code == 0 else {}
+        except (json.JSONDecodeError, IndexError):
+            return {}
+
+    def _stop_now(self, job: dict, row: str | None = None) -> str | None:
+        """The run control check before every row (the run skill's): apply what the page asked, then
+        say why to stop, or None to carry on."""
+        ctl = self._json_out("control")
+        if ctl.get("paused"):
+            return "paused"
+        if ctl.get("stop_now"):
+            return "stopped"
+        if row and ctl.get("stop_after_row") == row:
+            return "stopped after " + row
+        return None
+
+    def score_run(self, job: dict, req: dict) -> None:
+        """Find and score, row by row, rebuilding the page after each so the Grid fills in as it goes.
+        Not done here yet (the run skill does them with judgement): second searches, second reads, and
+        turning a scorer's rule doubt into a rule question. The answers still carry their flags."""
+        from .cmd_find import run_finder
+        names = {u.get("id"): u.get("name") or u.get("id") for u in self.bundle().get("units") or []}
+        project_meta = self.project.read("project")
+        kind, rows, qids = req["kind"], list(req["rows"]), list(req["questions"])
+        if kind == "trial" and not rows:
+            first = next(iter(self.project.read("questions").get("questions") or []), {}).get("id")
+            rows = (self._json_out("cover", "--question", str(first), "--size", "3").get("rows") or [])[:3] if first else []
+        with self.cmd.lock:
+            open_full = next((r for r in self.project.runs() if r.get("kind") == "full" and r.get("finished") is None), None)
+            if kind == "full" and open_full:
+                run_id = open_full["id"]
+            else:
+                args = ["run", "start", "--kind", kind] + (["--rows", ",".join(rows)] if rows else []) \
+                    + (["--questions", ",".join(qids)] if qids else []) + ["--json"]
+                run_id = json.loads(last_line(self.cmd.must(*args)))["id"]
+        self.build()
+
+        def in_scope(listed):
+            return [x for x in listed if not rows or x in rows]
+
+        # Phase 1: documents. Group-wide ones first (once per run), then each row's.
+        to_find = in_scope(self._json_out("todo", "--find").get("rows") or [])
+        run = self.project.run(run_id) or {}
+        done_groups = set((run.get("group_usage") or {}).keys())
+        units = [u for u in self.project.read("units").get("units") or [] if u.get("id") in to_find]
+        for label in project_meta.get("group_labels") or []:
+            values = {}
+            for u in units:
+                v = (u.get("labels") or {}).get(label)
+                if v:
+                    values[v] = values.get(v, 0) + 1
+            for value, n in values.items():
+                # A group finder only where the whole list has two or more such rows (the finder checks too).
+                if n < 2 or f"{label}={value}" in done_groups:
+                    continue
+                if (why := self._stop_now(job)):
+                    return self._scoring_stopped(job, why)
+                job["line"] = f"Finding documents for every {label} {value}"
+                got = self._find(job, run_finder, group=(label, value))
+                with self.cmd.lock:
+                    self.cmd.run("run", "usage", "--run", run_id, "--group", f"{label}={value}", "--step", "find",
+                                 "--tokens", str(got.get("tokens") or 0))
+        job.update({"total": len(to_find) * 2 or 1, "done": 0})
+        for i, row in enumerate(to_find, 1):
+            if (why := self._stop_now(job, row)):
+                return self._scoring_stopped(job, why)
+            job["line"] = f"Finding documents for {names.get(row, row)} ({i} of {len(to_find)})"
+            got = self._find(job, run_finder, row=row)
+            with self.cmd.lock:
+                self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "find", "--tokens", str(got.get("tokens") or 0))
+                job["line"] = f"Reading the documents for {names.get(row, row)}"
+                self.cmd.run("prepare", timeout=1800)
+            job["done"] = i
+            self.build()
+
+        # Phase 2: score each row blind from a kit, check, rebuild.
+        work = [w for w in self._json_out("todo").get("rows") or [] if not rows or w.get("row") in rows]
+        if kind == "trial" or qids:
+            work = [dict(w, questions=[q for q in w.get("questions") or [] if not qids or q in qids]) for w in work]
+            work = [w for w in work if w["questions"]]
+        job.update({"total": len(to_find) + len(work) or 1, "done": len(to_find)})
+        failed = []
+        for i, w in enumerate(work, 1):
+            row, qs = w["row"], w.get("questions") or []
+            if (why := self._stop_now(job, row)):
+                return self._scoring_stopped(job, why)
+            label = f"{names.get(row, row)} ({i} of {len(work)})"
+            try:
+                # The same per-row step as a re-run: a scorer stopped at its budget keeps its answers and the
+                # row waits on the Grid for the owner, while the job goes on (rowwatch.py).
+                self._score_row(job, run_id, row, qs, label, names.get(row, row))
+            except HandbookError as e:
+                failed.append(row)
+                self.note(f"{names.get(row, row)} could not be scored.", "warning", str(e)[-600:])
+            job["done"] = len(to_find) + i
+            self.build()
+
+        with self.cmd.lock:
+            self.cmd.run("check")
+            if (why := self._stop_now(job)) is None:
+                self.cmd.run("run", "finish", "--run", run_id)
+            if (self.project.path / "compare" / "compare.json").is_file() or self.project.held_back.is_dir():
+                self.cmd.run("compare")
+        est = self._json_out("estimate") if kind == "trial" else {}
+        self.build()
+        scored = len(work) - len(failed)
+        said = f"Scored {scored} {self._plural() if scored != 1 else (project_meta.get('unit_word') or 'row')}"
+        if failed:
+            said += f"; {len(failed)} could not be scored"
+        said += ". Check the answers on the Grid. " + self.spent(job)
+        if est.get("point"):
+            low, high = est.get("low") or est["point"], est.get("high") or est["point"]
+            rough = " (from this trial alone, so a rough figure: trying a few more firms it up)" if scored < 3 else ""
+            said += (f" Scoring the rest should use about {show_tokens(est['point'])}" if round(low, -5) == round(high, -5)
+                     else f" Scoring the rest should use about {show_tokens(low)} to {show_tokens(high)}") + rough + "."
+        job["line"] = "Done"
+        self.log_usage({"kind": kind, "job": job["key"], "processed": job["tokens"], "estimate": job.get("estimate")})
+        self.note(said, "good" if not failed else "warning")
+
+    def _find(self, job: dict, run_finder, **who) -> dict:
+        try:
+            got = run_finder(self.project, **who)
+        except HandbookError as e:
+            self.note("A document search could not run.", "warning", str(e)[-600:])
+            return {"tokens": 0}
+        job["tokens"] += int(got.get("tokens") or 0)
+        self.log_usage({"kind": "find", "job": job["key"], "processed": got.get("tokens"), "ok": got.get("ok")})
+        return got
+
+    def _scoring_stopped(self, job: dict, why: str) -> None:
+        self.build()
+        job["line"] = f"Stopped ({why})"
+        self.note(f"Scoring {why}. Nothing is lost: press Carry on, or ask in the chat, to pick up where it left off. "
+                  + self.spent(job), "neutral")
+
+    def _follow_draft(self, job: dict, done: threading.Event) -> None:
+        """While the set-up draft runs, show what Claude is doing (cmd_draft_setup's progress file) as the
+        job's line, and rebuild the page whenever a set-up part has just been written, so the checklist
+        ticks over part by part instead of all at the end (Benjy, 19 Oct 2026: "it only says 1 of 8")."""
+        from .cmd_draft_setup import PROGRESS
+        path = self.project.path.joinpath(*PROGRESS)
+        landed: set[str] = set()
+        while not done.wait(2.0):
+            got = read_json(path, None) or {}
+            if not got or got.get("finished"):
+                continue
+            if got.get("line"):
+                job["line"] = got["line"]
+            job["steps"] = [{"files_read": got.get("files_read") or 0, "files_total": got.get("files_total") or 0,
+                             "wrote": got.get("wrote") or [], "started": got.get("started")}]
+            fresh = set(got.get("wrote") or []) - landed
+            if fresh and not str(got.get("line") or "").startswith(("Checking", "Building")):
+                landed |= fresh
+                try:
+                    self.build()
+                except Exception:  # noqa: BLE001 - a half-written draft may not build yet; the final build follows
+                    pass
 
     def plain_reasons(self, job: dict, ids: list[str]) -> None:
         """The plain-reasons job (`POST /api/feedback/plain-reasons`): one small Claude call per unit, outside
@@ -833,6 +1022,55 @@ class Worker:
         job.update({"done": 1, "line": "Done"})
         self.note(("Done: " if code == 0 else "Stopped before it finished: ") + record["title"] + ". " + self.spent(job),
                   "good" if code == 0 else "warning", said[-800:] or None)
+
+    # Commands the chat may not run behind the page: they start another server, make another
+    # project or open windows. Everything else in hb is the chat's, with Confirm, a copy and Undo.
+    CHAT_HB_BLOCKED = ("serve", "launcher", "init")
+    CHAT_HB_READ_ONLY = ("help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text")
+    CHAT_HB_SLOW = ("find", "score", "draft-setup", "job", "fetch", "prepare", "second-finds", "second-reads", "compare")
+
+    def changed_by_chat(self, title: str, run, hold: bool = True) -> dict:
+        """A change the owner confirmed in the chat that writes to the project at once (hb change, or an hb
+        command): a copy first, then `run()`, then check and build; listed with the jobs, so Undo puts it back."""
+        rid = "change-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+        with self.cmd.lock:
+            snap = chatwork.snapshot(self.project.path, home() / "snapshots" / self._slug(), rid)
+            record = {"id": rid, "title": title[:90], "brief": "", "status": "running", "kind": "change",
+                      "asked": now_iso(), "started": now_iso(), "snapshot": str(snap), "tokens": 0}
+            self._save_job(record)
+            if hold:
+                code, out = run()
+        if not hold:                      # a slow command takes the lock itself when it writes
+            code, out = run()
+        with self.cmd.lock:
+            self.cmd.run("check")
+        self.build()
+        record.update({"status": "done" if code == 0 else "failed", "finished": now_iso(), "result": out[-1500:]})
+        self._save_job(record)
+        return {"code": code, "out": out, "id": rid}
+
+    def chat_hb(self, args: list) -> dict:
+        """Runs one hb command the owner confirmed in the chat, on this project. Quick ones answer at
+        once; slow ones (finding, scoring, a set-up draft) run as a job with progress in the run bar."""
+        args = [str(a) for a in args if str(a) not in ("--project",)]
+        if not args or args[0] in self.CHAT_HB_BLOCKED:
+            raise HandbookError(f"hb {args[0] if args else ''} is not run from the chat: it would start another page or project.")
+        if any(a.startswith("--project") for a in args):
+            raise HandbookError("The chat's commands always work on this project.")
+        if args[0] in self.CHAT_HB_READ_ONLY:
+            code, out = self.cmd.run(*args, timeout=300)
+            return {"code": code, "out": out[-6000:]}
+        if args[0] in self.CHAT_HB_SLOW:
+            title = "hb " + " ".join(args)[:80]
+
+            def slow(job, a=list(args)):
+                got = self.changed_by_chat(title, lambda: self.cmd.run(*a, timeout=2800), hold=False)
+                job.update({"done": 1, "total": 1, "line": "Done" if got["code"] == 0 else "Stopped"})
+                self.note(("Done: " if got["code"] == 0 else "Stopped: ") + title, "good" if got["code"] == 0 else "warning", got["out"][-800:])
+            self.enqueue("chathb:" + now_iso(), "chat-hb", title, slow)
+            return {"code": 0, "out": "Started behind the page; progress shows in the run bar.", "queued": True}
+        got = self.changed_by_chat("hb " + " ".join(args)[:80], lambda: self.cmd.run(*args, timeout=900))
+        return {"code": got["code"], "out": got["out"][-6000:], "undo": got["id"]}
 
     def undo_chat_job(self, jid: str) -> dict:
         record = next((j for j in self.chat_jobs() if j.get("id") == jid), None)
@@ -1160,8 +1398,8 @@ class Handler(BaseHTTPRequestHandler):
         return self.fail(404, "No such call.", "not_found")
 
     def _chat(self, method: str, parts: list[str], query: dict) -> None:
-        """The corner chat's own calls (views/chat.js): documents, search, files, instructions,
-        sections, background jobs and Undo. Reads answer at once; a change is made only after the
+        """The corner chat's own calls (views/chat-tools.js): documents, search, files, instructions,
+        sections, removing labels, background jobs and Undo. Reads answer at once; a change is made only after the
         owner clicked Confirm in the chat, and the page is rebuilt before the answer."""
         srv = self.server
         w = srv.worker
@@ -1221,6 +1459,34 @@ class Handler(BaseHTTPRequestHandler):
                 got["left_by_row"] = left
                 got["unplaced"] = got.get("unplaced", [])[:80]
                 return self.json(got)
+            if parts == ["remove-labels"] and method == "POST":
+                from . import setup_parts
+                with w.cmd.lock:
+                    got = setup_parts.remove_labels(srv.project, (self.body_json() or {}).get("labels") or [])
+                if got.get("ok"):
+                    w.build()
+                    w.note(f"Removed the label{'s' if len(got['removed']) != 1 else ''} {', '.join(got['removed'])}. No score changed.", "good")
+                return self.json(got)
+            if parts == ["change"] and method == "POST":
+                body = self.body_json() or {}
+                op = json.dumps(body.get("op") or {})
+                if not body.get("apply"):
+                    code, out = w.cmd.run("change", "--op", op, "--json")
+                else:
+                    said = str((body.get("op") or {}).get("op") or "a change")
+                    got = w.changed_by_chat(str(body.get("title") or said), lambda: w.cmd.run("change", "--op", op, "--apply", "--json"))
+                    code, out = got["code"], got["out"]
+                try:
+                    return self.json(json.loads(last_line(out)))
+                except (json.JSONDecodeError, ValueError):
+                    return self.fail(400, last_line(out) or "The change could not be made.")
+            if parts == ["hb"] and method == "POST":
+                body = self.body_json() or {}
+                return self.json(w.chat_hb(body.get("args") or []))
+            if parts == ["hb-help"] and method == "GET":
+                cmd = q("command")
+                code, out = w.cmd.run(*([cmd, "--help"] if cmd else ["help"]), project=False, timeout=60)
+                return self.json({"text": out[-8000:]})
             if parts == ["job"] and method == "POST":
                 return self.json(w.queue_chat_job(self.body_json() or {}))
             if parts == ["jobs"] and method == "GET":

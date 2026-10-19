@@ -511,8 +511,10 @@
     head.className = "hbl-run__line";
     const b = document.createElement("b");
     b.textContent = job ? "Running on this computer: " + w.title : w.title + (show.status === "failed" ? ": stopped" : ": done");
-    head.append(b, document.createTextNode(w.line ? ". " + w.line : ""));
+    head.append(b, document.createTextNode(w.line && !job ? ". " + w.line : ""));
     lineEl.append(head);
+    // While it runs, what Claude is doing now, moving, so the page never looks stuck (19 Oct 2026).
+    if (job && HB.working) lineEl.append(HB.working(w.line || "Claude is working on it", { status: false }));
     const cost = costWords(show, Boolean(job));
     if (cost) {
       const p = document.createElement("p");

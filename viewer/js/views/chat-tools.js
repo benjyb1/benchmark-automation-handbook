@@ -18,6 +18,10 @@
      propose_job          anything else: one background Claude session on the project,
                           with a copy taken first and an Undo button when it is done
      background_jobs      the jobs so far, and Undo for one of them (after a reload too)
+   and, on every tab and page (the Feedback tab keeps FALLBACK): set_grid_view (group, filter: at
+   once, free), propose_edit (one question or row field, through HB.edits.edit), propose_document
+   (a link for some rows, saved as "supplied") and, in the tool on the owner's computer,
+   propose_setup_change (the basics, the page's colour, removing labels).
    A change is never made by Claude: each propose_ tool puts one line with Confirm and
    Cancel in the chat (chat.js's propose), and the call is made when the owner clicks.
 
@@ -320,16 +324,203 @@
     return null;
   }
 
+  /* ---- set_grid_view, propose_edit, propose_setup_change, propose_document ------------------
+     The everyday changes, each the cheapest way: the Grid's view changes at once and costs nothing;
+     an edit or a set-up change is one line to confirm, no Claude; only a re-score or a job uses
+     tokens. These four work on any tab and at any stage. */
+
+  const COLOURS = { blue: "#1f4e9c", "dark blue": "#173a73", navy: "#1b2f5b", "light blue": "#3a7bd5", green: "#1d5c4f", red: "#a3242a",
+    purple: "#5b3a8c", orange: "#b85a12", teal: "#1f6f78", grey: "#4a4f57", gray: "#4a4f57", black: "#222222", pink: "#a8336b" };
+
+  function labelsOf(api) { return arr((api.bundle().project || {}).labels).map(String); }
+
+  function setGridView(input, api) {
+    const labels = labelsOf(api);
+    const out = {};
+    if (input.group_by != null) {
+      const g = String(input.group_by);
+      const want = g === "none" || g === "" ? "" : g;
+      if (want && !labels.includes(want)) throw new Error("The Grid can group by " + (labels.join(", ") || "no label") + ", or none.");
+      if (typeof HB.setGroupBy === "function") HB.setGroupBy(want);
+      else HB.state.groupBy = want;
+      out.group_by = want || "none";
+    }
+    if (input.filters !== undefined) {
+      HB.state.filters = {};
+      for (const [k, v] of Object.entries(input.filters || {})) {
+        if (!labels.includes(k)) throw new Error(k + " is not a label. The labels are: " + labels.join(", ") + ".");
+        if (v != null && v !== "") HB.state.filters[k] = String(v);
+      }
+      out.filters = HB.state.filters;
+    }
+    const shown = api.moveOrOffer ? api.moveOrOffer("grid", "Open the Grid", () => (typeof HB.render === "function" ? HB.render() : HB.go("grid")), "The Grid is laid out anew.") : "";
+    return { done: out, shown, note: "Done at once: it changes only how the Grid is laid out for the owner, never an answer or a score. Say so in a line." };
+  }
+
+  const EDIT_SAYS = {
+    wording: "its answers become out of date until scored again (offer propose_rescore with its cost)",
+    rule: "its answers become out of date until scored again (offer propose_rescore with its cost)",
+    short: "only its short name changes",
+    levels_points: "the points are worked out again at once for every answer, with no Claude",
+    applies_to: "rows it stops applying to set their answer aside; rows it starts applying to wait to be scored",
+    name: "only the name changes",
+    labels: "if a question applies by this label, which questions apply can change",
+  };
+
+  function proposeEdit(input, api) {
+    api.canSave();
+    if (!(HB.edits && typeof HB.edits.edit === "function")) throw new Error("This view saves no edits. Put a background job instead (propose_job).");
+    const target = input.target === "row" ? "unit" : String(input.target || "");
+    const field = String(input.field || "");
+    if (!["question", "unit"].includes(target)) throw new Error("target is question or row.");
+    const id = target === "unit" ? api.rowOf(input.id) : api.qidOf(input.id);
+    if (!EDIT_SAYS[field]) throw new Error("A " + (target === "unit" ? "row" : "question") + " edit changes one of: " + (target === "unit" ? "name, labels" : "wording, short, rule, levels_points, applies_to") + ". Anything else (adding or deleting a question or row, level wording, the score sheet) is a background job (propose_job).");
+    const value = input.value;
+    const who = target === "unit" ? api.unitName(id) : "question " + id;
+    const shown = typeof value === "string" ? "“" + api.cut(value, 160) + "”" : api.cut(JSON.stringify(value), 160);
+    return api.propose("Change " + who + "'s " + field.replace("_", " ") + " to " + shown + ": " + EDIT_SAYS[field] + ".",
+      () => HB.edits.edit(target, id, field, value));
+  }
+
+  function proposeSetupChange(input, api) {
+    if (!local()) throw new Error(ONLY_HERE);
+    api.canSave();
+    const changes = Object.assign({}, input.changes || {});
+    const remove = arr(input.remove_labels).map(String);
+    if (typeof changes.accent === "string" && COLOURS[changes.accent.trim().toLowerCase()]) changes.accent = COLOURS[changes.accent.trim().toLowerCase()];
+    const keys = Object.keys(changes);
+    if (!keys.length && !remove.length) throw new Error("Say what to change: changes {name, edition, cutoff, unit_word, unit_word_plural, group_labels, group_by, results_sites, accent} and/or remove_labels.");
+    const says = [];
+    if (remove.length) says.push("remove the label" + (remove.length === 1 ? " " : "s ") + remove.join(", ") + " from the project and every row (no score changes)");
+    for (const k of keys) {
+      const v = changes[k];
+      if (k === "cutoff") says.push("cut-off to " + v + " (answers already scored keep the old one until scored again)");
+      else if (k === "accent") says.push(v == null ? "the page's own colours back" : "the page's main colour to " + v);
+      else if (k === "group_by") says.push("group the Grid by " + (v || "nothing") + " when it opens");
+      else says.push(k.replace(/_/g, " ") + " to " + (Array.isArray(v) ? v.join(", ") || "none" : v == null ? "none" : v));
+    }
+    return api.propose("Change the set-up: " + says.join("; ") + ".", async () => {
+      if (remove.length) {
+        const got = await HB.local.post("chat/remove-labels", { labels: remove });
+        if (!got.ok) throw new Error(arr(got.problems).join(" "));
+      }
+      if (keys.length) {
+        const got = await HB.local.post("setup", { part: "basics", content: changes });
+        if (got && got.ok === false) throw new Error(arr(got.problems).join(" "));
+      }
+      if (typeof HB.local.refresh === "function") { try { await HB.local.refresh(); } catch (e) { /* the next poll */ } }
+      return { __result: true, applied: true, note: "Changed. The page shows it now.", told: "The set-up change is saved and the page rebuilt.)" };
+    });
+  }
+
+  function proposeDocument(input, api) {
+    api.canSave();
+    const rows = arr(input.rows).map(api.rowOf);
+    const link = String(input.link || "").trim();
+    if (!rows.length || !/^https?:\/\//i.test(link)) throw new Error("A document needs the rows it is for and its web address (https://...). For a file on the owner's computer, they drop it on the Set-up tab under Your material, or on a step's brief.");
+    return api.propose("Add " + link + " as a document for " + rows.map(api.unitName).join(", ") + ". It is saved, and nothing is scored again until you ask (then the line shows the cost).",
+      () => HB.edits.save("supplied", { rows, link, what: input.title ? String(input.title) : null }));
+  }
+
+  /* ---- propose_change, run_command, get_setup: the whole tool, at any stage ------------------
+     Everything the set-up Claude could change, the corner chat changes too, after scoring and
+     mid-round: hb change (changes.py) for rows, questions, rules and set-up parts, with what it does
+     to the answers said before Confirm; and any of the tool's own commands (hb ...), run behind the
+     page. Each writes only after Confirm, with a copy first, so background_jobs can undo it. */
+
+  const n = (x) => arr(x).length;
+
+  async function proposeChange(input, api) {
+    if (!local()) throw new Error(ONLY_HERE);
+    api.canSave();
+    const op = input.change && typeof input.change === "object" ? input.change : null;
+    if (!op || !op.op) throw new Error("change is {op, ...}: add_rows, remove_rows, rename_row, merge_rows, add_question, remove_questions, change_question, remove_rules or set_part (call run_command [\"change\", \"--list\"] for the fields).");
+    api.progress("Working out what this does to the answers");
+    const dry = await HB.local.post("chat/change", { op, apply: false });
+    if (!dry.ok) throw new Error(arr(dry.problems).join(" ") || "That change does not fit the project.");
+    const imp = dry.impact || {};
+    const bits = [];
+    if (n(imp.removed)) bits.push(n(imp.removed) + " answer" + (n(imp.removed) === 1 ? "" : "s") + " removed (Undo brings them back)");
+    if (n(imp.out_of_date)) bits.push(n(imp.out_of_date) + " out of date until scored again");
+    if (n(imp.unscored)) bits.push(n(imp.unscored) + " new to score");
+    if (imp.kept != null) bits.push(imp.kept + " kept as they are");
+    const redo = imp.rescore || { rows: [], questions: [] };
+    const est = n(redo.rows) && HB.cost && typeof HB.cost.rows === "function" ? HB.cost.rows(redo.rows, redo.questions) : null;
+    const title = String(input.title || dry.said || op.op);
+    const line = title.replace(/\.$/, "") + ": " + (bits.join(", ") || "no answer changes") + ". One click undoes it." +
+      (n(redo.rows) ? " Scoring the affected answers again: " + (est ? HB.cost.line(est) : "uses some of your plan") + (n(imp.unscored) && op.op === "add_rows" ? " (finding their documents comes on top)" : "") + "." : "");
+    return Object.assign(api.propose(line, async () => {
+      const got = await HB.local.post("chat/change", { op, apply: true, title });
+      if (!got.ok) throw new Error(arr(got.problems).join(" ") || "It was not changed.");
+      return { __result: true, applied: true, note: "Done. Undo is under background jobs.",
+        told: "The change is made" + (n(redo.rows) ? "; offer to score the affected answers again (propose_rescore rows " + JSON.stringify(redo.rows.slice(0, 20)) + ", questions " + JSON.stringify(redo.questions.slice(0, 30)) + "), or start scoring for new rows." : ".") + ")" };
+    }), { impact: { removed: n(imp.removed), out_of_date: n(imp.out_of_date), unscored: n(imp.unscored), kept: imp.kept, rescore: redo } });
+  }
+
+  const QUICK_CMDS = ["help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text"];
+
+  async function runCommand(input, api) {
+    if (!local()) throw new Error(ONLY_HERE);
+    const args = arr(input.args).map(String).filter(Boolean);
+    if (!args.length) throw new Error("args is the command and its arguments, such as [\"help\"] or [\"status\"].");
+    const readOnly = QUICK_CMDS.includes(args[0]) || args.includes("--help") || (args[0] === "change" && !args.includes("--apply")) || (args[0] === "locate" && !args.includes("--write"));
+    if (readOnly) {
+      api.progress("Asking the tool");
+      if (args[0] === "help" || args.includes("--help")) return api.fit(await getJson("chat/hb-help" + (args[0] !== "help" ? "?command=" + encodeURIComponent(args[0]) : "")));
+      return api.fit(await HB.local.post("chat/hb", { args }));
+    }
+    api.canSave();
+    const why = String(input.why || "").trim();
+    if (!why) throw new Error("Give why: what this does for the owner, in plain words.");
+    return api.propose(api.cut(why, 200).replace(/\.$/, "") + ". The tool does it behind the page; a copy is taken first, so one click undoes it.", async () => {
+      const got = await HB.local.post("chat/hb", { args });
+      return { __result: true, applied: true, note: got.queued ? "Started. Progress shows in the run bar." : got.code === 0 ? "Done." : "It stopped with a problem.",
+        told: "The command " + (got.queued ? "started behind the page" : "finished with code " + got.code) + ". Its output: " + api.cut(got.out || "", 3000) + ")" };
+    });
+  }
+
+  async function getSetupAnywhere(input, api) {
+    if (!local()) throw new Error(ONLY_HERE);
+    const got = await getJson("setup");
+    if (input.formats) got.formats = (await getJson("setup/guide")).text;
+    return api.fit(got);
+  }
+
   /* ---- The tool list and the standing instructions --------------------------------------- */
 
   const S = (props, required) => ({ type: "object", properties: props, required: required || [] });
   const ROWS = { type: "array", items: { type: "string" }, description: "row ids (names work too); leave out for all" };
   const QIDS = { type: "array", items: { type: "string" }, description: "question ids; leave out for all" };
 
-  function tools(api) {
-    if (!local()) return [];
+  /** The everyday changes, offered on every page (the Feedback tab too): FALLBACK names those the
+      Feedback tab keeps, so no tab is left without a route. */
+  const FALLBACK = ["set_grid_view", "propose_edit", "propose_setup_change", "propose_document", "make_file", "propose_job",
+    "propose_change", "run_command", "get_setup"];
+
+  function everyday(api) {
     const w = (fn) => (input, ctx) => fn(input || {}, api, ctx);
     return [
+      { name: "set_grid_view", description: "Changes how the Grid is laid out, at once and for free: group_by (a label, or none for one plain list) and filters ({label: value}, or {} to clear). Never changes an answer. Use it for \"group by\", \"remove the groupings\", \"only show X\".",
+        inputSchema: S({ group_by: { type: "string" }, filters: { type: ["object", "null"] } }), execute: w(setGridView) },
+      { name: "propose_edit", description: "Puts one edit to the owner, no Claude needed: a question's wording, short (name), rule (coding instructions), levels_points ({level value: points}) or applies_to; or a row's name (rename a country, company...) or labels ({label: value}). The line says what follows (wording or rule: those answers go out of date until scored again). Saved only when they click Confirm.",
+        inputSchema: S({ target: { type: "string", enum: ["question", "row"] }, id: { type: "string" }, field: { type: "string", enum: ["wording", "short", "rule", "levels_points", "applies_to", "name", "labels"] }, value: {} }, ["target", "id", "field", "value"]), execute: w(proposeEdit) },
+      { name: "propose_document", description: "Puts adding a document to the owner: its web address and the rows it is for. It is fetched and kept behind the page; nothing is scored again until asked (then propose_rescore). Saved only when they click Confirm.",
+        inputSchema: S({ rows: ROWS, link: { type: "string" }, title: { type: "string" } }, ["rows", "link"]), execute: w(proposeDocument) },
+    ];
+  }
+
+  function tools(api) {
+    if (!local()) return everyday(api);
+    const w = (fn) => (input, ctx) => fn(input || {}, api, ctx);
+    return everyday(api).concat([
+      { name: "propose_change", description: "Changes the set-up at any stage, after scoring and mid-round too: change {op: add_rows (rows [{id?, name, labels}]), remove_rows (ids), rename_row (id, name), merge_rows (into, rows), add_question (question in the set-up format), remove_questions (ids), change_question (id, fields {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence}), remove_rules (ids), set_part (part scoresheet | where_to_look | needs | rules | basics, content: the whole part in the set-up format; get_setup with formats first)}. It works out what happens to the answers first (removed, out of date, new to score, kept) and the cost of scoring again, and puts that to the owner. Saved only when they click Confirm; one click undoes it.",
+        inputSchema: S({ change: { type: "object" }, title: { type: "string", description: "a few plain words, e.g. Remove Zambia" } }, ["change"]), execute: w(proposeChange) },
+      { name: "run_command", description: "Runs any of the tool's own commands on this project (args, e.g. [\"help\"], [\"status\"], [\"todo\"], [\"compare\"], [\"chart\", \"--help\"]): help, status, validate, todo, cost and any --help answer at once; anything that changes the project is put to the owner with why (plain words), runs behind the page after Confirm, and can be undone. Use it for whatever no other tool covers before reaching for a background job.",
+        inputSchema: S({ args: { type: "array", items: { type: "string" } }, why: { type: "string" } }, ["args"]), execute: w(runCommand) },
+      { name: "get_setup", description: "The set-up as it stands (basics, questions, rows, score sheet, where to look, data needed, rules); with formats: true also the set-up file formats, needed before set_part.",
+        inputSchema: S({ formats: { type: "boolean" } }), execute: w(getSetupAnywhere) },
+      { name: "propose_setup_change", description: "Puts a set-up change to the owner, at any stage and on any tab, no Claude needed: changes {name, edition, cutoff (YYYY-MM-DD), unit_word, unit_word_plural, group_labels, group_by (the Grid's grouping when it opens; null for none), results_sites, accent (the page's main colour: a #rrggbb or a colour name such as blue; null for the usual)} and/or remove_labels (labels to take off the project and every row; no score changes). Saved only when they click Confirm.",
+        inputSchema: S({ changes: { type: "object" }, remove_labels: { type: "array", items: { type: "string" } } }), execute: w(proposeSetupChange) },
       { name: "read_documents", description: "A row's documents. With row only: the list (doc id, title, publisher, date, pages). With doc and page: the saved text of that page (count: up to 10 pages). With search: the pages holding those words, in one row's documents (row), several (rows) or all. Use it to look things up yourself before answering.",
         inputSchema: S({ row: { type: "string" }, rows: ROWS, doc: { type: "string" }, page: { type: "number" }, count: { type: "number" }, search: { type: "string" } }), execute: w(readDocuments) },
       { name: "make_file", description: "Makes a CSV or Excel file and shows it under your reply with a Download button (also saved in the project's exports folder). Either a slice of the answers: rows, questions, only (flagged, no_evidence, judgement or out_of_date), columns (any of " + COLUMNS.join(", ") +
@@ -347,17 +538,28 @@
         inputSchema: S({ undo: { type: "string" } }), execute: w(backgroundJobs) },
       { name: "propose_job", description: "For anything no other tool does: puts to the owner a background job, one Claude session that does the task on the project's files behind the page (it can read every document and change any answer, rule, question or file, with a copy taken first so one click undoes it). title: a few words for the owner. brief: the task in full for that session, with the rows, questions and what done looks like. size: small (one row or a few answers), medium (several rows), large (most of the project), or tokens [low, high] when you know better. Saved only when they click Confirm.",
         inputSchema: S({ title: { type: "string" }, brief: { type: "string" }, size: { type: "string", enum: ["small", "medium", "large"] }, tokens: { type: "array", items: { type: "number" } } }, ["title", "brief"]), execute: w(proposeJob) },
-    ];
+    ]);
   }
 
+  /** Where each everyday ask goes, cheapest first. A route for every request is what keeps the chat
+      from apologising: with no tool in reach, Claude says it can't whatever the instructions say
+      (19 Oct 2026: "remove the groupings" was refused, then put as a 100,000-token job). */
   function instructions() {
-    if (!local()) return [];
-    return [
+    const charge = "You are in charge of this whole tool on the owner's behalf: everything the tool can do, and everything the set-up could change, you can do from here, on any tab and at any stage, scored or not. Nothing is locked because answers exist; the only cost is scoring again, and you say it before Confirm.";
+    const routes = "Pick the cheapest route that does what the owner asked, in this order: the Grid's view (set_grid_view: free and at once), an edit or a set-up change (propose_edit" + (local() ? ", propose_setup_change" : "") + ": one Confirm, no Claude), " +
+      "scoring again (propose_rescore: tokens), and only then a background job (" + (local() ? "propose_job" : "saved for Claude's next session") + ": tokens). Everyday asks: \"remove the groupings\" or \"group by X\": set_grid_view; \"remove the X label\": propose_setup_change remove_labels; " +
+      "\"rename Kenya\" or \"Kenya's region is wrong\": propose_edit on the row; \"reword question 5\", its coding instructions, its points: propose_edit on the question, then offer propose_rescore; \"change the cut-off\": propose_setup_change cutoff, then offer propose_rescore; " +
+      "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; \"export everything for Kenya\": make_file with rows [kenya]; " +
+      "add, remove, rename or merge rows, add, remove or change questions and their levels or points, remove rules: propose_change; the score sheet and bands, where to look, data needed, new rules: propose_change set_part (get_setup with formats first); " +
+      "anything else the tool does (start scoring, compare, charts, checks, any step): run_command, after run_command [\"help\"] if you are unsure what exists; a task that needs Claude to read and write across the project: propose_job. " +
+      "If you notice you are about to write can't, cannot, unable, not possible or do it yourself, stop and put the route instead.";
+    if (!local()) return [routes];
+    return [charge, routes,
       "Wider tools: read_documents (look things up in the documents yourself), make_file (a CSV or Excel file with a Download button: never paste a table for the owner to copy), propose_instruction (a standing instruction or new rule for every scorer), " +
         "propose_rescore (score again any answers), propose_sections (section numbers for saved quotes, no tokens), propose_job (anything else, done by a background Claude session, undoable in one click) and background_jobs (what jobs did, and Undo).",
       "Where a quote sits: evidence may carry a section, such as s. 4(4) or art. 35(1), next to its page. When the owner wants sections rather than pages: propose_instruction so future scoring records them, then propose_sections for the answers already saved (free), then a job for those it could not place, with its cost.",
     ];
   }
 
-  HB.chatMore = { tools, instructions, node, watch };
+  HB.chatMore = { tools, instructions, node, watch, FALLBACK };
 })(window.HB = window.HB || {});

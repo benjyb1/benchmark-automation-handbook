@@ -115,6 +115,20 @@
     );
   }
 
+  /* working(text): Claude is busy on something. Three dots that bounce gently, then a few words
+     ("Claude is drafting this", "Reading law-kenya.pdf (4 of 12)"). For anything still under way: a
+     grey dash read as "stopped" to the first newcomer who saw one (19 Oct 2026). Still dots when the
+     owner has asked for less motion. */
+  function working(text, opts) {
+    const o = opts || {};
+    return h(
+      "span",
+      { class: ["working", o.large && "working--lg"], role: o.status === false ? null : "status" },
+      h("span", { class: "working__dots", "aria-hidden": "true" }, h("span", null), h("span", null), h("span", null)),
+      h("span", { class: "working__word" }, isEmpty(text) ? "Claude is working on it" : String(text)),
+    );
+  }
+
   const STEP_STATES = {
     done: { icon: "tick", word: "Done" },
     needs_you: { icon: "person", word: "Needs you" },
@@ -633,6 +647,7 @@
     addStyles,
     icon,
     statusChip,
+    working,
     notice,
     countedTable,
     tableCells,

@@ -260,6 +260,9 @@ def check_project(d) -> list[str]:
     group_by = d.get("group_by")
     if group_by is not None and group_by not in labels:
         out.append(f"project: group_by {_show(group_by)} is not in labels")
+    accent = d.get("accent")
+    if accent is not None and not (isinstance(accent, str) and re.fullmatch(r"#[0-9a-fA-F]{6}", accent)):
+        out.append(f"project: accent {_show(accent)} must be a colour like #1d5c4f, or null")
     for site in out.str_list(d, "results_sites", w, required=False, nullable=True):
         if not re.fullmatch(r"[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(/\S*)?", site.strip().lower()):
             out.append(f"project: results_sites {_show(site)} must be a web host, such as elephantstandards.com, "

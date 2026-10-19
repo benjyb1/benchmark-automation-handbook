@@ -421,7 +421,7 @@
 
     const wait = waiting.length
       ? h("p", { class: "rb__wait", id: "rb-wait", role: "status" },
-        HB.statusChip("neutral", "Waiting for Claude"),
+        HB.working("Waiting for Claude", { status: false }),
         h("span", null, h("b", null, waiting.map((d) => requestWords(d, b)).join("; ")), ". Claude applies "
           + (waiting.length === 1 ? "this" : "these") + HB.when(" before the next row.", " before the next row, or the next time it works on this project.")))
       : null;

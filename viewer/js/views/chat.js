@@ -11,7 +11,8 @@
                rules), get_rule, find_cells, get_counts, get_step_brief,
                get_results (scores, the comparison with last edition), get_costs
                (tokens used so far and a rough range for more, from HB.cost)
-     move      go_to (HB.go), open_cell (HB.openCell), highlight_cells
+     move      (only on the owner's click when it means another tab: moveOrOffer)
+               go_to (HB.go), open_cell (HB.openCell), highlight_cells
                (HB.highlight), filter_grid (HB.state.onlyRows)
      propose   propose_rule_decision (HB.edits.decide / HB.edits.skip),
                propose_rerun (HB.compareView.rerun: the Re-run button's control
@@ -61,6 +62,8 @@
      badge()                  refreshes the count on the button (app.js, after each draw)
      notices()                what the count covers: [{id, text, show}]
      send(text)               asks Claude (Promise; the reply lands in the panel)
+     watchDraft()             shows a running set-up draft in the conversation, step by
+                              step, and carries on with what to check when it is done
      tools()                  the tool list given to `sample` (each {name,
                               description, inputSchema, execute})
      proposals()              the changes put to the owner: [{id, line, state,
@@ -453,21 +456,48 @@
     return text;
   }
 
+  /* The chat never switches tab by itself (Benjy, 19 Oct 2026: "remove the functionality where
+     talking to the corner chat can make you switch to the setup page with no warning"). On the tab
+     already, it acts; elsewhere it puts a button under the reply, and only the owner's click moves
+     the page. */
+  const TAB_WORD = { setup: "Set-up", rules: "Rules", grid: "Grid", feedback: "Feedback", results: "Results" };
+  const hereTab = () => (typeof HB.route === "function" ? (HB.route() || {}).tab : null);
+
+  function moveOrOffer(tab, label, run, done) {
+    if (hereTab() === tab) {
+      run();
+      return moved(done);
+    }
+    st.log.push({ kind: "go", label, run, used: false });
+    repaint();
+    return "Not moved: the owner is on the " + (TAB_WORD[hereTab()] || "current") + " tab, so a button \u201c" + label + "\u201d is under your reply and the page moves only if they click it. " +
+      "Say so in a few words; never say the page has moved.";
+  }
+
+  function goNode(entry) {
+    const btn = h("button", { type: "button", class: "btn btn--small", disabled: entry.used }, entry.used ? "Opened" : entry.label);
+    btn.addEventListener("click", () => {
+      if (entry.used) return;
+      entry.used = true;
+      if (!docked() && /cell/i.test(entry.label)) close(true);
+      entry.run();
+      repaint();
+    });
+    return h("div", { class: "hbc-go cluster" }, btn);
+  }
+
   function goTo(input) {
     const tab = String(input.tab || "").toLowerCase();
     if (tab === "compare") {
-      HB.go("results", "compare");
-      return moved("Showing the comparison with last edition (Results).");
+      return moveOrOffer("results", "Open the comparison with last edition", () => HB.go("results", "compare"), "Showing the comparison with last edition (Results).");
     }
     if (tab === "feedback" && !hasFeedback()) throw new Error("The feedback round (packs out, replies in) is in " + FULL + ", so this version has no Feedback tab. Say so plainly if the owner asked for it.");
     if (!tabNames().includes(tab) || !HB.views || !HB.views[tab]) throw new Error("Tabs are: " + tabNames().join(", ") + ", or compare.");
     if (tab === "rules" && input.rule) {
       const rule = ruleOf(input.rule);
-      HB.go("rules", rule.id);
-      return moved("Showing rule " + rule.id + " on the Rules tab.");
+      return moveOrOffer("rules", "Open rule " + rule.id, () => HB.go("rules", rule.id), "Showing rule " + rule.id + " on the Rules tab.");
     }
-    HB.go(tab);
-    return moved("Showing the " + tab + " tab.");
+    return moveOrOffer(tab, "Open the " + (TAB_WORD[tab] || tab) + " tab", () => HB.go(tab), "Showing the " + tab + " tab.");
   }
 
   function docked() {
@@ -478,10 +508,11 @@
     const row = rowOf(input.row);
     const qid = qidOf(input.question);
     cellOf(row, qid);
-    // Below 64rem the cell panel is modal and covers the page: step aside for it.
-    if (!docked()) close(true);
-    HB.openCell(row, qid);
-    return moved("Opened " + unitName(row) + ", " + qid + " in the cell panel.");
+    return moveOrOffer("grid", "Open " + unitName(row) + ", " + qid, () => {
+      // Below 64rem the cell panel is modal and covers the page: step aside for it.
+      if (!docked()) close(true);
+      HB.openCell(row, qid);
+    }, "Opened " + unitName(row) + ", " + qid + " in the cell panel.");
   }
 
   function highlightCells(input) {
@@ -492,15 +523,20 @@
       cellOf(row, qid);
       return [row, qid];
     });
-    HB.highlight(list);
-    return moved(list.length ? "Highlighted " + list.length + (list.length === 1 ? " cell" : " cells") + " on the Grid." : "Cleared the highlight.");
+    const words = list.length ? "Highlighted " + list.length + (list.length === 1 ? " cell" : " cells") + " on the Grid." : "Cleared the highlight.";
+    if (!list.length) {
+      HB.state.highlight = [];
+      if (typeof HB.render === "function") HB.render();
+      return moved(words);
+    }
+    return moveOrOffer("grid", "Show the " + list.length + (list.length === 1 ? " cell" : " cells") + " on the Grid", () => HB.highlight(list), words);
   }
 
   function filterGrid(input) {
     const rows = input.rows == null ? null : Array.from(new Set(arr(input.rows).map(rowOf)));
     HB.state.onlyRows = rows && rows.length ? rows : null;
-    HB.go("grid");
-    return moved(HB.state.onlyRows ? "The Grid now shows " + HB.data.unitWords(rows.length) + "." : "The Grid shows everything again.");
+    const words = HB.state.onlyRows ? "The Grid now shows " + HB.data.unitWords(rows.length) + "." : "The Grid shows everything again.";
+    return moveOrOffer("grid", HB.state.onlyRows ? "Show those " + HB.data.unitWords(rows.length) + " on the Grid" : "Open the Grid", () => (hereTab() === "grid" && typeof HB.render === "function" ? HB.render() : HB.go("grid")), words);
   }
 
   /* ---- Tools: propose a change (the owner confirms it) ----------------------------- */
@@ -509,11 +545,14 @@
     if (!(HB.edits && HB.edits.ready)) throw new Error(NOT_SAVED_HERE());
   }
 
-  /** Puts one change to the owner. run() makes it when they click Confirm, through the page's own save. */
-  function propose(line, run) {
+  /** Puts one change to the owner. run() makes it when they click Confirm, through the page's own save.
+      more.context: [[label, text]] shown under the line, so the owner can decide without looking
+      elsewhere; more.edit: the words "Change it" puts in the message box for them to edit. */
+  function propose(line, run, more) {
     proposalCount += 1;
     const id = "c" + proposalCount;
-    const p = { id, line, run, state: "asked", note: null };
+    const m = more || {};
+    const p = { id, line, run, state: "asked", note: null, title: m.title || null, context: arr(m.context).filter((c) => c && c[1]), edit: m.edit || null };
     st.proposals.set(id, p);
     st.log.push({ kind: "change", id });
     repaint();
@@ -533,7 +572,45 @@
     }
     if (!option && !words) throw new Error("Give an option id or the owner's own wording.");
     const shown = option ? optionText(rule, option) : words;
-    return propose("Decide rule " + rule.id + ": “" + cut(shown, 160) + "”", () => HB.edits.decide(rule.id, option, words || null));
+    // The whole answer, the question it settles and why: a clipped line left the first newcomer unable
+    // to decide (19 Oct 2026). "Change it" lets them put it in their own words.
+    const asked = typeof rule.question === "string" && rule.question.trim() ? rule.question.trim() : String(rule.ask || "").trim();
+    return propose("Decide rule " + rule.id + ": “" + shown + "”", () => HB.edits.decide(rule.id, option, words || null), {
+      context: [["The question", asked], ["Why", rule.why || null]],
+      edit: "For rule " + rule.id + ", I'd rather say: " + shown,
+    });
+  }
+
+  /** Several rule decisions as ONE card with one Confirm, for "go with all your recommendations":
+      eight cards with eight Confirms, each redrawing the page, glitched it (19 Oct 2026). */
+  function proposeDecisions(input) {
+    canSave();
+    const list = arr(input.decisions);
+    if (!list.length) throw new Error("Give the decisions as a list: [{rule, option or own_words or skip}].");
+    if (list.length === 1) return proposeDecision(list[0]);
+    const plan = list.map((d) => {
+      const rule = ruleOf(d.rule);
+      if (d.skip === true) return { rule, skip: true, shown: "skip for now (Claude's reading stays in use)" };
+      const option = d.option == null || d.option === "" ? null : String(d.option);
+      const words = typeof d.own_words === "string" ? d.own_words.trim() : "";
+      if (option && !optionText(rule, option)) {
+        throw new Error("Rule " + rule.id + " has no option " + JSON.stringify(option) + ". Its options are: " + arr(rule.options).map((o) => o.id).join(", ") + ".");
+      }
+      if (!option && !words) throw new Error("Rule " + rule.id + ": give an option id, the owner's own wording, or skip.");
+      return { rule, option, words, shown: option ? optionText(rule, option) : words };
+    });
+    const line = "Decide " + plan.length + " rules: " + plan.map((d) => d.rule.id + " “" + d.shown + "”").join("; ");
+    return propose(line, async () => {
+      for (const d of plan) {   // one after another: the page redraws once at the end
+        if (d.skip) await HB.edits.skip(d.rule.id);
+        else await HB.edits.decide(d.rule.id, d.option, d.words || null);
+      }
+      return null;
+    }, {
+      title: "Settle these " + plan.length + " rules",
+      context: plan.map((d) => [d.rule.id, d.shown]),
+      edit: "For the rules, I'd rather: " + plan.map((d) => d.rule.id + " " + d.shown).join("; "),
+    });
   }
 
   function proposeRerun(input) {
@@ -567,7 +644,10 @@
       body.stage = stage;
     }
     const words = typeof HB.runBar.describe === "function" ? HB.runBar.describe(body) : action;
-    return propose("Run: " + words, () => HB.runBar.request(body));
+    const out = propose("Run: " + words, () => HB.runBar.request(body));
+    // 19 Oct 2026: a confirmed scope was taken for a start, and the run bar still said "No run open".
+    out.note += " This changes no more than it says and starts nothing. If the owner wants scoring to begin, use start_scoring.";
+    return out;
   }
 
   function proposeCorrection(input) {
@@ -606,8 +686,8 @@
       throw new Error("A draft can't be started here now (one may already be on its way). Tell the owner to use Generate report on the Results tab.");
     }
     d.generate(false);
-    HB.go("results");
-    return "Started. The draft is being written on the Results tab; the owner reads it there and saves it as the report once every number checks out.";
+    const said = moveOrOffer("results", "Open the Results tab", () => HB.go("results"), "Showing the Results tab.");
+    return "Started. The draft is being written on the Results tab; the owner reads it there and saves it as the report once every number checks out. " + said;
   }
 
   /* ---- Charts ------------------------------------------------------------------------------ */
@@ -685,7 +765,10 @@
     return body;
   }
 
-  async function proposeDraftSetup() {
+  /** Starts Draft my set-up at once: the owner asked for it in the chat, so there is no second button to
+      press (Benjy, 19 Oct 2026: "the chat should just be able to do what the button does"). The chat then
+      shows what Claude is doing until the draft is done, and carries on with what to check. */
+  async function startDraftSetup() {
     if (!HB.local) throw new Error(NOT_SAVED_HERE());
     canSave();
     let chars = 0;
@@ -696,8 +779,93 @@
       chars = 0;
     }
     const est = HB.cost ? HB.cost.setupDraft(chars) : null;
-    return propose("Draft the set-up from your files (Claude reads them all in the background). " + (est ? HB.cost.line(est) : "It uses some of your plan."),
-      () => HB.edits.save("setup", { action: "draft", at: new Date().toISOString() }));
+    const s0 = HB.local.state ? HB.local.state() : null;
+    const job = s0 && (s0.job && s0.job.kind === "setup" ? s0.job : arr(s0.queued).find((j) => j && j.kind === "setup"));
+    if (!job) await HB.edits.save("setup", { action: "draft", at: new Date().toISOString() });
+    watchDraft();
+    return { started: true, already_running: Boolean(job), cost: est ? HB.cost.line(est) : "It uses some of your plan.",
+      note: "It has started (no Confirm needed). The chat now shows what Claude is doing, step by step. Tell the owner in two " +
+        "short lines that it is reading their files, that it takes several minutes and what it costs, and that you will " +
+        "walk them through the result when it is done. Do not tell them to press anything." };
+  }
+
+  /** Starts scoring as the green next-step button does (views/nextstep.js): no Confirm, because the
+      owner asked for it in words. */
+  async function startScoring(input) {
+    if (!HB.local || !HB.nextStep) throw new Error(NOT_SAVED_HERE());
+    canSave();
+    const kind = input.kind === "full" ? "full" : "trial";
+    const rows = arr(input.rows).map((r) => rowOf(r));
+    const est = HB.cost && rows.length ? HB.cost.rows(rows, arr(input.questions)) : null;
+    await HB.nextStep.start({ kind, rows, questions: arr(input.questions) });
+    return { started: true, kind, rows: rows.length ? rows : "chosen by Claude to cover the groups" + (kind === "full" ? " (every row still to score)" : ""),
+      cost: est ? HB.cost.line(est) : null,
+      note: "It has started. The header at the top of the page now says what Claude is doing, with Pause. Tell the owner in two " +
+        "short lines what is happening (documents first, then scoring, one at a time) and that the Grid fills in as it goes. Do not tell them to press anything." };
+  }
+
+  /* While the set-up draft runs, one entry at the end of the conversation says what Claude is doing now
+     (serve.py's job line: "Reading law-kenya.pdf (4 of 12)"). When the draft is done the chat carries on
+     by itself, so the owner is never left wondering what happens next. */
+  let draftWatch = null;
+  function watchDraft() {
+    if (draftWatch) return;
+    const entry = { kind: "job", started: Date.now(), seen: false, done: false };
+    st.log.push(entry);
+    repaint();
+    draftWatch = setInterval(() => {
+      const s = HB.local && HB.local.state ? HB.local.state() : null;
+      const job = s && (s.job && s.job.kind === "setup" ? s.job : arr(s && s.queued).find((j) => j && j.kind === "setup"));
+      if (job) {
+        entry.seen = true;
+        entry.job = job;
+      } else if (entry.seen || Date.now() - entry.started > 60000) {
+        const last = s && s.last_job && s.last_job.kind === "setup" ? s.last_job : null;
+        entry.done = true;
+        entry.failed = !last || last.status === "failed";
+        clearInterval(draftWatch);
+        draftWatch = null;
+        carryOn(entry);
+      }
+      paintJob(entry);
+    }, 2000);
+  }
+
+  function carryOn(entry) {
+    const said = entry.failed
+      ? "(The set-up draft stopped before it finished. Say so in one line, what you can see of why, and what we can do now.)"
+      : "(The set-up draft has just finished and the page now shows it. Look at what it drafted, then say in two or three " +
+        "short lines what is in place, and walk me through the first thing to check, saying where it is on the page.)";
+    const go = () => (st.ctl ? setTimeout(go, 3000) : send(said, { quiet: true }));
+    setTimeout(go, 1500);   // the page reloads its data first
+  }
+
+  function jobNode(entry) {
+    const node = h("div", { class: "hbc-msg hbc-msg--claude hbc-job" });
+    entry.node = node;
+    fillJob(node, entry);
+    return node;
+  }
+
+  function fillJob(node, entry) {
+    if (entry.done) {
+      node.replaceChildren(entry.failed ? HB.notice("warning", "The set-up draft stopped before it finished.")
+        : h("p", null, HB.statusChip("good", "Set-up drafted"), " The checklist on the right shows what is in place."));
+      return;
+    }
+    const job = entry.job || {};
+    const step = Array.isArray(job.steps) && job.steps[0] ? job.steps[0] : {};
+    const mins = Math.floor((Date.now() - (job.started ? Date.parse(job.started) : entry.started)) / 60000);
+    const bits = [];
+    if (step.files_total) bits.push(HB.fmtInt(step.files_read || 0) + " of " + HB.fmtInt(step.files_total) + " files read");
+    if (Array.isArray(step.wrote) && step.wrote.length) bits.push(HB.fmtInt(step.wrote.length) + " part" + (step.wrote.length === 1 ? "" : "s") + " written");
+    bits.push(mins < 1 ? "just started" : mins + (mins === 1 ? " minute" : " minutes") + " so far");
+    node.replaceChildren(HB.working(job.line || "Claude is starting on your files"), h("p", { class: "small muted" }, bits.join(" \u00b7 ") + "."));
+  }
+
+  function paintJob(entry) {
+    if (connected(entry.node)) fillJob(entry.node, entry);
+    else repaint();
   }
 
   /* ---- The Set-up tab: Claude drafts the set-up into the project ---------------------------------
@@ -768,7 +936,7 @@
       "Here you are the set-up step. The chat sits on the left of the Set-up tab; the set-up fills in on the right each time you save. " +
         "You draft the benchmark's set-up with its owner, a researcher with good judgement and little technical background. The owner decides; you draft, say what is at stake, and recommend.",
       "The set-up tools are the exception to the Confirm rule: save_setup_part saves a draft at once (a draft is not a decision), and set_setup_status records a confirmation the owner gave in words. " +
-        "Rule decisions still go through propose_rule_decision. Never say JSON, file names, formats or tool names to the owner; say the questions, the list of " + ((bundle().project || {}).unit_word_plural || "rows") + ", the score sheet.",
+        "Rule decisions still go through propose_rule_decisions (one card for all of them). Never say JSON, file names, formats or tool names to the owner; say the questions, the list of " + ((bundle().project || {}).unit_word_plural || "rows") + ", the score sheet.",
       "The owner adds files by dropping them on this chat or on Your material on the right. read_material lists and reads them. get_setup shows what is set up so far. " +
         "If answers are already scored, the questions and the list are not replaced wholesale here: single items change with the Edit buttons on the right, and a wider change can be a background job (propose_job), which keeps a copy so it can be undone.",
       "The steps:",
@@ -777,7 +945,7 @@
         "If any file holds last edition's results (scores, grades, tiers or ranks per row, even a page of overall grades), save them with last_results once the list and the score sheet are saved, at the finest level they give, and tell the owner whether the score sheet gives the same figures; where it does not, say which rows differ and the likely cause.",
       "Lay replies out with blank lines between parts, \"- \" for bullets and \"1. \" for numbered items; never run a list together in one paragraph.",
       "3. Correct, then confirm. In ONE message: what you drafted in a few lines, anything you proposed rather than transcribed (anything the files do not state, such as rounding, a level's points or a row's label, named one by one), the open questions each with your recommendation, and ask the owner to confirm the questions, the list, the group labels and the score sheet. Record each confirmation with set_setup_status.",
-      "4. The grill (once those are confirmed, or when the owner asks). Read every question as a careful sceptic would: where could two careful people with the same document choose different levels? Each such place is a rule. Save a round of about five (rules), the cut-off date always in the first round, then put them to the owner as a numbered list: each rule on its own line (\"1. **R1, a short title** (scope; what is at stake): the problem in a sentence\"), each option on its own indented line beneath it (\"   - (a) ... (recommended: one-line reason)\"), and say how to answer (\"R1 a, R2 c, R3 skip\"). Record answers with propose_rule_decision; the cut-off answer also goes into the basics.",
+      "4. The grill (once those are confirmed, or when the owner asks). Read every question as a careful sceptic would: where could two careful people with the same document choose different levels? Each such place is a rule. Save a round of about five (rules), the cut-off date always in the first round, then put them to the owner as a numbered list: each rule on its own line (\"1. **R1, a short title** (scope; what is at stake): the problem in a sentence\"), each option on its own indented line beneath it (\"   - (a) ... (recommended: one-line reason)\"), and say how to answer (\"R1 a, R2 c, R3 skip\"). Record all their answers in one propose_rule_decisions card; the cut-off answer also goes into the basics.",
       ...(!hasFeedback() ? [] : [
       "5. The round with the " + ((bundle().project || {}).unit_word_plural || "rows") + " (once, when the must-haves are settled; get_setup shows feedback.asked). After results, each " + ((bundle().project || {}).unit_word || "row") +
         " is sent its results as an Excel pack and can reply. Ask in ONE message, numbered, each with your recommendation and a one-line reason: (1) \"Can " + ((bundle().project || {}).unit_word_plural || "rows") + " back up a reply with their own documents, such as internal reports?\" " +
@@ -786,7 +954,7 @@
         "They can change all three later from the Feedback tab's chat.",
       ]),
 
-      "6. When the must-haves are settled, say the set-up is done and the next step is scoring a few " + ((bundle().project || {}).unit_word_plural || "rows") + " as a trial, from the Grid tab.",
+      "6. When the must-haves are settled, say the set-up is done and offer the next step: scoring a few " + ((bundle().project || {}).unit_word_plural || "rows") + " first as a trial. On a yes, start it yourself with start_scoring (kind trial); the green button at the top of the page does the same.",
       "Hard rules: last edition's results are held back: use them only for a rule's last_year_note, never in questions, options or reasons. Transcribe the methodology word for word; your own reading goes into a rule the owner decides. Never fill a gap with a plausible guess (points for a level, rounding, a row's country): ask. Keep the owner's own answer scale (A to G, 0 to 3, a percentage) even when only part of it is written down, because their published results are on it: never collapse it into fewer levels; propose meanings for the unwritten levels and say they are yours. Never decide a rule for the owner. Never state confidence or a probability. Never call information public or private: say what data is missing and ask the owner to supply it. " +
         "When you need the owner, put every question in one message, numbered, each with your recommendation and a one-line reason. On this tab replies may be longer, but keep them tight: the right-hand side shows the detail, so never repeat whole lists.",
       "If a save comes back with problems, fix them and save again without troubling the owner, unless the fix needs their answer.",
@@ -831,19 +999,24 @@
         inputSchema: S({ cells: { type: "array", items: S({ row: ROW, question: QID }, ["row", "question"]) } }, ["cells"]), execute: highlightCells },
       { name: "filter_grid", description: "Narrows the Grid to these rows and shows it (each row shows a small \"missing\" button when Claude couldn't find or keep a document for it); rows null shows every row again.",
         inputSchema: S({ rows: { type: ["array", "null"], items: ROW } }, ["rows"]), execute: filterGrid },
-      { name: "propose_rule_decision", description: "Puts a decision on a rule to the owner (an option id, their own wording, or skip: true). Saved only when they click Confirm.",
+      { name: "propose_rule_decision", description: "Puts a decision on ONE rule to the owner (an option id, their own wording, or skip: true). Saved only when they click Confirm. For two or more rules at once use propose_rule_decisions.",
         inputSchema: S({ rule: RULE, option: { type: "string" }, own_words: { type: "string" }, skip: { type: "boolean" } }, ["rule"]), execute: proposeDecision },
+      { name: "propose_rule_decisions", description: "Puts several rule decisions to the owner as one card with one Confirm (\"go with all your recommendations\", \"R1 a, R2 c, R3 skip\"). Each item: rule, and an option id, their own wording, or skip: true. Always use this, not one card per rule, when the owner answers more than one rule.",
+        inputSchema: S({ decisions: { type: "array", items: S({ rule: RULE, option: { type: "string" }, own_words: { type: "string" }, skip: { type: "boolean" } }, ["rule"]) } }, ["decisions"]), execute: proposeDecisions },
       { name: "propose_rerun", description: "Puts to the owner a request to score again the answers resting on a rule (usually after it is decided). Saved only when they click Confirm; " +
           HB.when("it then runs behind the page, with progress in the Run bar.", "it runs the next time Claude works on this project."),
         inputSchema: S({ rule: RULE }, ["rule"]), execute: proposeRerun },
-      { name: "propose_run_control", description: "Puts a run request to the owner: pause, resume, stop_now, stop_after_row (row), scope (rows and/or questions; null means all) or stop_after (stage find, score or none). Saved only when they click Confirm.",
+      { name: "propose_run_control", description: "Puts a run request to the owner: pause, resume, stop_now, stop_after_row (row), scope (rows and/or questions; null means all) or stop_after (stage find, score or none). Saved only when they click Confirm. It only changes how a run behaves or what the next run covers: it starts nothing, so never say it starts scoring. To start scoring, use start_scoring.",
         inputSchema: S({ action: { type: "string", enum: RUN_ACTIONS }, row: ROW, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID }, stage: { type: "string", enum: ["find", "score", "none"] } }, ["action"]), execute: proposeRunControl },
       { name: "propose_correction", description: "Puts a correction of one answer to the owner: their evidence (quote, and document id plus page, or link), a new value with their reason, or both. Saved only when they click Confirm.",
         inputSchema: S({ row: ROW, question: QID, value: { type: ["number", "string"] }, reason: { type: "string" }, quote: { type: "string" }, doc: { type: "string" }, page: { type: "number" }, link: { type: "string" } }, ["row", "question"]), execute: proposeCorrection },
       { name: "read_material", description: "The owner's set-up files (added on the Set-up tab under Your material): without file, the list (id, name, kind, length); with file, its text as PDF, Word, Excel or text, 20,000 characters from start. For the fit check.",
         inputSchema: S({ file: { type: "string" }, start: { type: "number" } }), execute: readMaterial },
-      { name: "propose_draft_setup", description: "Puts Draft my set-up to the owner: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions as rules to decide and data to supply. Saved only when they click Confirm. Use it once the fit check is done and the files are in.",
-        execute: proposeDraftSetup },
+      { name: "start_scoring", description: "Starts scoring now, as the page's green next-step button does: kind \"trial\" scores a few rows first (give rows, or leave them out and Claude picks rows that cover the groups), kind \"full\" scores every row still to do (or the rows given). Claude finds each row's documents, then scores it; the header shows progress, with Pause. It starts at once, with no Confirm, so use it when the owner asks to score (\"score Liberia\", \"try a few\", \"go\"). Before a full run with no trial yet, give its cost with get_costs and start only once they say yes.",
+        inputSchema: S({ kind: { type: "string", enum: ["trial", "full"] }, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID } }, ["kind"]),
+        execute: startScoring },
+      { name: "start_draft_setup", description: "Starts Draft my set-up now: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions as rules to decide and data to supply. It starts at once, with no Confirm, so use it when the owner asks for the set-up (or says yes to it) and their files are in. The chat then shows its progress and, when it is done, you carry on with what to check.",
+        execute: startDraftSetup },
       { name: "chart_columns", description: "The columns of each dataset a chart can draw from (rows, cells, compare" + (isFree() ? "" : ", history") + "), for propose_chart.",
         execute: chartColumns },
       { name: "propose_chart", description: "Puts a chart for Your charts (Results tab) to the owner: id (lowercase-with-dashes; an existing id is replaced), title, a one-line description, dataset, and a Vega-Lite spec with no data (fields are dataset columns; the page fills the data and its colours). Or remove: an existing chart's id. Saved only when they click Confirm; " +
@@ -858,7 +1031,7 @@
   /** What views/chat-tools.js (HB.chatMore) may use of the chat: its own propose and helpers. */
   function moreApi() {
     return {
-      propose, rowOf, qidOf, unitName, fit, cut, arr, bundle, progress, canSave, repaint,
+      propose, rowOf, qidOf, unitName, fit, cut, arr, bundle, progress, canSave, repaint, moveOrOffer,
       log: (entry) => { st.log.push(entry); repaint(); },
       tell: (text) => st.turns.push({ role: "user", content: text }),   // read with the owner's next message
     };
@@ -1446,7 +1619,7 @@
         "One pointing to a link or a file " + HB.when("is checked behind the page, and the cell panel shows the verdict when it is done. ", "waits until Claude next works on this project. ") +
         "The owner's answer stands either way: if you disagree, say why, and that they can keep their answer or try again.",
       "Changes: call a propose tool once per change the owner asked for or agreed to. The page shows it in one line with a Confirm button and saves nothing until they click it. " +
-        "Then say in one short line what you put to them. Reading and moving the page need no confirmation, so just do them.",
+        "Then say in one short line what you put to them. Reading needs no confirmation, so just do it. You never switch the owner's tab: go_to, open_cell, highlight_cells and filter_grid act at once only on the tab they are on, and otherwise put a button under your reply that moves the page when they click it.",
       ...(HB.chatMore ? HB.chatMore.instructions() : []),
       ...(!hasFeedback() ? [freeNote()]
         : route.tab === "feedback" ? [feedbackNote(one, many)]
@@ -1570,8 +1743,8 @@
       }
     }
     if (st.maxTools === 0) throw { code: "tools_unavailable", message: "no tools in this view" };
-    const list = setupMode() ? setupTools().concat(tools())
-      : feedbackMode() ? tools().filter((t) => FB_KEEP.includes(t.name)).concat(feedbackTools())
+    const list = setupMode() ? setupTools().concat(tools().filter((t) => !setupTools().some((x) => x.name === t.name)))
+      : feedbackMode() ? tools().filter((t) => FB_KEEP.includes(t.name) || (HB.chatMore && HB.chatMore.FALLBACK.includes(t.name))).concat(feedbackTools())
         : tools();
     return st.maxTools ? list.slice(0, st.maxTools) : list;
   }
@@ -1656,6 +1829,24 @@
     return p.state;
   }
 
+  function contextNode(p) {
+    if (!p.context || !p.context.length) return null;
+    return h("dl", { class: "hbc-change__context" }, p.context.flatMap(([label, text]) => [h("dt", null, label), h("dd", null, String(text))]));
+  }
+
+  /** "Change it": the proposal stays unsaved and its words go into the message box for the owner to edit. */
+  function changeIt(id) {
+    const p = st.proposals.get(id);
+    if (!p || p.state !== "asked") return;
+    p.state = "changing";
+    st.turns.push({ role: "user", content: "(The owner clicked Change it on: " + p.line + ". Nothing was saved; their own version follows.)" });
+    repaint();
+    if (ui.input) {
+      ui.input.value = p.edit || "Instead of that: " + p.line;
+      ui.input.focus();
+    }
+  }
+
   function cancel(id) {
     const p = st.proposals.get(id);
     if (!p || p.state !== "asked") return;
@@ -1737,7 +1928,9 @@
     if (entry.kind === "you") return h("div", { class: "hbc-msg hbc-msg--you" }, h("p", null, entry.text));
     if (entry.kind === "note") return h("div", { class: "hbc-note" }, HB.notice(entry.tone || "neutral", entry.text));
     if (entry.kind === "change") return changeNode(st.proposals.get(entry.id));
+    if (entry.kind === "go") return goNode(entry);
     if (entry.kind === "more") return HB.chatMore ? HB.chatMore.node(entry, moreApi()) : null;
+    if (entry.kind === "job") return jobNode(entry);
     const node = h("div", { class: "hbc-msg hbc-msg--claude" });
     fillEntry(node, entry);
     entry.node = node;
@@ -1746,9 +1939,12 @@
 
   function fillEntry(node, entry) {
     const busy = entry.state === "thinking" || entry.state === "writing";
+    // While Claude is busy the moving "Thinking..." stays at the foot of its reply, even once words or
+    // steps have appeared, so the chat never looks stuck (19 Oct 2026).
     const parts = [
       entry.activity.length ? h("ul", { class: "hbc-activity" }, entry.activity.slice(-4).map((a) => h("li", null, a))) : null,
-      ...(entry.text ? prose(entry.text) : [busy ? h("p", { class: "hbc-thinking" }, "Thinking...") : null]),
+      ...(entry.text ? prose(entry.text) : []),
+      busy ? h("p", { class: "hbc-thinking" }, HB.working(entry.activity.length && !entry.text ? "Working on it" : "Thinking")) : null,
       entry.state === "cut" ? h("p", { class: "small muted" }, "Cut short. Ask for less at a time.") : null,
     ];
     node.replaceChildren(...parts.filter(Boolean));
@@ -1766,21 +1962,30 @@
   function changeNode(p) {
     if (!p) return null;
     const box = h("div", { class: "hbc-change", "data-state": p.state, id: "hbc-" + p.id });
-    const line = h("p", { class: "hbc-change__line" }, h("strong", null, p.line));
+    const line = h("p", { class: "hbc-change__line" }, h("strong", null, p.title || p.line));
     if (p.state === "asked" || p.state === "saving") {
       const yes = h("button", { type: "button", class: "btn btn--primary btn--small", id: "hbc-" + p.id + "-confirm", disabled: p.state === "saving" },
         p.state === "saving" ? "Saving..." : "Confirm");
       yes.addEventListener("click", () => confirm(p.id));
       const no = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-cancel", disabled: p.state === "saving" }, "Cancel");
       no.addEventListener("click", () => cancel(p.id));
-      box.append(line, h("div", { class: "cluster" }, yes, no));
+      const edit = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-edit", disabled: p.state === "saving" }, "Change it");
+      edit.addEventListener("click", () => changeIt(p.id));
+      box.append(line, contextNode(p), h("div", { class: "cluster" }, yes, edit, no));
     } else if (p.state === "done") {
-      box.append(line, h("p", { class: "hbc-change__done" }, p.applied ? HB.statusChip("good", "Done") : HB.statusChip("neutral", "Waiting for Claude"), h("span", null, " " + p.note)));
+      // Saved; moving dots while the page still lists it as waiting, then Done once it has been applied.
+      const waiting = !p.applied && HB.edits && typeof HB.edits.pending === "function" && Number(HB.edits.pending()) > 0;
+      if (!p.applied && !waiting && HB.local) p.applied = true;
+      box.append(line, h("p", { class: "hbc-change__done" }, p.applied ? HB.statusChip("good", "Done") : HB.working("Claude is on it", { status: false }),
+        h("span", null, " " + (p.applied && HB.local ? "Applied." : p.note))));
+      if (waiting && HB.local) setTimeout(() => { if (box.isConnected) box.replaceWith(changeNode(p)); }, 2000);
       if (p.folder && fbLocalNow()) {
         const show = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-folder" }, "Show the folder");
         show.addEventListener("click", () => { HB.local.post("feedback/open-folder", { folder: p.folder }).catch(() => {}); });
         box.append(h("div", { class: "cluster" }, show));
       }
+    } else if (p.state === "changing") {
+      box.append(line, contextNode(p), h("p", { class: "small muted" }, "Edit it in the message box below and send it. Nothing was saved."));
     } else if (p.state === "cancelled") {
       box.append(line, h("p", { class: "small muted" }, "Cancelled. Nothing was saved."));
     } else {
@@ -2109,7 +2314,11 @@
 .hbc-msg p + ol, .hbc-msg ol + p, .hbc-msg ul + ol, .hbc-msg ol + ul { margin-top: var(--s2); }
 .hbc-msg--you { justify-self: end; padding: var(--s2) var(--s3); border-radius: 0.75rem 0.75rem 0.25rem 0.75rem; background: var(--accent-soft); white-space: pre-wrap; }
 .hbc-msg--claude { justify-self: start; }
-.hbc-thinking { color: var(--ink-2); font-style: italic; }
+.hbc-thinking { margin: 0; }
+.hbc-job { display: grid; gap: var(--s1); }
+.hbc-change__context { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--s1) var(--s3); margin: 0; font-size: var(--fs-14); }
+.hbc-change__context dt { color: var(--ink-2); font-weight: 600; }
+.hbc-change__context dd { margin: 0; }
 .hbc-activity { display: grid; gap: 2px; margin: 0 0 var(--s1) !important; padding: 0 !important; list-style: none; color: var(--ink-2); font-size: var(--fs-12); }
 .hbc-activity li::before { content: "\\2192\\00a0"; }
 .hbc-change { display: grid; gap: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--rule-strong); border-inline-start: 3px solid var(--accent); border-radius: var(--radius); background: var(--paper); }
@@ -2149,6 +2358,7 @@
   HB.chat = {
     start,
     inline,
+    watchDraft,
     setupTools,
     badge,
     notices: () => notices(),
@@ -2161,6 +2371,7 @@
     canAsk: () => st.can === "yes",
     proposals: () => Array.from(st.proposals.values()).map(({ id, line, state, note }) => ({ id, line, state, note })),
     confirm,
+    changeIt,
     cancel,
     instructions,
     tierFor,

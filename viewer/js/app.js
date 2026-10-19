@@ -189,7 +189,11 @@
       const when = new Date(String(p.cutoff) + "T00:00:00Z");
       facts.push(h("span", null, "Cut-off ", h("strong", null, Number.isNaN(when.getTime()) ? String(p.cutoff) : DATE.format(when))));
     }
-    if (p.stage) facts.push(h("span", null, "Stage ", h("strong", null, STAGE_WORDS[p.stage] || String(p.stage))));
+    if (p.stage) {
+      // Every must-have settled but nothing run yet: say so, so "Setting up" is never read as what blocks scoring.
+      const ready = p.stage === "setup" && HB.nextStep && HB.nextStep.step().label !== "Finish set-up";
+      facts.push(h("span", null, "Stage ", h("strong", null, ready ? "Ready to score" : STAGE_WORDS[p.stage] || String(p.stage))));
+    }
     if (bundle) {
       const rows = Array.isArray(bundle.units) ? bundle.units.length : 0;
       facts.push(h("span", null, HB.data.unitWords(rows)));
@@ -199,6 +203,7 @@
         p.edition && !String(p.name || "").includes(String(p.edition))      // "EggTrack 2025", not "EggTrack 2025 2025"
           ? [" ", h("span", { class: "hb-head__edition" }, String(p.edition))] : null),
       facts.length ? h("p", { class: "hb-head__facts" }, facts) : null,
+      HB.nextStep ? HB.nextStep.node() : null,     // the next step, on the local page only (views/nextstep.js)
     );
   }
 
@@ -225,16 +230,18 @@
     } catch (err) {
       console.error("HB.deckBanner failed:", err);
     }
-    box.hidden = !(n > 0) && !deck;
-    box.replaceChildren(
-      n > 0
-        ? notice("warning", [HB.when(
-          ["Edits being applied: ", h("strong", null, fmtInt(n)), ". This page updates when they are done."],
-          ["Edits waiting for Claude: ", h("strong", null, fmtInt(n)),
-            ". Claude applies them the next time it works on this project, and this page shows them then."])])
-        : "",
-      deck || "",
-    );
+    // Saved edits still being applied float in a corner, so the page does not jump as each one comes
+    // and goes (19 Oct 2026: a yellow banner per click "threw the page off").
+    let toast = document.getElementById("hb-applying");
+    if (!toast) {
+      toast = h("div", { class: "hb-applying", id: "hb-applying", hidden: true });
+      document.body.append(toast);
+    }
+    toast.hidden = !(n > 0);
+    toast.replaceChildren(n > 0 ? HB.working(HB.when("Applying your " + (n === 1 ? "change" : fmtInt(n) + " changes"),
+      fmtInt(n) + (n === 1 ? " change waits" : " changes wait") + " for Claude, which applies them the next time it works on this project")) : "");
+    box.hidden = !deck;
+    box.replaceChildren(deck || "");
   }
 
   function drawTabs(list) {
@@ -348,8 +355,24 @@
     }
   }
 
+  /** The project's own main colour (project.json "accent", set from the corner chat), or the page's
+      own when there is none. The shades of the Grid and the charts follow it. */
+  function applyAccent() {
+    const p = (bundle && bundle.project) || {};
+    const root = document.documentElement;
+    if (typeof p.accent === "string" && /^#[0-9a-fA-F]{6}$/.test(p.accent)) {
+      root.style.setProperty("--accent", p.accent);
+      root.style.setProperty("--accent-soft", "color-mix(in srgb, " + p.accent + " 14%, var(--surface))");
+    } else {
+      root.style.removeProperty("--accent");
+      root.style.removeProperty("--accent-soft");
+    }
+  }
+
   function render() {
+    applyAccent();
     const list = tabs();
+    drawHead();      // the next-step button follows what Claude is doing (views/nextstep.js)
     drawTabs(list);
     refreshBanner();
     drawMain();

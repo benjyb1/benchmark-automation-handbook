@@ -25,7 +25,7 @@ from .shapes import ROLES, check_folder
 from .stakes import rule_stakes
 
 BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels", "group_labels", "group_by",
-          "results_sites")
+          "results_sites", "accent")
 WHOLE = {"questions": "questions", "units": "units", "scoresheet": "scoresheet",
          "where_to_look": "where_to_look", "needs": "needs"}
 PARTS = ("basics", "provided", "rules", "last_results", "feedback") + tuple(WHOLE)    # "feedback": the Full edition only
@@ -299,3 +299,36 @@ def guide() -> str:
     formats = text[start:end if end > start else None].strip() if start >= 0 else text
     grill = (SKILL / "grill.md").read_text(encoding="utf-8") if (SKILL / "grill.md").is_file() else ""
     return formats + ("\n\n" + grill.strip() if grill else "")
+
+
+def remove_labels(project: Project, names: list) -> dict:
+    """Takes labels off the project and off every row (the corner chat, at any stage): they leave
+    labels, group_labels and group_by, and each row's labels. No answer or score changes. Refused,
+    with the reason, when a question's applies_to or a variant names one of them, since removing it
+    would change which questions apply. Written together and kept only if the folder still checks."""
+    p = project.read("project")
+    labels = list(p.get("labels") or [])
+    names = [n for n in dict.fromkeys(str(x) for x in names or []) if n]
+    unknown = [n for n in names if n not in labels]
+    if not names or unknown:
+        return {"ok": False, "problems": [f"{', '.join(unknown) or 'No label'} is not one of the labels "
+                                          f"({', '.join(labels) or 'none'})."]}
+    uses = []
+    for q in project.read("questions").get("questions", []):
+        when = [q.get("applies_to")] + [v.get("when") for v in q.get("variants") or [] if isinstance(v, dict)]
+        if any(isinstance(w, dict) and any(n in w for n in names) for w in when):
+            uses.append(q.get("id"))
+    if uses:
+        return {"ok": False, "problems": [f"Questions {', '.join(map(str, uses))} use this label to decide whom "
+                                          "they apply to, so it stays until those questions are changed."]}
+    p["labels"] = [x for x in labels if x not in names]
+    p["group_labels"] = [x for x in p.get("group_labels") or [] if x not in names]
+    if p.get("group_by") in names:
+        p["group_by"] = None
+    units = project.read("units")
+    for u in units.get("units", []):
+        if isinstance(u, dict) and isinstance(u.get("labels"), dict):
+            for n in names:
+                u["labels"].pop(n, None)
+    problems = _checked_write(project, {"project": p, "units": units})
+    return {"ok": not problems, "problems": problems, "removed": names}
