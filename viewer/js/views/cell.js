@@ -1329,7 +1329,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     function draw() {
       const item = evidence[index];
       const doc = item.missing ? null : docs[item.doc] || null;
-      const pageWord = isNum(item.page) ? "page " + fmtNum(item.page) : "page not recorded";
+      const pageWord = (item.section ? String(item.section) + " · " : "") + (isNum(item.page) ? "page " + fmtNum(item.page) : "page not recorded");
       label.textContent = evidence.length > 1 ? "Quote " + fmtInt(index + 1) + " of " + fmtInt(evidence.length) : "Quote";
 
       const [box, langLine] = quoteBox(item);
@@ -1343,7 +1343,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       if (!doc) {
         sourceBody.replaceChildren(
           h("p", { class: "cellp-doc" }, "Document ", h("span", { class: "mono" }, String(item.doc || "not named"))),
-          h("p", { class: "cellp-meta" }, pageWord.charAt(0).toUpperCase() + pageWord.slice(1)),
+          h("p", { class: "cellp-meta" }, item.section ? pageWord : pageWord.charAt(0).toUpperCase() + pageWord.slice(1)),
           h("p", { class: "cellp-none" }, NOT_KEPT));
         pageBody.replaceChildren(h("p", { class: "cellp-none" }, NOT_KEPT));
         return;

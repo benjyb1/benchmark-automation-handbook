@@ -25,8 +25,8 @@
 
   const { h, svg, fmtInt, plural, notice, store } = HB;
 
-  const KIND = { scoring: "Scoring rule", scope: "Scope rule", evidence: "Evidence rule" };
-  const RAISED = { setup: "Raised in set-up", trial: "Raised in the trial", run: "Raised during the run" };
+  const KIND = { scoring: "Scoring rule", scope: "Scope rule", evidence: "Evidence rule", instruction: "Standing instruction" };
+  const RAISED = { setup: "Raised in set-up", trial: "Raised in the trial", run: "Raised during the run", owner: "Added by you" };
   /* A rule's state here. "waiting": a decision saved in this page that Claude has not applied yet. */
   const STATUS = {
     open: { tone: "warning", icon: "exclamation", word: "Open", short: "Open" },
@@ -543,10 +543,10 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
     }
     if (decided) {
       box.append(h("div", { class: "rl-decision" },
-        h("p", null, h("strong", null, pending ? "Decision in use until Claude applies yours: " : "Decision: "),
+        h("p", null, h("strong", null, pending ? "Decision in use until Claude applies yours: " : rule.kind === "instruction" ? "Instruction: " : "Decision: "),
           rule.decision.text || optionText(rule, rule.decision.option) || "Not recorded"),
         h("p", { class: "muted small" }, whenWhere(rule.decision)
-          + (rule.decision.option == null ? " Own wording, not one of the options." : ""))));
+          + (rule.decision.option == null && (rule.options || []).length ? " Own wording, not one of the options." : ""))));
     }
 
     const changeButton = (word) => h("div", { class: "rl-actions" }, h("button", {
@@ -567,8 +567,8 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
       box.append(recordedNote(rule, cellsOf(rule), pending));
       if (live) box.append(changeButton("Change my decision"));
     } else if (decided) {
-      if (!compact) box.append(h("details", { class: "rl-details" }, h("summary", null, "Show the options"), optionsList(rule, true, null, false)));
-      if (live) box.append(changeButton("Change decision"));
+      if (!compact && (rule.options || []).length) box.append(h("details", { class: "rl-details" }, h("summary", null, "Show the options"), optionsList(rule, true, null, false)));
+      if (live) box.append(changeButton(rule.kind === "instruction" ? "Change the instruction" : "Change decision"));
     } else {
       box.append(h("div", { class: "rl-opts" },
         compact ? null : h("h4", { class: "rl-legend" }, "Options"),

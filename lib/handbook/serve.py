@@ -53,7 +53,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import edition, readers
+from . import chatwork, costs, edition, readers
+from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home, user_id
 from .page import VIEWER_SRC, json_for_script
@@ -156,6 +157,14 @@ class Commands:
         if code != 0:
             raise HandbookError(out or f"hb {args[0]} failed.")
         return out
+
+
+def rerun_title(req: dict) -> str:
+    """"Re-run of rule R3", or for answers the owner picked in the chat, "Re-run: <what for>"."""
+    if req.get("rule"):
+        return f"Re-run of rule {req['rule']}"
+    why = str(req.get("why") or "").strip()
+    return "Re-run: " + why[:80] if why else "Re-run of the answers you picked"
 
 
 def last_line(text: str) -> str:
@@ -265,12 +274,22 @@ class Worker:
                 self.queued_ids.discard(job["key"])
                 self.poke()
 
-    def enqueue(self, key: str, kind: str, title: str, run) -> bool:
+    def enqueue(self, key: str, kind: str, title: str, run, estimate=None) -> bool:
+        """Queue a job. `estimate` is a callable giving {low, high} tokens (costs.py), worked out once
+        here so the page shows it while the job waits and the job's note can say how it compared."""
         if key in self.queued_ids:
             return False
         self.queued_ids.add(key)
+        est = None
+        if estimate is not None:
+            try:
+                got = estimate()
+                est = {"low": int(got["low"]), "high": int(got["high"])} if got and got.get("high") else None
+            except Exception:  # noqa: BLE001 - a job runs whether or not its cost can be guessed
+                est = None
         self.queue.append({"key": key, "kind": kind, "title": title, "run": run, "status": "queued",
-                           "done": 0, "total": 0, "line": "Waiting to start", "tokens": 0, "steps": []})
+                           "done": 0, "total": 0, "line": "Waiting to start", "tokens": 0, "steps": [],
+                           "estimate": est})
         self.job_wake.set()
         return True
 
@@ -448,6 +467,15 @@ class Worker:
                 self.note("The chart could not be added.", "warning", out[-800:] or None)
         return changed
 
+    def spent(self, job: dict) -> str:
+        """What a job used, for its note: "1,234,567 tokens processed on your Claude plan (the estimate was
+        about 900,000 to 2,100,000)."."""
+        est = job.get("estimate")
+        said = f"{job['tokens']:,} tokens processed on your Claude plan"
+        if est:
+            said += f" (the estimate was about {show_tokens(est['low'])} to {show_tokens(est['high'])})"
+        return said + "."
+
     def _take_setup(self, docs: list[dict]) -> None:
         """"Draft my set-up" (`{action: "draft"}`): one background job running `hb draft-setup`."""
         for d in docs:
@@ -456,6 +484,12 @@ class Worker:
             self.enqueue("setup-draft:" + now_iso(), "setup", "Drafting your set-up", self.draft_setup)
 
     def draft_setup(self, job: dict) -> None:
+        from . import material
+        try:        # worked out here, not when queued: reading every file can be slow, and no lock is held now
+            est = costs.setup_draft(self.project, sum(f.get("chars") or 0 for f in material.listing(self.project)))
+            job["estimate"] = {"low": est["low"], "high": est["high"]}
+        except Exception:  # noqa: BLE001
+            job["estimate"] = None
         job.update({"total": 1, "line": "Claude is reading your files and drafting the set-up"})
         code, out = self.cmd.run("draft-setup", "--json", timeout=2800)
         try:
@@ -463,14 +497,15 @@ class Worker:
         except (json.JSONDecodeError, IndexError):
             got = {}
         job["tokens"] += int(got.get("tokens") or 0)
-        self.log_usage({"kind": "setup-draft", "job": job["key"], "processed": job["tokens"], "ok": code == 0})
+        self.log_usage({"kind": "setup-draft", "job": job["key"], "processed": job["tokens"], "ok": code == 0,
+                        "estimate": job.get("estimate")})
         with self.cmd.lock:
             self.build()
         job.update({"done": 1, "line": "Done"})
         if code == 0:
-            self.note("Your set-up is drafted. Check it on the Set-up tab.", "good", got.get("result"))
+            self.note("Your set-up is drafted. Check it on the Set-up tab. " + self.spent(job), "good", got.get("result"))
         else:
-            self.note("The set-up draft stopped before it finished.", "warning", (got.get("result") or out)[-800:])
+            self.note("The set-up draft stopped before it finished. " + self.spent(job), "warning", (got.get("result") or out)[-800:])
 
     def plain_reasons(self, job: dict, ids: list[str]) -> None:
         """The plain-reasons job (`POST /api/feedback/plain-reasons`): one small Claude call per unit, outside
@@ -503,7 +538,7 @@ class Worker:
         with self.feedback_lock:
             self.build()
         self.log_usage({"kind": "plain-reasons", "job": job["key"], "processed": job["tokens"], "units": done,
-                        "failed": len(problems)})
+                        "failed": len(problems), "estimate": job.get("estimate")})
         if not problems:
             self.note(f"The reasons are written in plain words for {done} of {len(ids)}.", "good")
         else:
@@ -549,9 +584,10 @@ class Worker:
         control = read_json(self.project.file("control"), {}) or {}
         for r in control.get("reruns") or []:
             if isinstance(r, dict) and isinstance(r.get("id"), str):
-                rule = r.get("rule") or "?"
-                self.enqueue("rerun:" + r["id"], "rerun", f"Re-run of rule {rule}",
-                             lambda job, req=dict(r): self.rerun(job, req))
+                self.enqueue("rerun:" + r["id"], "rerun", rerun_title(r),
+                             lambda job, req=dict(r): self.rerun(job, req),
+                             estimate=lambda req=dict(r): costs.estimate_rows(self.project, list(req.get("rows") or []),
+                                                                              [str(q) for q in req.get("questions") or []]))
 
     def _queue_rereads(self, _unused) -> None:
         """A correction whose words are in a link or a file the owner sent is read again here, blind.
@@ -565,7 +601,8 @@ class Worker:
             if not (ev.get("link") or ev.get("asset") or ev.get("local")):
                 continue
             self.enqueue("reread:" + r["id"], "reread", f"Checking your correction on {r.get('row')} question {r.get('qid')}",
-                         lambda job, rnd=dict(r): self.reread(job, rnd))
+                         lambda job, rnd=dict(r): self.reread(job, rnd),
+                         estimate=lambda rnd=dict(r): costs.estimate_rows(self.project, [str(rnd.get("row"))], [str(rnd.get("qid"))]))
 
     def _score(self, job: dict, kit: str) -> int:
         """Run one scorer on a kit (outside the project lock) and return the tokens it processed."""
@@ -576,7 +613,7 @@ class Worker:
                                                        "cache_read_input_tokens", "output_tokens"))
         job["tokens"] += tokens
         self.log_usage({"kind": "score", "job": job["key"], "kit": Path(kit).name, "processed": tokens,
-                        "turns": receipt.get("num_turns"), "ok": code == 0})
+                        "turns": receipt.get("num_turns"), "ok": code == 0, "job_estimate": job.get("estimate")})
         if code != 0 and not (Path(kit) / "answers.json").is_file():
             raise HandbookError(last_line(out) or "The scorer did not finish.")
         return tokens
@@ -598,7 +635,7 @@ class Worker:
             with self.cmd.lock:
                 self.cmd.run("control", "set", "--rerun-done", req["id"])
             self.build()
-            self.note(f"Re-run of rule {req.get('rule')}: nothing to score again.", "neutral")
+            self.note(f"{rerun_title(req)}: nothing to score again.", "neutral")
             return
         before = self._values([r for r, _ in work], questions)
         all_q = sorted({q for _, qs in work for q in qs}, key=questions.index)
@@ -640,9 +677,9 @@ class Worker:
         done = len(work) - len(failed)
         job["line"] = (f"Done: {done} of {len(work)} rows scored again, {moved} answer{'s' if moved != 1 else ''} changed, "
                        f"{job['tokens']:,} tokens.")
-        self.note(f"Re-run of rule {req.get('rule')} done: {done} of {len(work)} rows scored again, "
+        self.note(f"{rerun_title(req)} done: {done} of {len(work)} rows scored again, "
                   f"{moved} answer{'s' if moved != 1 else ''} changed.", "good" if not failed else "warning",
-                  f"{job['tokens']:,} tokens processed on your Claude plan.")
+                  self.spent(job))
 
     def reread(self, job: dict, rnd: dict) -> None:
         row, qid, cid = rnd["row"], rnd["qid"], rnd["id"]
@@ -672,7 +709,92 @@ class Worker:
         self.build()
         tone = "good" if code == 0 and "disagrees" not in out else "warning"
         self.note(last_line(out.split("The owner's answer stays")[0]) if code == 0 else "The re-read could not be recorded.",
-                  tone, f"{job['tokens']:,} tokens processed on your Claude plan.")
+                  tone, self.spent(job))
+
+    # -- the corner chat's background jobs (chatwork.py, cmd_job.py) ---------------------------------
+    # A job the owner confirmed in the chat: a copy of the project first, then one background Claude
+    # session on the brief, then check and build. Its record (outside the project, so an Undo keeps
+    # it) holds where the copy is; Undo puts the project back from it.
+
+    def _slug(self) -> str:
+        return re.sub(r"[^a-z0-9-]+", "-", self.project.path.name.lower()).strip("-") or "project"
+
+    def _jobs_file(self) -> Path:
+        return home() / "jobs" / f"{self._slug()}.json"
+
+    def chat_jobs(self) -> list[dict]:
+        return (read_json(self._jobs_file(), {}) or {}).get("jobs") or []
+
+    def _save_job(self, record: dict) -> None:
+        jobs = [j for j in self.chat_jobs() if j.get("id") != record["id"]] + [record]
+        path = self._jobs_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"jobs": jobs[-40:]}, ensure_ascii=False, indent=1), encoding="utf-8")
+        os.replace(tmp, path)
+
+    def queue_chat_job(self, req: dict) -> dict:
+        jid = "job-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
+        title = " ".join(str(req.get("title") or "A task from the chat").split())[:90]
+        record = {"id": jid, "title": title, "brief": str(req.get("brief") or "").strip(), "status": "queued",
+                  "asked": now_iso(), "estimate": req.get("estimate") if isinstance(req.get("estimate"), dict) else None}
+        if not record["brief"]:
+            raise HandbookError("The job has no task.")
+        self._save_job(record)
+        est = record["estimate"]
+        self.enqueue("chatjob:" + jid, "chat-job", title, lambda job, r=dict(record): self.chat_job(job, r),
+                     estimate=(lambda: est) if est and est.get("high") else None)
+        return record
+
+    def chat_job(self, job: dict, record: dict) -> None:
+        job.update({"total": 1, "done": 0, "line": "Taking a copy of the project first, so you can undo this"})
+        with self.cmd.lock:
+            snap = chatwork.snapshot(self.project.path, home() / "snapshots" / self._slug(), record["id"])
+        record.update({"status": "running", "started": now_iso(), "snapshot": str(snap)})
+        self._save_job(record)
+        brief = Path(tempfile.mkdtemp(prefix="hb-job-")) / "brief.txt"
+        brief.write_text(record["brief"], encoding="utf-8")
+        job["line"] = "Claude is working on it"
+        code, out = self.cmd.run("job", "--brief", str(brief), "--json", timeout=2800)
+        try:
+            got = json.loads(out.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            got = {}
+        job["tokens"] += int(got.get("tokens") or 0)
+        self.log_usage({"kind": "chat-job", "job": job["key"], "processed": job["tokens"], "turns": got.get("turns"),
+                        "ok": code == 0, "estimate": job.get("estimate")})
+        job["line"] = "Checking the answers and rebuilding the page"
+        with self.cmd.lock:
+            self.cmd.run("check")
+        self.build()
+        said = str(got.get("result") or "").strip() or last_line(out)
+        record.update({"status": "done" if code == 0 else "failed", "finished": now_iso(), "tokens": job["tokens"],
+                       "result": said[:1500]})
+        self._save_job(record)
+        job.update({"done": 1, "line": "Done"})
+        self.note(("Done: " if code == 0 else "Stopped before it finished: ") + record["title"] + ". " + self.spent(job),
+                  "good" if code == 0 else "warning", said[-800:] or None)
+
+    def undo_chat_job(self, jid: str) -> dict:
+        record = next((j for j in self.chat_jobs() if j.get("id") == jid), None)
+        if record is None:
+            raise HandbookError("There is no such job.")
+        if record.get("undone"):
+            raise HandbookError("That job has already been undone.")
+        if record.get("status") in ("queued", "running") or self.job is not None:
+            raise HandbookError("Something is still running. Undo once it has finished.")
+        later = [j for j in self.chat_jobs() if j.get("started", "") > record.get("started", "") and not j.get("undone")]
+        with self.cmd.lock:
+            chatwork.restore(self.project.path, Path(record.get("snapshot") or "/nonexistent"),
+                             home() / "snapshots" / self._slug() / (jid + "-undo-" + datetime.now().strftime("%H%M%S")))
+        record["undone"] = now_iso()
+        self._save_job(record)
+        for j in later:                   # the copy was taken before them, so they are undone too
+            j["undone"] = record["undone"]
+            self._save_job(j)
+        self.build()
+        self.note("Undone: " + record["title"] + ". The project is back as it was before.", "good")
+        return record
 
     # -- for the page ----------------------------------------------------------------------------
 
@@ -681,7 +803,7 @@ class Worker:
             if not job:
                 return None
             return {k: job.get(k) for k in ("key", "kind", "title", "status", "done", "total", "line", "tokens",
-                                            "started", "finished", "rule", "steps")}
+                                            "started", "finished", "rule", "steps", "estimate")}
         return {"version": self.version, "job": public(self.job), "queued": [public(j) for j in self.queue],
                 "last_job": public(self.last_job), "activity": list(self.activity), "problem": self.problem,
                 "last_sample": self.last_sample,
@@ -969,12 +1091,91 @@ class Handler(BaseHTTPRequestHandler):
             return self._assets(method, parts[1:])
         if parts[0] == "sample":
             return self._sample(method, parts[1:], query)
+        if parts[0] == "chat":
+            return self._chat(method, parts[1:], query)
         if path == "copy" and method == "GET":
             slug = re.sub(r"[^a-z0-9-]+", "-", str(srv.project.read("project").get("slug") or "benchmark").lower())
             name = f"{slug}-copy-{datetime.now().strftime('%Y-%m-%d')}.html"
             return self._send(200, copy_html(srv.project).encode("utf-8"), "text/html; charset=utf-8",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
         return self.fail(404, "No such call.", "not_found")
+
+    def _chat(self, method: str, parts: list[str], query: dict) -> None:
+        """The corner chat's own calls (views/chat.js): documents, search, files, instructions,
+        sections, background jobs and Undo. Reads answer at once; a change is made only after the
+        owner clicked Confirm in the chat, and the page is rebuilt before the answer."""
+        srv = self.server
+        w = srv.worker
+        q = lambda k, d=None: (query.get(k) or [d])[0]  # noqa: E731
+        ids = lambda v: [x for x in (v if isinstance(v, list) else str(v or "").split(",")) if str(x).strip()] or None  # noqa: E731
+        try:
+            if parts == ["docs"] and method == "GET":
+                if q("doc"):
+                    return self.json(chatwork.read_pages(srv.project, q("doc"), int(q("page", 1)), int(q("count", 1))))
+                return self.json({"documents": chatwork.row_documents(srv.project, q("row", ""))})
+            if parts == ["search"] and method == "GET":
+                return self.json({"hits": chatwork.search(srv.project, q("q", ""), ids(q("rows")), int(q("limit", 25)))})
+            if parts == ["file"] and method == "POST":
+                body = self.body_json() or {}
+                path = chatwork.make_file(srv.project, body.get("name"), body.get("columns"), body.get("rows"),
+                                          body.get("format") or "xlsx")
+                w.note(f"Made {path.name} (in the project's exports folder).", "good")
+                return self.json({"file": path.name, "rows": len(body.get("rows") or [])})
+            if len(parts) == 2 and parts[0] == "file" and method == "GET":
+                path = chatwork.export_path(srv.project, unquote(parts[1]))
+                if path is None:
+                    return self.fail(404, "That file is not there any more.", "not_found")
+                ctype = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+                return self._send(200, path.read_bytes(), ctype,
+                                  {"Content-Disposition": f'attachment; filename="{path.name}"'})
+            if parts == ["instruction"] and method == "POST":
+                body = self.body_json() or {}
+                args = ["add-instruction", "--text", str(body.get("text") or ""), "--json"]
+                if ids(body.get("questions")):
+                    args += ["--questions", ",".join(ids(body.get("questions")))]
+                if ids(body.get("rows")):
+                    args += ["--rows", ",".join(ids(body.get("rows")))]
+                with w.cmd.lock:
+                    code, out = w.cmd.run(*args)
+                if code != 0:
+                    return self.fail(400, last_line(out) or "The instruction was not added.")
+                w.build()
+                got = json.loads(last_line(out))
+                w.note(f"Instruction {got['id']} added: every scorer follows it from now on.", "good")
+                return self.json(got)
+            if parts == ["locate"] and method == "POST":
+                body = self.body_json() or {}
+                args = ["locate", "--json"] + (["--write"] if body.get("write") else [])
+                if ids(body.get("rows")):
+                    args += ["--rows", ",".join(ids(body.get("rows")))]
+                with w.cmd.lock:
+                    code, out = w.cmd.run(*args)
+                if code != 0:
+                    return self.fail(400, last_line(out) or "The sections could not be found.")
+                got = json.loads(last_line(out))
+                if body.get("write") and got.get("placed"):
+                    w.build()
+                    w.note(f"Section numbers added to {got['placed']} quotes.", "good")
+                left: dict[str, int] = {}
+                for u in got.get("unplaced", []):
+                    left[u["row"]] = left.get(u["row"], 0) + 1
+                got["left_by_row"] = left
+                got["unplaced"] = got.get("unplaced", [])[:80]
+                return self.json(got)
+            if parts == ["job"] and method == "POST":
+                return self.json(w.queue_chat_job(self.body_json() or {}))
+            if parts == ["jobs"] and method == "GET":
+                return self.json({"jobs": [{k: j.get(k) for k in ("id", "title", "status", "asked", "started", "finished",
+                                                                  "tokens", "result", "undone", "estimate")}
+                                           for j in w.chat_jobs()]})
+            if parts == ["undo"] and method == "POST":
+                got = w.undo_chat_job(str((self.body_json() or {}).get("job") or ""))
+                return self.json({"undone": got["id"], "title": got["title"]})
+        except HandbookError as e:
+            return self.fail(400, str(e))
+        except (ValueError, OSError) as e:
+            return self.fail(400, str(e), "unreadable")
+        return self.fail(404, "No such chat call.", "not_found")
 
     def _setup(self, method: str, parts: list[str]) -> None:
         """The Set-up tab's chat: GET the set-up as it stands (or `guide`, the file formats); POST a part
@@ -1148,9 +1349,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise HandbookError("None of those has a note to rewrite yet.")
                 if body.get("setting", True):
                     feedback.set_settings(project, reasons="plain")
-                queued = worker.enqueue("plain-reasons:" + now_iso(), "plain", "Writing the reasons in plain words",
-                                        lambda job: worker.plain_reasons(job, ids))
                 low, high = plainreasons.PER_UNIT
+                queued = worker.enqueue("plain-reasons:" + now_iso(), "plain", "Writing the reasons in plain words",
+                                        lambda job: worker.plain_reasons(job, ids),
+                                        estimate=lambda: {"low": low * len(ids), "high": high * len(ids)})
                 return {"queued": queued, "units": ids, "tokens": {"low": low * len(ids), "high": high * len(ids)}}
             return do(start)
         return self.fail(404, "No such call.", "not_found")

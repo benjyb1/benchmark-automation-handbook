@@ -27,7 +27,7 @@ from .contract import validate
 from .folder import HandbookError, Project
 
 VIEWER_SRC = Path(__file__).resolve().parents[2] / "viewer"
-SCRIPT_ORDER = ("util.js", "data.js", "components.js", "charts.js", "edits.js", "downloads.js",
+SCRIPT_ORDER = ("util.js", "data.js", "cost.js", "components.js", "charts.js", "edits.js", "downloads.js",
                 "views/", "app.js")
 # Scripts in viewer/js that are never joined into the page: `local.js` is served by `hb serve` and
 # loaded before the page's own scripts there only, so the published page never has it.

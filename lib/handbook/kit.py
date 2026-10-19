@@ -237,7 +237,7 @@ def index_text(index, left_out: int = 0) -> str:
 # example cannot nudge an answer.
 EXAMPLE = {"row": "ROW", "cells": {
     "4.2": {"state": "answered", "value": 3,
-            "evidence": [{"doc": "d-0123456789", "page": 4,
+            "evidence": [{"doc": "d-0123456789", "page": 4, "section": "s. 12(3)",
                           "quote": "Exact words copied from p004.txt.",
                           "quote_en": "Your English translation, or the same words if the page is English.",
                           "language": "da"}],
@@ -346,6 +346,11 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         "For a table or a page in columns, quote the words in the order the page file has them, even "
         "where the columns run together; never describe a table or add words of your own in brackets. "
         "A quote is never a web address, a page title or an error message.",
+        "   section: where the quote sits in the document's own numbering, when it has one: the nearest "
+        "section, article, regulation or numbered paragraph above the quote, with its subsection and "
+        "paragraph, written short, for example \"s. 4(2)(a)\", \"art. 35(1)\", \"reg. 7\" or \"para. 12\". "
+        "Take it from the headings on the page or the pages before it, never from memory. When the "
+        "document has no numbering (a web page, a report without numbered parts), leave section out.",
         "   A document's title in meta.json can be wrong: some sites label a working page \"Not Found\". "
         "Judge a document by its page text, never by its title.",
         f"   Never answer from what a document says about this benchmark's own ratings of it (\"{bench}\": a "

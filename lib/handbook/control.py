@@ -18,9 +18,10 @@ reads it before every row and between phases, and `todo` lists nothing outside i
 A request: {"id", "action": "pause" | "resume" | "stop_now" | "stop_after_row" | "scope" |
 "stop_after" | "rerun" | "rerun_done", "row", "rows", "questions", "stage", "rule", "rerun", "by", "at"}.
 Only the keys its action needs are read. A scope request changes only the halves it names (`rows`,
-`questions`; null = all). A rerun request (the owner, after deciding a rule, asks for the answers
-resting on it to be scored again) is kept in `reruns` as {id, rule, rows, questions} until the run
-skill has scored them and sends rerun_done with that id.
+`questions`; null = all). A rerun request (the owner asks for answers to be scored again: those
+resting on a rule after deciding it, or any rows x questions from the corner chat, with `rule` null
+and `why` saying what for) is kept in `reruns` as {id, rule, rows, questions, why} until the run
+skill or the page's server has scored them and sends rerun_done with that id.
 """
 from __future__ import annotations
 import copy
@@ -155,8 +156,9 @@ def _change(c: dict, request: dict, rows: list, questions: list) -> tuple[str | 
         return None, left
     elif action == "rerun":
         rule = request.get("rule")
-        if not isinstance(rule, str) or not rule:
-            return "A re-run names the rule it follows.", []
+        if rule is not None and not (isinstance(rule, str) and rule):
+            return "A re-run's rule is a rule id, or null for answers the owner picked.", []
+        why = request.get("why") if isinstance(request.get("why"), str) and request.get("why").strip() else None
         picked = {}
         for key, known, word in (("rows", rows, "row"), ("questions", questions, "question")):
             value = request.get(key)
@@ -165,8 +167,9 @@ def _change(c: dict, request: dict, rows: list, questions: list) -> tuple[str | 
             picked[key] = [x for x in known if x in value]
             if not picked[key]:
                 return f"None of the {key} named ({_names(value)}) is in this project.", []
-        c["reruns"] = [r for r in c["reruns"] if r.get("rule") != rule]   # the latest asks for that rule
-        c["reruns"].append({"id": request.get("id"), "rule": rule, **picked})
+        if rule is not None:
+            c["reruns"] = [r for r in c["reruns"] if r.get("rule") != rule]   # the latest asks for that rule
+        c["reruns"].append({"id": request.get("id"), "rule": rule, **picked, **({"why": why.strip()} if why else {})})
     elif action == "rerun_done":
         before = len(c["reruns"])
         c["reruns"] = [r for r in c["reruns"] if r.get("id") != request.get("rerun")]

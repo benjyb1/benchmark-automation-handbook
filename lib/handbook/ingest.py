@@ -11,6 +11,7 @@ copy changes. A kit whose copy of a document is not one the project has on file 
 """
 from __future__ import annotations
 import re
+from datetime import datetime, timezone
 
 from . import answers as answer_kinds
 from .folder import HandbookError, Project, applies
@@ -76,7 +77,7 @@ def _check_evidence(problems, w, evidence, docs, row, stale):
                                 f"(it has pages {min(docs[doc])} to {max(docs[doc])})")
         if not (isinstance(ev.get("quote"), str) and ev["quote"].strip()):
             problems.append(f"{we}: quote must be the exact words from the page")
-        for key in ("quote_en", "language"):
+        for key in ("quote_en", "language", "section"):
             if ev.get(key) is not None and not isinstance(ev.get(key), str):
                 problems.append(f"{we}: {key} must be text or null")
 
@@ -178,7 +179,9 @@ def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps:
         language = ev.get("language")
         evidence.append({"doc": ev["doc"], "page": ev["page"], "quote": ev["quote"],
                          "quote_en": ev["quote"] if _is_english(language) else ev.get("quote_en"),
-                         "language": language, "capture": caps.get(ev["doc"])})
+                         "language": language, "capture": caps.get(ev["doc"]),
+                         **({"section": ev["section"].strip(), "section_by": "scorer"}
+                            if isinstance(ev.get("section"), str) and ev["section"].strip() else {})})
     applying = rules_for(rules, question["id"], row)
     unsure = c.get("unsure")
     return {"state": state, "value": value, "points": None if value is None else _points(question, value),
@@ -264,6 +267,40 @@ def _top_minus_lowest(question: dict) -> float:
     points = [lv.get("points") for lv in (question.get("answer") or {}).get("levels") or []
               if isinstance(lv.get("points"), (int, float))]
     return max(points) - min(points) if points else 0
+
+
+def add_instruction(project: Project, text: str, questions=None, rows=None, via: str = "chat",
+                    now: str | None = None) -> dict:
+    """Append the owner's standing instruction (such as "cite the section, not only the page") as a
+    decided rule of kind "instruction" on `questions` (ids; None for every question) for `rows`
+    (ids; None for every row, now and later). Every scorer kit built from now on carries it among
+    its rulings (kit.py), so it reaches each brief; answers already scored change only when they
+    are scored again. No cell is linked to it and none becomes a judgement call. Returns the rule."""
+    if not (isinstance(text, str) and text.strip()):
+        raise HandbookError("The instruction needs some words.")
+    all_q = [q.get("id") for q in project.read("questions").get("questions", []) if q.get("id")]
+    qids = all_q if not questions else list(dict.fromkeys(questions))
+    unknown = [q for q in qids if q not in all_q]
+    if unknown:
+        raise HandbookError(f"Question {', '.join(unknown)} is not in questions.json.")
+    if rows is not None:
+        rows = list(dict.fromkeys(rows))
+        for r in rows:
+            unit(project, r)                     # HandbookError for an unknown row
+    rules_file = project.read("rules")
+    rules = rules_file.setdefault("rules", [])
+    numbers = [int(m.group(1)) for r in rules if (m := re.fullmatch(r"R(\d+)", str(r.get("id"))))]
+    at = now or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rule = {"id": f"R{max(numbers, default=0) + 1}", "kind": "instruction", "question_ids": qids, "rows": rows,
+            "ask": "A standing instruction from the owner", "options": [], "recommended": None,
+            "why": None, "stakes": {"cells": 0, "points": 0}, "last_year_note": None, "status": "decided",
+            "decision": {"option": None, "text": text.strip(), "at": at, "via": via}, "raised_by": "owner"}
+    problems = check_rules({"rules": [rule]}, project.read("questions"), project.read("units"))
+    if problems:
+        raise _problem_list("The instruction was not added:", problems)
+    rules.append(rule)
+    project.write("rules", rules_file)
+    return rule
 
 
 def raise_rule(project: Project, questions: list, rows: list, ask: str, options: list,

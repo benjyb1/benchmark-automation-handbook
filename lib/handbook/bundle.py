@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents
 from .fetch import weak_why
-from . import control, corrections, edition
+from . import control, corrections, costs, edition
 from .folder import Project, applies, effective_question, read_json
 from .custom_charts import read_charts
 from .deck import checked_decks
@@ -21,7 +21,7 @@ from .report_draft import drafting
 from .scoresheet import row_totals
 
 CONTRACT = "handbook-bundle/1"
-EVIDENCE_KEYS = ("doc", "page", "quote", "quote_en", "language")
+EVIDENCE_KEYS = ("doc", "page", "section", "quote", "quote_en", "language")
 SECOND_READ_KEYS = ("value", "agrees", "run")
 OWNER_KEYS = ("value", "agreed", "why", "claude", "kept", "correction")
 
@@ -58,7 +58,7 @@ def _rows(project: Project) -> list[tuple[dict, list[str], dict, dict]]:
 
 
 def _evidence(item: dict, documents: dict) -> dict:
-    out = {k: item.get(k) for k in EVIDENCE_KEYS}
+    out = {k: item.get(k) for k in EVIDENCE_KEYS if k != "section" or item.get(k)}   # a section only when known
     if out["doc"] not in documents:
         out["missing"] = True
     return out
@@ -161,6 +161,8 @@ def make_bundle(project: Project, now: datetime) -> dict:
         "found": found,
         "runs": project.runs(),
         "estimate": project.read("estimate") or None,
+        # Tokens: what was used and the model for a rough range before work runs (costs.py, views' HB.cost).
+        "cost": costs.summary(project),
         "results": _results(project),
         "applied_edits": list(project.read("edits-applied").get("applied") or []),
         # Every round of the owner's corrections, with what the code found and Claude's verdict.
@@ -275,7 +277,7 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
                 d = docs.get(e.get("doc"), {})
                 evidence.append([row, unit.get("name"), qid, STATE_WORDS.get(c["state"], c["state"]),
                                  c.get("value"), c.get("points"), e.get("doc"), d.get("title"),
-                                 e.get("page"), e.get("quote"), e.get("quote_en"), e.get("language"),
+                                 e.get("page"), e.get("section"), e.get("quote"), e.get("quote_en"), e.get("language"),
                                  d.get("url"), note])
 
     cited_by: dict[str, list[str]] = {}
@@ -304,7 +306,7 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
                                       "State", "Value", "Points", "Rules", "Judgement", "Flags",
                                       "Second read", "Out of date"], answers),
         _sheet("evidence", "Evidence", [f"{word} id", word, "Question", "State", "Value", "Points",
-                                        "Document", "Title", "Page", "Quote", "Quote in English",
+                                        "Document", "Title", "Page", "Section or article", "Quote", "Quote in English",
                                         "Language", "URL", "Scorer's note"], evidence),
         _sheet("documents", "Documents", ["Document", "Title", "Publisher", "Date", "Date from", "URL",
                                           "Archive URL", "How found", "Provided by owner", "Language",

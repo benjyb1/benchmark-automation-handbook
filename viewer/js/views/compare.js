@@ -1221,7 +1221,8 @@
         btn.after(HB.notice("critical", err && err.message ? err.message : "This could not be saved."));
       }
     });
-    return h("p", { class: "cmp-act__do" }, btn);
+    const est = HB.cost ? HB.cost.rows(rows, (rule.question_ids || []).map(String)) : null;
+    return h("p", { class: "cmp-act__do" }, btn, est ? h("span", { class: "small muted" }, " " + HB.cost.line(est)) : null);
   }
 
   /** "It covers questions 1.7 and 2.6, up to 5 points each.", from the rule's questions. */
