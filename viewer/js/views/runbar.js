@@ -48,7 +48,6 @@
 .rb__wait { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s2); margin: 0; color: var(--ink-2); font-size: var(--fs-12); }
 .rb__wait b { color: var(--ink); font-weight: 600; }
 .rb__chat { margin: 0; color: var(--ink-2); font-size: var(--fs-12); }
-.rb__cost { margin: 0; color: var(--ink-2); font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
 .rb__chat q { color: var(--ink); font-weight: 600; }
 .rb__msg:empty { display: none; }
 .rb-pick__count { color: var(--ink-2); font-size: var(--fs-14); font-variant-numeric: tabular-nums; }
@@ -158,7 +157,6 @@
       rows: inScope.length,
       done: inScope.filter((u) => !left(u)).length,
       anyLeft: units.some(left),
-      leftIds: inScope.filter(left).map((u) => u.id),
       row: (finding || scoring || {}).id || null,
       phase: finding ? "finding documents" : scoring ? "scoring" : null,
     };
@@ -383,7 +381,6 @@
       : ctl.stop_after === "score" ? ["Stops after ", h("b", null, "scoring")] : "Carries on to the end"));
 
     const top = h("div", { class: "rb__top" }, h("h3", { class: "rb__title", id: "rb-title" }, "Run"), chip, h("p", { class: "rb__facts" }, facts));
-    const cost = costLine(b, ctl, run, prog);
 
     let actions = null;
     if (ready) {
@@ -428,31 +425,8 @@
     } catch (err) {
       local = null;
     }
-    bar.replaceChildren(...[top, cost, actions || chatLine(), local, wait, msg].filter(Boolean));
+    bar.replaceChildren(...[top, actions || chatLine(), local, wait, msg].filter(Boolean));
     return { show: Boolean(run) || Boolean(local) || waiting.length > 0 || !isDefault(ctl) || (b.project && b.project.stage !== "setup" && prog.anyLeft) };
-  }
-
-  /** Tokens on the owner's Claude plan (HB.cost): during a run, what it has used so far; before one, a
-      rough range for the rows left in scope (the trial's estimate when there is one, which includes finding). */
-  function costLine(b, ctl, run, prog) {
-    if (!HB.cost || !HB.cost.part()) return null;
-    const est = b.estimate && b.estimate.point != null && b.estimate.rows ? b.estimate : null;
-    let text = null;
-    if (run) {
-      const usage = run.usage && typeof run.usage === "object" ? run.usage : {};
-      let spent = Object.values(usage).reduce((sum, steps) => sum + Object.values(steps || {}).reduce((x, v) => x + (Number(v) || 0), 0), 0);
-      spent += Object.values(run.group_usage || {}).reduce((x, v) => x + (Number(v) || 0), 0);
-      text = "Used so far: " + HB.cost.tokens(spent) + " tokens of your Claude plan" +
-        (run.kind === "full" && est ? ", against an estimate of " + HB.cost.range(est) + " for the whole run." : ".");
-    } else if (prog.leftIds.length && b.project && b.project.stage !== "setup") {
-      if (est && !ctl.scope.rows && !ctl.scope.questions) {
-        text = "The full run of the " + HB.data.unitWords(est.rows) + " left: " + HB.cost.line(est).replace(/^A/, "a") + " This comes from your trial and includes finding documents.";
-      } else {
-        const r = HB.cost.rows(prog.leftIds, ctl.scope.questions);
-        if (r) text = "Scoring the " + HB.data.unitWords(r.rows) + " left: " + HB.cost.line(r).replace(/^A/, "a") + " Finding their documents adds more.";
-      }
-    }
-    return text ? h("p", { class: "rb__cost", id: "rb-cost" }, text) : null;
   }
 
   function redraw() {

@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents
 from .fetch import weak_why
-from . import control, corrections, costs, edition
+from . import control, corrections, edition
 from .folder import Project, applies, effective_question, read_json
 from .custom_charts import read_charts
 from .deck import checked_decks
@@ -161,8 +161,6 @@ def make_bundle(project: Project, now: datetime) -> dict:
         "found": found,
         "runs": project.runs(),
         "estimate": project.read("estimate") or None,
-        # Tokens: what was used and the model for a rough range before work runs (costs.py, views' HB.cost).
-        "cost": costs.summary(project),
         "results": _results(project),
         "applied_edits": list(project.read("edits-applied").get("applied") or []),
         # Every round of the owner's corrections, with what the code found and Claude's verdict.
