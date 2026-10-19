@@ -184,12 +184,76 @@ def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps:
                             if isinstance(ev.get("section"), str) and ev["section"].strip() else {})})
     applying = rules_for(rules, question["id"], row)
     unsure = c.get("unsure")
+    stored_unsure = None
+    if unsure is not None:
+        stored_unsure = {"why": unsure["why"], "note": unsure["note"], "handled": False}
+        if unsure["why"] == "document" and missing_name(unsure):
+            stored_unsure["missing"] = missing_name(unsure)
     return {"state": state, "value": value, "points": None if value is None else _points(question, value),
             "evidence": evidence, "rules": [r["id"] for r in applying],
             "judgement": any(r.get("status") in ("open", "skipped") for r in applying),
-            "unsure": None if unsure is None else {"why": unsure["why"], "note": unsure["note"],
-                                                   "handled": False},
+            "unsure": stored_unsure,
             "note": c.get("note") or "", "run": run, "out_of_date": False}
+
+
+MISSING_CHARS = 200
+
+
+def missing_name(unsure) -> str | None:
+    """The document a scorer said it needed and could not find in its kit (`unsure.missing`), as plain
+    text cut to MISSING_CHARS; None when there is none or it is not text (a malformed name is dropped,
+    never a reason to refuse the row's answers)."""
+    name = unsure.get("missing") if isinstance(unsure, dict) else None
+    if not isinstance(name, str) or not " ".join(name.split()):
+        return None
+    return " ".join(name.split())[:MISSING_CHARS]
+
+
+def record_missing(project: Project, row: str, cells: dict) -> list[dict]:
+    """Add each document the scorer named as missing (`unsure.missing` in `cells`, stored cells) to
+    found/<row>.json `expected_not_found`, once per name (case aside), with the questions that need it,
+    so the Grid shows it among the row's missing documents, the second search looks for it and the
+    owner can send it. Returns the entries added or widened."""
+    wanted: dict[str, dict] = {}
+    for qid, c in cells.items():
+        name = missing_name((c or {}).get("unsure"))
+        if name:
+            wanted.setdefault(name.casefold(), {"what": name, "questions": []})["questions"].append(qid)
+    if not wanted:
+        return []
+    found = project.found(row)
+    entries = found.setdefault("expected_not_found", [])
+    changed = []
+    for key, need in wanted.items():
+        have = next((e for e in entries if isinstance(e, dict) and str(e.get("what", "")).casefold() == key), None)
+        if have is None:
+            have = {"what": need["what"], "where_looked": "", "by": "scorer", "questions": []}
+            entries.append(have)
+        qs = list(dict.fromkeys(list(have.get("questions") or []) + need["questions"]))
+        if qs != have.get("questions"):
+            have["questions"] = qs
+            if have.get("by") == "scorer":
+                have["where_looked"] = (f"Not among the documents found for this row; Claude needed it to answer "
+                                        f"question{'s' if len(qs) != 1 else ''} {', '.join(qs)}.")
+            changed.append(have)
+    found["row"] = row
+    project.write_found(row, found)
+    return changed
+
+
+def supplied_missing(project: Project, row: str, what: str) -> list[str]:
+    """The owner sent `what` for `row`: if it answers a document a scorer named as missing
+    (record_missing), take that note off the row and return the questions that needed it, to be
+    scored again; [] when `what` is no such note."""
+    found = project.found(row)
+    entries = found.get("expected_not_found") or []
+    hit = next((e for e in entries if isinstance(e, dict) and e.get("by") == "scorer"
+                and str(e.get("what", "")).casefold() == " ".join(str(what).split()).casefold()), None)
+    if hit is None:
+        return []
+    found["expected_not_found"] = [e for e in entries if e is not hit]
+    project.write_found(row, found)
+    return [str(q) for q in hit.get("questions") or []]
 
 
 def _problem_list(head: str, problems: list) -> HandbookError:
@@ -260,6 +324,7 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
     answers["row"] = row
     answers.setdefault("cells", {}).update(new)
     project.write_answers(row, answers)
+    record_missing(project, row, new)
     return list(data["cells"])
 
 

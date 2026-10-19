@@ -119,6 +119,27 @@ def record_usage(project: Project, run_id: str, step: str, tokens: int | None, r
     return run
 
 
+STOP_WHY = ("budget", "turns", "time")
+
+
+def record_stop(project: Project, run_id: str, row: str, result: dict) -> dict:
+    """Note in the run that the scorer for `row` was stopped before it finished (`result` is the receipt
+    hb score saved: `stopped`, `budget`, `left`, and its usage), under `stops[row]`, one entry per stop:
+    {"why": budget | turns | time, "tokens", "budget", "left": [qids], "at"}. The page says so plainly;
+    the questions left are scored once more in a fresh kit. Returns the entry."""
+    run = _get_run(project, run_id)
+    why = result.get("stopped")
+    if why not in STOP_WHY:
+        raise HandbookError(f"The receipt says the scorer stopped for {why!r}, not one of {', '.join(STOP_WHY)}.")
+    r = receipt_from_result(result)
+    entry = {"why": why, "tokens": r["fresh"] + r["cache_read"] + r["output"],
+             "budget": result.get("budget") if isinstance(result.get("budget"), int) else None,
+             "left": [str(q) for q in result.get("left") or []], "at": now_stamp()}
+    run.setdefault("stops", {}).setdefault(row, []).append(entry)
+    project.write_run(run)
+    return entry
+
+
 def cache_read_share(run: dict) -> float | None:
     """The share of a run's recorded tokens that were cache reads, over every receipt it holds;
     None when no receipt was recorded."""

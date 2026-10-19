@@ -439,11 +439,32 @@ class Worker:
             if ok:
                 self.cmd.run("prepare", timeout=1800)
                 self.store.delete("supplied", d["id"])
+                self._rescore_after(rows, d.get("what"))
                 self.note(f"Filed what you sent for {', '.join(rows)}.", "good", last_line(out))
                 filed = True
             else:
                 self.note("What you sent could not be filed.", "warning", out[-600:])
         return filed
+
+    def _rescore_after(self, rows: list[str], what) -> None:
+        """A document the owner sent in answer to a scorer's "missing" note: the note is taken off the
+        row and the questions that needed it are queued to be scored again (rescore_missing)."""
+        from .ingest import supplied_missing
+        from .rowwatch import SLOW_WHAT, slow_questions
+        if not isinstance(what, str) or not what.strip():
+            return
+        for row in rows:
+            qs = supplied_missing(self.project, row, what)
+            if not qs and what == SLOW_WHAT:
+                # sent from a slow row's card: score again what a missing document could change, and
+                # take the card down (the owner has acted on it)
+                qs = slow_questions(self.project, row)
+                from .control import set_control
+                set_control(self.project, [{"action": "row_ok", "row": row, "what": "slow"}])
+            if qs:
+                self.enqueue(f"rescore:{row}:{now_iso()}", "rescore", f"Scoring again with the document you sent",
+                             lambda job, r=row, q=list(qs), w=what: self.rescore_missing(job, r, q, w),
+                             estimate=lambda r=row, q=list(qs): costs.estimate_rows(self.project, [r], q))
 
     def _take_charts(self, docs: list[dict]) -> bool:
         """A chart the owner confirmed in the corner chat: {chart: {id, title, description, dataset,
@@ -622,6 +643,55 @@ class Worker:
         cells = self.bundle().get("cells") or {}
         return {(r, q): (cells.get(r) or {}).get(q, {}).get("value") for r in rows for q in qids}
 
+    def _score_row(self, job: dict, run_id: str, row: str, qs: list[str], label: str, name: str) -> int:
+        """Kit, scorer, usage, ingest and check for one row's questions; returns the tokens. A scorer
+        stopped at its budget or turn cap (cmd_score.py) keeps what it wrote: that is ingested, the
+        questions left stay not scored, and the job goes on to its next row. The row then waits on the
+        page (rowwatch.py) for the owner: Carry on (a re-run of what is left, in a fresh kit), upload a
+        document, or leave it."""
+        job["line"] = f"{label}: getting the documents ready"
+        with self.cmd.lock:
+            kit = last_line(self.cmd.must("kit", "--row", row, "--run", run_id, "--questions", ",".join(qs)))
+        job["line"] = f"{label}: Claude is scoring {len(qs)} answer{'s' if len(qs) != 1 else ''}"
+        tokens = self._score(job, kit)
+        receipt = read_json(Path(kit) / "receipt.json", {}) or {}
+        job["line"] = f"{label}: checking the answers"
+        with self.cmd.lock:
+            self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "score",
+                         "--receipt", str(Path(kit) / "receipt.json"))
+            if (Path(kit) / "answers.json").is_file():
+                code, out = self.cmd.run("ingest-answers", "--row", row, "--run", run_id,
+                                         "--file", str(Path(kit) / "answers.json"))
+                if code != 0 and not receipt.get("stopped"):
+                    raise HandbookError(last_line(out) or "The answers could not be stored.")
+            self.cmd.run("check")
+        job["steps"].append({"row": row, "questions": qs, "tokens": tokens, "stopped": receipt.get("stopped")})
+        left = [q for q in receipt.get("left") or [] if q in qs] if receipt.get("stopped") else []
+        if left:
+            self.note(f"{name} was stopped at its token budget after {tokens:,} tokens, with {len(left)} "
+                      f"question{'s' if len(left) != 1 else ''} left. It waits on the Grid for you: carry on, "
+                      "upload a document, or leave it.", "warning", f"Questions left: {', '.join(left)}.")
+        return tokens
+
+    def rescore_missing(self, job: dict, row: str, qs: list[str], what: str) -> None:
+        """The questions a scorer could not answer for want of a document the owner has now sent:
+        scored again, on that row only, in a small fresh kit."""
+        name = next((u.get("name") for u in self.bundle().get("units") or [] if u.get("id") == row), None) or row
+        job.update({"total": 1, "done": 0})
+        with self.cmd.lock:
+            out = self.cmd.must("run", "start", "--kind", "rerun", "--questions", ",".join(qs), "--rows", row, "--json")
+        run_id = json.loads(last_line(out))["id"]
+        try:
+            self._score_row(job, run_id, row, qs, name, name)
+        finally:
+            with self.cmd.lock:
+                self.cmd.run("run", "finish", "--run", run_id)
+                self.cmd.run("check")
+            job["done"] = 1
+            self.build()
+        self.note(f"{name}: question{'s' if len(qs) != 1 else ''} {', '.join(qs)} scored again with {what}.", "good",
+                  self.spent(job))
+
     def rerun(self, job: dict, req: dict) -> None:
         bundle = self.bundle()
         cells = bundle.get("cells") or {}
@@ -647,19 +717,8 @@ class Worker:
         failed = []
         for i, (row, qs) in enumerate(work, 1):
             label = f"{names.get(row) or row} ({i} of {len(work)})"
-            job["line"] = f"{label}: getting the documents ready"
             try:
-                with self.cmd.lock:
-                    kit = last_line(self.cmd.must("kit", "--row", row, "--run", run_id, "--questions", ",".join(qs)))
-                job["line"] = f"{label}: Claude is scoring {len(qs)} answer{'s' if len(qs) != 1 else ''}"
-                tokens = self._score(job, kit)
-                job["line"] = f"{label}: checking the answers"
-                with self.cmd.lock:
-                    self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "score",
-                                 "--receipt", str(Path(kit) / "receipt.json"))
-                    self.cmd.must("ingest-answers", "--row", row, "--run", run_id, "--file", str(Path(kit) / "answers.json"))
-                    self.cmd.run("check")
-                job["steps"].append({"row": row, "questions": qs, "tokens": tokens})
+                self._score_row(job, run_id, row, qs, label, names.get(row) or row)
             except HandbookError as e:
                 failed.append(row)
                 self.note(f"Re-run: {names.get(row) or row} could not be scored again.", "warning", str(e)[-600:])

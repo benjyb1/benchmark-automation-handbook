@@ -28,5 +28,6 @@ For a rescore after a second search or a rule decision, the prompt is the same: 
 ## Afterwards
 
 - The brief has the scorer run the kit's `check_quotes.py` on its answers before it finishes, so a quote that is not word for word on a page is fixed while the page is still to hand. Its output is the scorer's business; nothing of it goes to the owner.
-- If the scorer stopped at its cap, ingest what it wrote. The questions it did not reach stay to be scored and are picked up on resume with `kit --questions`.
+- If the scorer stopped at its budget or turn cap (`score` says so, with the questions left), ingest what it wrote and go on to the next row. The row waits on the page for the owner to carry on, upload a document or leave it, as the run skill says. The budget comes from the kit's `limits.json`; nothing about it goes in the prompt beyond the token cap line.
+- A scorer that needed a document the kit does not have names it in `unsure.missing` and moves on (the brief tells it to search once, then stop). Ingest puts it on the row's missing list for the second search and the owner.
 - If it says it could not read a page file or a document has no page files, that is a document problem, not a scoring one: the row goes through the second search like any other document doubt.

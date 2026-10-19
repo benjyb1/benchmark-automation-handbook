@@ -79,6 +79,14 @@
     return h("li", null, h("span", null, words), button);
   }
 
+  /** "question 7" or "questions 7, 8 and 9". */
+  function qWords(qs) {
+    const list = (qs || []).map(String);
+    if (!list.length) return "some questions";
+    if (list.length === 1) return "question " + list[0];
+    return "questions " + list.slice(0, -1).join(", ") + " and " + list[list.length - 1];
+  }
+
   function open(unit) {
     const gaps = HB.data.gaps(unit.id);
     const ready = HB.supply && typeof HB.supply.ready === "function" && HB.supply.ready();
@@ -86,9 +94,14 @@
     const body = [];
     if (gaps.missing.length) {
       body.push(h("section", { class: "hbg-gaps" }, h("h3", null, "Couldn't find:"),
-        h("ul", null, gaps.missing.map((m) => line(unit, { pattern: "not_found", what: m.what,
-          intro: "Claude expected this but could not find it. If you have it, send the file or a link." },
-        [h("strong", null, m.what), h("span", { class: "muted" }, m.where_looked ? "Looked: " + m.where_looked : "Where Claude looked is not recorded")])))));
+        h("ul", null, gaps.missing.map((m) => m.by === "scorer"
+          ? line(unit, { pattern: "not_found", what: m.what,
+            intro: "Claude needed this to answer " + qWords(m.questions) + " and it isn't among the documents. If you have it, send the file or a link: " +
+              HB.when("those questions are then scored again.", "Claude scores those questions again the next time it works on this project.") },
+          [h("strong", null, m.what), h("span", { class: "muted" }, "Claude needed it to answer " + qWords(m.questions) + ".")])
+          : line(unit, { pattern: "not_found", what: m.what,
+            intro: "Claude expected this but could not find it. If you have it, send the file or a link." },
+          [h("strong", null, m.what), h("span", { class: "muted" }, m.where_looked ? "Looked: " + m.where_looked : "Where Claude looked is not recorded")])))));
     }
     if (gaps.lost.length) {
       body.push(h("section", { class: "hbg-gaps" }, h("h3", null, "Couldn't get a copy of:"),

@@ -27,7 +27,10 @@
    HB.data.foundCount(row)      how many documents Claude has found for a row
    HB.data.gaps(row)            what Claude could not get for a row: {missing:
                                 [{what, where_looked}] (expected but not found,
-                                from found[row].expected_not_found), lost: [{id,
+                                from found[row].expected_not_found; by "scorer"
+                                and questions when a scorer needed it to answer
+                                them; on a row Claude searched the web for, those
+                                wait for its second search), lost: [{id,
                                 title, url, why}] (found, but no saved copy kept:
                                 documents[id].kept === false, not_kept_why)}
    HB.data.gapRows()            the ids of the rows with any gap, in unit order
@@ -135,10 +138,16 @@
   function gaps(row) {
     const b = bundle();
     const f = found(row);
+    // A document a scorer named on a row whose documents Claude found on the web waits for the row's
+    // second search before the owner is asked for it (rowwatch.py); on the owner's own rows it shows at once.
+    const watch = (b && b.watch && b.watch[row]) || {};
+    const waitSearch = watch.source === "public" && (f.second_search == null);
     const missing = (Array.isArray(f.expected_not_found) ? f.expected_not_found : [])
-      .map((m) => (m && typeof m === "object" ? { what: m.what, where_looked: m.where_looked } : { what: m }))
+      .map((m) => (m && typeof m === "object" ? m : { what: m }))
       .filter((m) => m.what != null && String(m.what).trim() !== "")
-      .map((m) => ({ what: String(m.what), where_looked: m.where_looked ? String(m.where_looked) : null }));
+      .filter((m) => !(waitSearch && m.by === "scorer"))
+      .map((m) => ({ what: String(m.what), where_looked: m.where_looked ? String(m.where_looked) : null,
+        by: m.by === "scorer" ? "scorer" : null, questions: Array.isArray(m.questions) ? m.questions.map(String) : [] }));
     const docs = (b && b.documents) || {};
     const lost = (Array.isArray(f.documents) ? f.documents : [])
       .filter((id) => typeof id === "string" && docs[id] && docs[id].kept === false)

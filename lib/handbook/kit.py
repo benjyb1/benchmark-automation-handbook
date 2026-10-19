@@ -233,6 +233,15 @@ def index_text(index, left_out: int = 0) -> str:
     return "\n".join(lines)
 
 
+# From this many questions the brief asks for answers.json to be written as the scorer goes, so a
+# session stopped at its budget (cmd_score.py) leaves the answers it had (Zambia, 61 questions, 53 turns).
+SAVE_AS_YOU_GO = 10
+# A row's token budget is this many times the cost model's figure for its kit: wide enough that a row
+# within the usual spread never meets it (half the format-test rows came within 1.3 times), narrow
+# enough to stop a row going round in circles (Canada: 5.4M; Zambia: 53 turns).
+BUDGET_FACTOR = 2.5
+MIN_BUDGET = 150_000
+
 # The example answers file in every brief. Ids, documents and words are made up on purpose, so the
 # example cannot nudge an answer.
 EXAMPLE = {"row": "ROW", "cells": {
@@ -244,7 +253,8 @@ EXAMPLE = {"row": "ROW", "cells": {
             "note": "One sentence on why this level fits.", "unsure": None},
     "4.3": {"state": "no_evidence", "value": None, "evidence": [],
             "note": "One sentence on what you searched for.",
-            "unsure": {"why": "document", "note": "A national report seems to be missing."}},
+            "unsure": {"why": "document", "note": "The definition this turns on is in another act, which is not here.",
+                       "missing": "The Example Act 2019"}},
 }}
 
 
@@ -360,8 +370,16 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         "expect seems to be missing, still give your best answer and add "
         "unsure: {\"why\": \"rule\", \"note\": \"...\"} or {\"why\": \"document\", \"note\": \"...\"}. "
         "Otherwise unsure is null. Never give a confidence score or a percentage.",
+        "   A question can turn on a document that is not in this folder: another law, regulations, a definition "
+        "set out elsewhere, a form. Search this folder for it once. If it is not here, stop looking: answer from "
+        "what you have, add \"missing\": the document's name (with its year and country when you know them) to "
+        "unsure {\"why\": \"document\"}, and move on. Do not search for the same document again for later "
+        "questions: give the same missing name. It is looked for or asked for, and those questions are "
+        "scored again once it is here.",
         f"8. Write {afile} in exactly this shape. The question ids, documents and words below are only "
-        "an example; use the ids from " + qfile + ".",
+        "an example; use the ids from " + qfile + "."
+        + (f" With this many questions, write {afile} early and write it again, whole, after every ten or so "
+           "answers, so the answers you have are kept if the session is stopped." if n_questions > SAVE_AS_YOU_GO else ""),
         "",
         "```json",
         example,
@@ -417,4 +435,21 @@ def write_kit(project: Project, row: str, run: str, questions=None, second: bool
                                                      figures=any("figure" in q for q in qs),
                                                      may_not_apply=any(q.get("may_not_apply") for q in qs)),
                                     encoding="utf-8")
+    if not second:
+        write_json(kit / "limits.json", kit_limits(project, row, [q["id"] for q in qs]))
     return kit
+
+
+def kit_limits(project: Project, row: str, qids: list[str]) -> dict:
+    """{"budget", "max_turns", "estimate", "from"} for scoring `qids` on `row`. Once MIN_SIMILAR rows like
+    it are measured, 2.5 times their tokens per question (rowwatch.similar_budget, "from": "similar");
+    before that, BUDGET_FACTOR times the cost model's figure (costs.py, "from": "estimate"). At least
+    MIN_BUDGET, with the turn cap as a backstop. hb score stops the session at the budget."""
+    from .cmd_score import DEFAULT_MAX_TURNS
+    from .costs import estimate_rows
+    from .rowwatch import similar_budget
+    point = estimate_rows(project, [row], qids)["point"]
+    similar = similar_budget(project, row, len(qids))
+    budget = similar if similar is not None else round(point * BUDGET_FACTOR)
+    return {"budget": max(MIN_BUDGET, budget), "max_turns": DEFAULT_MAX_TURNS, "estimate": point,
+            "from": "similar" if similar is not None else "estimate"}

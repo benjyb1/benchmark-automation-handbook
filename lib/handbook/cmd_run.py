@@ -16,7 +16,7 @@ from pathlib import Path
 from .cli import command_parser, open_project
 from .cmd_kit import id_list
 from .folder import HandbookError, read_json
-from .runs import finish_run, receipt_from_result, record_usage, start_run
+from .runs import finish_run, receipt_from_result, record_stop, record_usage, start_run
 from .shapes import RUN_KINDS, USAGE_STEPS
 
 PROJECT_HELP = "the project folder (default: $HANDBOOK_PROJECT, then the current folder)"
@@ -65,9 +65,13 @@ def main(argv) -> int:
             path = Path(args.receipt).expanduser()
             if not path.is_file():
                 raise HandbookError(f"There is no receipt at {path}.")
-            receipt = receipt_from_result(read_json(path))
+            result = read_json(path)
+            receipt = receipt_from_result(result)
         run = record_usage(project, args.run, args.step, args.tokens, row=args.row, group=args.group,
                            receipt=receipt)
+        if receipt and args.row and isinstance(result, dict) and result.get("stopped"):
+            stop = record_stop(project, args.run, args.row, result)
+            print(f"{args.row} was stopped at {stop['why']} with {len(stop['left'])} question(s) left; noted in the run.")
         total = run["usage"][args.row][args.step] if args.row else run["group_usage"][args.group]
         if receipt:
             tokens = receipt["fresh"] + receipt["cache_read"] + receipt["output"]

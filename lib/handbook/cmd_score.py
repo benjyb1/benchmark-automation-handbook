@@ -1,5 +1,12 @@
-"""hb score --kit KIT [--model M] [--effort E] [--max-turns N]: run one scorer on a kit in a clean,
-headless Claude session and save its receipt.
+"""hb score --kit KIT [--model M] [--effort E] [--max-turns N] [--budget TOKENS]: run one scorer on a kit
+in a clean, headless Claude session and save its receipt.
+
+The session is watched as it runs (stream-json) and stopped once it has processed more than its token
+budget, by default the kit's limits.json (hb kit: about 2.5 times the cost model's figure for the row),
+with a turn cap as a backstop. A stopped scorer keeps what it wrote (the brief has a long row write
+answers.json as it goes); the receipt says `stopped` and lists the questions `left`, for one fresh kit.
+Measured 15 Oct 2026 on the RTI Rating: turns, not document length, drove the cost (Zambia 53 turns and
+2.0M tokens, Canada 84 turns and 5.4M), mostly a scorer re-reading for documents the kit did not have.
 
 The scorer is a fresh `claude -p` in safe mode: no MCP servers, plugins, skills, hooks, CLAUDE.md or
 custom agents of the owner's session ride along, and it has only the tools a scorer needs (read,
@@ -18,15 +25,20 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 from .claude_cli import MODEL
 from .cli import command_parser
-from .folder import HandbookError, write_json
+from .folder import HandbookError, read_json, write_json
 
 CAP = 200_000
 TIMEOUT_S = 1800
 RECEIPT = "receipt.json"
+LIMITS = "limits.json"          # written by hb kit: {"budget": tokens, "max_turns": n}
+# A backstop under the budget: Canada's 117-page Act took 84 turns and 5.4M tokens (15 Oct 2026); most
+# rows take 10 to 25.
+DEFAULT_MAX_TURNS = 60
 # What a scorer may do: read and search the kit, write its answers, and run shell commands (grep
 # over the page files, the kit's check_quotes.py). The web tools are taken away. Bash is allowed
 # whole: with only prefix rules (Bash(grep *) and the like) a compound command is refused, the
@@ -63,10 +75,10 @@ def prompt_for(kit: Path, cap: int = CAP) -> str:
             "many you marked unsure.")
 
 
-def command(kit: Path, model: str | None, effort: str | None, max_turns: int | None) -> list[str]:
-    cmd = ["claude", "-p", prompt_for(kit), "--safe-mode", "--strict-mcp-config", "--mcp-config",
+def command(kit: Path, model: str | None, effort: str | None, max_turns: int | None, cap: int = CAP) -> list[str]:
+    cmd = ["claude", "-p", prompt_for(kit, cap), "--safe-mode", "--strict-mcp-config", "--mcp-config",
            '{"mcpServers":{}}', "--settings", json.dumps(settings(kit)), "--disable-slash-commands",
-           "--no-session-persistence", "--output-format", "json", "--permission-mode", "dontAsk",
+           "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
            "--tools", TOOLS, "--allowed-tools", TOOLS, "--disallowed-tools", NO_TOOLS]
     cmd += ["--model", model or MODEL]
     if effort:
@@ -76,29 +88,124 @@ def command(kit: Path, model: str | None, effort: str | None, max_turns: int | N
     return cmd
 
 
-def run_scorer(kit: Path, model=None, effort=None, max_turns=None, timeout_s: int = TIMEOUT_S) -> dict:
-    """Run the scorer and return the session's result JSON (also saved as KIT/receipt.json, with
-    `kit`, `model` and `effort` added). Raises HandbookError when claude is missing, the session
-    fails before it answers, or it prints no JSON."""
+def limits(kit: Path, budget: int | None = None, max_turns: int | None = None) -> dict:
+    """{"budget", "max_turns"} for a kit: what was passed, else the kit's limits.json (written by hb kit
+    from the cost model), else no budget and DEFAULT_MAX_TURNS."""
+    got = read_json(kit / LIMITS, {}) or {}
+    b = budget if budget is not None else got.get("budget")
+    t = max_turns if max_turns is not None else got.get("max_turns")
+    ok = lambda v: isinstance(v, int) and not isinstance(v, bool) and v > 0      # noqa: E731
+    return {"budget": b if ok(b) else None, "max_turns": t if ok(t) else DEFAULT_MAX_TURNS}
+
+
+USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
+
+
+def watch(lines, budget: int | None, stop) -> dict:
+    """Read the session's stream-json lines as they come. Each API call is counted once (by message id):
+    its input and cache tokens are exact there, its output only partly, which is a small share. When the
+    count passes `budget`, `stop()` is called once. Returns {"result": the final result event or None,
+    "tokens", "usage": the split by kind, "calls", "stopped": "budget" or None}."""
+    seen, tokens, result, stopped = set(), 0, None, None
+    usage = dict.fromkeys(USAGE_KEYS, 0)
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "result":
+            result = event
+        elif event.get("type") == "assistant":
+            msg = event.get("message") or {}
+            mid = msg.get("id") or f"call-{len(seen)}"
+            if mid not in seen:
+                seen.add(mid)
+                for k in USAGE_KEYS:
+                    n = (msg.get("usage") or {}).get(k)
+                    n = n if isinstance(n, int) and not isinstance(n, bool) and n > 0 else 0
+                    usage[k] += n
+                    tokens += n
+                if budget and tokens > budget and stopped is None:
+                    stopped = "budget"
+                    stop()
+    return {"result": result, "tokens": tokens, "usage": usage, "calls": len(seen), "stopped": stopped}
+
+
+def left_questions(kit: Path) -> list[str]:
+    """The kit's questions that its answers.json has no answer for (all of them when it has none)."""
+    qs = [str(q.get("id")) for q in (read_json(kit / "questions.json", {}) or {}).get("questions") or []
+          if isinstance(q, dict)]
+    try:
+        cells = (json.loads((kit / "answers.json").read_text(encoding="utf-8")) or {}).get("cells") or {}
+    except (OSError, ValueError, AttributeError):
+        cells = {}
+    return [q for q in qs if q not in cells]
+
+
+def run_scorer(kit: Path, model=None, effort=None, max_turns=None, timeout_s: int = TIMEOUT_S,
+               budget: int | None = None) -> dict:
+    """Run the scorer and return the session's result (also saved as KIT/receipt.json, with `kit`,
+    `model`, `effort`, `budget`, `max_turns`, `stopped` and `left` added). The session is watched as it
+    runs and stopped once it has processed more than its budget (`limits`); a session that reaches its
+    turn cap stops itself. Either way `stopped` says so ("budget" or "turns", else null) and `left` lists
+    the questions its answers.json does not answer. Raises HandbookError when claude is missing, or the
+    session fails before it answers and printed nothing usable."""
     if not (kit / "brief.md").is_file():
         raise HandbookError(f"{kit} is not a kit: there is no brief.md in it. Build it with hb kit first.")
     if shutil.which("claude") is None:
         raise HandbookError("The claude command line is not installed, so no scorer can be started this way.")
+    lim = limits(kit, budget, max_turns)
+    cap = max(CAP, lim["budget"] or 0)
+    proc = subprocess.Popen(command(kit, model, effort, lim["max_turns"], cap), cwd=kit, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    fired: list[bool] = []
+
+    def time_up():
+        fired.append(True)
+        proc.terminate()
+    timer = threading.Timer(timeout_s, time_up)
+    timer.start()
+    err: list[str] = []
+    drain = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
+    drain.start()
     try:
-        proc = subprocess.run(command(kit, model, effort, max_turns), cwd=kit, capture_output=True,
-                              text=True, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        raise HandbookError(f"The scorer for {kit.name} ran for more than {timeout_s // 60} minutes and was "
-                            "stopped. Whatever it wrote to answers.json can still be ingested.") from None
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
-        raise HandbookError(f"The scorer session for {kit.name} ended without a result"
-                            + (f": {tail[-1][:200]}" if tail else ".")) from None
-    result.update({"kit": str(kit), "model": model, "effort": effort})
+        seen = watch(proc.stdout, lim["budget"], proc.terminate)
+        proc.wait()
+    finally:
+        timer.cancel()
+    result = seen["result"]
+    if result is None:
+        if fired and not seen["calls"]:
+            raise HandbookError(f"The scorer for {kit.name} ran for more than {int(timeout_s // 60)} minutes and was "
+                                "stopped. Whatever it wrote to answers.json can still be ingested.")
+        if not seen["calls"]:
+            tail = "".join(err).strip().splitlines()
+            raise HandbookError(f"The scorer session for {kit.name} ended without a result"
+                                + (f": {tail[-1][:200]}" if tail else "."))
+        # Stopped from here (its budget, or the time limit): the usage is what the stream showed.
+        result = {"type": "result", "subtype": "stopped", "is_error": False, "result": "",
+                  "num_turns": seen["calls"], "usage": seen["usage"], "usage_from_stream": True}
+    stopped = seen["stopped"] or ("time" if fired else "turns" if result.get("subtype") == "error_max_turns" else None)
+    result.update({"kit": str(kit), "model": model, "effort": effort, "budget": lim["budget"],
+                   "max_turns": lim["max_turns"], "stopped": stopped, "left": left_questions(kit)})
     write_json(kit / RECEIPT, result)
     return result
+
+
+STOP_WORDS = {"budget": "its token budget", "turns": "its turn limit", "time": "the time limit"}
+
+
+def stop_words(result: dict) -> str | None:
+    """"Stopped at its token budget (2,500,000) with 12 questions left: 31, 32, ..." or None."""
+    why = result.get("stopped")
+    if not why:
+        return None
+    left = result.get("left") or []
+    limit = f" ({result['budget']:,})" if why == "budget" and result.get("budget") else ""
+    return (f"Stopped at {STOP_WORDS.get(why, why)}{limit} with {len(left)} question{'s' if len(left) != 1 else ''} left"
+            + (": " + ", ".join(left) if left else "") + ".")
 
 
 def describe(result: dict) -> str:
@@ -114,15 +221,22 @@ def main(argv) -> int:
     parser.add_argument("--kit", required=True, help="the kit folder hb kit printed")
     parser.add_argument("--model", default=None, help=f"a model id, for example claude-sonnet-5-5 (default: {MODEL}, at its default effort)")
     parser.add_argument("--effort", default=None, help="an effort level, for example low")
-    parser.add_argument("--max-turns", type=int, default=None, help="stop the scorer after this many turns")
+    parser.add_argument("--max-turns", type=int, default=None,
+                        help=f"stop the scorer after this many turns (default: the kit's limits.json, else {DEFAULT_MAX_TURNS})")
+    parser.add_argument("--budget", type=int, default=None,
+                        help="stop the scorer once it has processed this many tokens (default: the kit's limits.json)")
     args = parser.parse_args(argv)
     kit = Path(args.kit).expanduser()
-    result = run_scorer(kit, args.model, args.effort, args.max_turns)
+    result = run_scorer(kit, args.model, args.effort, args.max_turns, budget=args.budget)
     reply = " ".join(str(result.get("result") or "").split())
     print(f"Scorer for {kit.name}: {reply or '(no reply)'}")
     print(describe(result))
+    stop = stop_words(result)
+    if stop:
+        print(stop + (" Ingest what it wrote and go on to the next row: the row waits on the page for the owner"
+                      " (carry on, upload a document, or leave it)." if result.get("left") else ""))
     print(f"Receipt: {kit / RECEIPT}")
     if not (kit / "answers.json").is_file():
         print("The scorer wrote no answers.json.", file=sys.stderr)
         return 1
-    return 1 if result.get("is_error") else 0
+    return 1 if result.get("is_error") and not result.get("stopped") else 0

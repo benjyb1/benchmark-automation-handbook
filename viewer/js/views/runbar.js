@@ -49,6 +49,9 @@
 .rb__wait b { color: var(--ink); font-weight: 600; }
 .rb__chat { margin: 0; color: var(--ink-2); font-size: var(--fs-12); }
 .rb__cost { margin: 0; color: var(--ink-2); font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
+.rb__cards { display: grid; gap: var(--s2); }
+.rb__card { display: grid; gap: var(--s1); padding: var(--s2); border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--surface)); border-radius: var(--radius); }
+.rb__card p { margin: 0; }
 .rb__chat q { color: var(--ink); font-weight: 600; }
 .rb__msg:empty { display: none; }
 .rb-pick__count { color: var(--ink-2); font-size: var(--fs-14); font-variant-numeric: tabular-nums; }
@@ -186,6 +189,8 @@
       case "stop_after_row": return "Stop after " + name(d.row);
       case "scope": return "Run " + scopeWords(d.rows, d.questions, b);
       case "stop_after": return "Stop after: " + STOP_WORDS[d.stage || "none"];
+      case "rerun": return "Score again: " + arr(d.rows).map(name).join(", ");
+      case "row_ok": return (d.what === "slow" ? "Carry on with " : "Leave ") + name(d.row);
       default: return String(d.action);
     }
   }
@@ -384,6 +389,7 @@
 
     const top = h("div", { class: "rb__top" }, h("h3", { class: "rb__title", id: "rb-title" }, "Run"), chip, h("p", { class: "rb__facts" }, facts));
     const cost = costLine(b, ctl, run, prog);
+    const stopped = rowCards(b);
 
     let actions = null;
     if (ready) {
@@ -428,8 +434,8 @@
     } catch (err) {
       local = null;
     }
-    bar.replaceChildren(...[top, cost, actions || chatLine(), local, wait, msg].filter(Boolean));
-    return { show: Boolean(run) || Boolean(local) || waiting.length > 0 || !isDefault(ctl) || (b.project && b.project.stage !== "setup" && prog.anyLeft) };
+    bar.replaceChildren(...[top, cost, stopped, actions || chatLine(), local, wait, msg].filter(Boolean));
+    return { show: Boolean(run) || Boolean(stopped) || Boolean(local) || waiting.length > 0 || !isDefault(ctl) || (b.project && b.project.stage !== "setup" && prog.anyLeft) };
   }
 
   /** Tokens on the owner's Claude plan (HB.cost): during a run, what it has used so far; before one, a
@@ -453,6 +459,57 @@
       }
     }
     return text ? h("p", { class: "rb__cost", id: "rb-cost" }, text) : null;
+  }
+
+  /* ---- Rows waiting on the owner (the bundle's `watch`, rowwatch.py) --------------------------
+     A row stopped at its token budget: Carry on (a re-run of the questions left, in a fresh kit),
+     Upload a document, or Leave it. A row much slower than similar ones (only rows whose documents
+     Claude found on the web): Upload a document, or Carry on. Neither holds up other rows. */
+
+  const SLOW_WHAT = "A document that may be missing";     // serve.py knows this one (rowwatch.SLOW_WHAT)
+  const WHY = { budget: "its token budget", turns: "its turn limit", time: "the time limit" };
+
+  function rowCards(b) {
+    const watch = b.watch && typeof b.watch === "object" ? b.watch : {};
+    const tokens = (n) => (HB.cost ? HB.cost.tokens(n) : fmtInt(n));
+    const ready = Boolean(HB.edits && HB.edits.ready && typeof HB.edits.save === "function");
+    const canSend = HB.supply && typeof HB.supply.ready === "function" && HB.supply.ready();
+    const ctl = control(b);
+    const pend = pending(ctl);
+    const asked = (row, action) => pend.some((d) => d.action === action && (d.row === row || arr(d.rows).includes(row)));
+    const cards = [];
+    for (const [row, w] of Object.entries(watch)) {
+      if (!w || (!w.stopped && !w.slow)) continue;
+      const upload = canSend ? button("rb-up-" + row, "Upload a document", () => HB.supply.send({ row, name: name(row), pattern: "not_found",
+        what: SLOW_WHAT, kicker: "Documents", intro: "If you have a document Claude may be missing for " + name(row) + ", send the file or a link. " +
+          HB.when("Its unfinished and doubtful answers are then scored again.", "Claude scores those answers again the next time it works on this project.") })) : null;
+      if (w.stopped) {
+        const s = w.stopped;
+        const n = arr(s.left).length;
+        const text = name(row) + " was stopped at " + (WHY[s.why] || "a limit") + " after " + tokens(s.tokens || 0) + " tokens, with " +
+          fmtInt(n) + (n === 1 ? " question" : " questions") + " left.";
+        const going = s.carrying_on || asked(row, "rerun");
+        cards.push(h("div", { class: "rb__card", id: "rb-row-" + row },
+          h("p", null, text + (going ? " Carrying on in a fresh session." : "")),
+          !going && ready ? h("p", { class: "rb__actions" },
+            button("rb-go-" + row, "Carry on", () => send({ action: "rerun", rule: null, rows: [row], questions: arr(s.left),
+              why: "Carry on after " + (WHY[s.why] || "a limit") }, "rb-go-" + row), { primary: true }),
+            upload,
+            button("rb-leave-" + row, asked(row, "row_ok") ? "Left" : "Leave it", () => send({ action: "row_ok", row, what: "stopped" }, "rb-leave-" + row),
+              { disabled: asked(row, "row_ok"), title: "Leave these questions not scored" })) : null));
+      } else if (w.slow) {
+        const sl = w.slow;
+        const like = sl.similar ? "similar " + ((b.project && b.project.unit_word_plural) || "rows") + " (" + sl.similar + ")"
+          : "similar " + ((b.project && b.project.unit_word_plural) || "rows");
+        cards.push(h("div", { class: "rb__card", id: "rb-row-" + row },
+          h("p", null, name(row) + " took " + String(sl.times) + " times as long as " + like + ", so a document may be missing."),
+          ready ? h("p", { class: "rb__actions" }, upload,
+            button("rb-ok-" + row, asked(row, "row_ok") ? "Carrying on" : "Carry on", () => send({ action: "row_ok", row, what: "slow" }, "rb-ok-" + row),
+              { disabled: asked(row, "row_ok"), title: "The answers stand as they are" })) : null));
+      }
+    }
+    return cards.length ? h("div", { class: "rb__cards", id: "rb-rows" }, cards.slice(0, 6),
+      cards.length > 6 ? h("p", { class: "rb__cost" }, fmtInt(cards.length - 6) + " more rows are waiting too.") : null) : null;
   }
 
   function redraw() {

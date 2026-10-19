@@ -16,7 +16,9 @@ reads it before every row and between phases, and `todo` lists nothing outside i
   and the viewer stops waiting for it.
 
 A request: {"id", "action": "pause" | "resume" | "stop_now" | "stop_after_row" | "scope" |
-"stop_after" | "rerun" | "rerun_done", "row", "rows", "questions", "stage", "rule", "rerun", "by", "at"}.
+"stop_after" | "rerun" | "rerun_done" | "row_ok", "row", "rows", "questions", "stage", "rule", "rerun",
+"what", "by", "at"}. `row_ok` {row, what: "stopped" | "slow"} is the owner setting a row card aside
+(rowwatch.py); it is kept under `rows_ok` {row: {what: when}}.
 Only the keys its action needs are read. A scope request changes only the halves it names (`rows`,
 `questions`; null = all). A rerun request (the owner asks for answers to be scored again: those
 resting on a rule after deciding it, or any rows x questions from the corner chat, with `rule` null
@@ -30,7 +32,8 @@ from datetime import datetime, timezone
 from .folder import DEFAULTS, HandbookError, Project
 from .shapes import CONTROL_STOP_AFTER as STOP_AFTER
 
-ACTIONS = ("pause", "resume", "stop_now", "stop_after_row", "scope", "stop_after", "rerun", "rerun_done")
+ACTIONS = ("pause", "resume", "stop_now", "stop_after_row", "scope", "stop_after", "rerun", "rerun_done", "row_ok")
+ROW_OK = ("stopped", "slow")     # what the owner set aside for a row (rowwatch.py): a stop, or a slow-row flag
 LIST_AT_MOST = 10        # rows or questions named in a sentence before "and N more"
 
 
@@ -73,6 +76,10 @@ def read(project: Project) -> dict:
     c["applied"] = [x for x in data.get("applied") or [] if isinstance(x, str)] \
         if isinstance(data.get("applied"), list) else []
     c["updated"] = data.get("updated") if isinstance(data.get("updated"), str) else None
+    ok = data.get("rows_ok")
+    if isinstance(ok, dict):
+        c["rows_ok"] = {r: {k: v for k, v in marks.items() if k in ROW_OK and isinstance(v, str)}
+                        for r, marks in ok.items() if isinstance(r, str) and isinstance(marks, dict)}
     return c
 
 
@@ -170,6 +177,16 @@ def _change(c: dict, request: dict, rows: list, questions: list) -> tuple[str | 
         if rule is not None:
             c["reruns"] = [r for r in c["reruns"] if r.get("rule") != rule]   # the latest asks for that rule
         c["reruns"].append({"id": request.get("id"), "rule": rule, **picked, **({"why": why.strip()} if why else {})})
+    elif action == "row_ok":
+        # The owner's answer to a row card (rowwatch.py): "Leave it" for a row stopped at its budget,
+        # "Carry on" for a row flagged as slow. Kept with the time, so a later stop shows again.
+        row, what = request.get("row"), request.get("what")
+        if not isinstance(row, str) or row not in rows:
+            return f"Row {row!r} is not in units.json.", []
+        if what not in ROW_OK:
+            return f"What to set aside must be {' or '.join(ROW_OK)}, not {what!r}.", []
+        at = request.get("at") if isinstance(request.get("at"), str) and request.get("at") else _stamp(None)
+        c.setdefault("rows_ok", {}).setdefault(row, {})[what] = at
     elif action == "rerun_done":
         before = len(c["reruns"])
         c["reruns"] = [r for r in c["reruns"] if r.get("id") != request.get("rerun")]

@@ -712,6 +712,8 @@ def check_found(d) -> list[str]:
         if out.obj(item, wi):
             out.text(item, "what", wi)
             out.text(item, "where_looked", wi, empty_ok=True)
+            out.str_list(item, "questions", wi, required=False)     # what a scorer needed it for (ingest.record_missing)
+            out.text(item, "by", wi, required=False)
     out.stamp(d, "second_search", w)
     return out
 
@@ -783,6 +785,7 @@ def _check_cell(out, qid, c, q):
         out.enum(unsure, "why", UNSURE_WHY, f"{w}: unsure")
         out.text(unsure, "note", f"{w}: unsure", empty_ok=True)
         out.boolean(unsure, "handled", f"{w}: unsure", required=False)
+        out.text(unsure, "missing", f"{w}: unsure", required=False)   # the document the scorer needed (ingest.py)
     out.text(c, "note", w, required=False, nullable=True, empty_ok=True)
     out.text(c, "run", w, required=False, nullable=True)
     out.boolean(c, "out_of_date", w, required=False)
@@ -915,6 +918,14 @@ def check_run(d) -> list[str]:
                 receipt(r, f"{w}: receipt for {_show(row)} {step}")
     for group, r in (d.get("group_receipts") or {}).items():
         receipt(r, f"{w}: group receipt for {_show(group)}")
+    stops = d.get("stops", {})        # rows whose scorer was stopped before it finished (runs.record_stop)
+    if out.obj(stops, f"{w}: stops"):
+        for row, entries in stops.items():
+            for k, e in enumerate(entries if isinstance(entries, list) else [None]):
+                we = f"{w}: stop {k + 1} for {_show(row)}"
+                if out.obj(e, we):
+                    out.enum(e, "why", ("budget", "turns", "time"), we)
+                    out.str_list(e, "left", we)
     return out
 
 
@@ -1262,6 +1273,13 @@ def check_control(d) -> list[str]:
         out.append(f"{w}: reruns must be a list of objects")
     out.str_list(d, "applied", w)
     out.stamp(d, "updated", w)
+    ok = d.get("rows_ok", {})            # row cards the owner set aside (control.py row_ok)
+    if out.obj(ok, f"{w}: rows_ok"):
+        for row, marks in ok.items():
+            if out.obj(marks, f"{w}: rows_ok for {_show(row)}"):
+                for what, when in marks.items():
+                    if what not in ("stopped", "slow") or not isinstance(when, str):
+                        out.append(f"{w}: rows_ok for {_show(row)} holds {_show(what)}; expected stopped or slow with a time")
     return out
 
 
