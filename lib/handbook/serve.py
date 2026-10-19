@@ -53,7 +53,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import edition, readers
+from . import costs, edition, readers
+from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home, user_id
 from .page import VIEWER_SRC, json_for_script
@@ -265,12 +266,22 @@ class Worker:
                 self.queued_ids.discard(job["key"])
                 self.poke()
 
-    def enqueue(self, key: str, kind: str, title: str, run) -> bool:
+    def enqueue(self, key: str, kind: str, title: str, run, estimate=None) -> bool:
+        """Queue a job. `estimate` is a callable giving {low, high} tokens (costs.py), worked out once
+        here so the page shows it while the job waits and the job's note can say how it compared."""
         if key in self.queued_ids:
             return False
         self.queued_ids.add(key)
+        est = None
+        if estimate is not None:
+            try:
+                got = estimate()
+                est = {"low": int(got["low"]), "high": int(got["high"])} if got and got.get("high") else None
+            except Exception:  # noqa: BLE001 - a job runs whether or not its cost can be guessed
+                est = None
         self.queue.append({"key": key, "kind": kind, "title": title, "run": run, "status": "queued",
-                           "done": 0, "total": 0, "line": "Waiting to start", "tokens": 0, "steps": []})
+                           "done": 0, "total": 0, "line": "Waiting to start", "tokens": 0, "steps": [],
+                           "estimate": est})
         self.job_wake.set()
         return True
 
@@ -448,6 +459,15 @@ class Worker:
                 self.note("The chart could not be added.", "warning", out[-800:] or None)
         return changed
 
+    def spent(self, job: dict) -> str:
+        """What a job used, for its note: "1,234,567 tokens processed on your Claude plan (the estimate was
+        about 900,000 to 2,100,000)."."""
+        est = job.get("estimate")
+        said = f"{job['tokens']:,} tokens processed on your Claude plan"
+        if est:
+            said += f" (the estimate was about {show_tokens(est['low'])} to {show_tokens(est['high'])})"
+        return said + "."
+
     def _take_setup(self, docs: list[dict]) -> None:
         """"Draft my set-up" (`{action: "draft"}`): one background job running `hb draft-setup`."""
         for d in docs:
@@ -456,6 +476,12 @@ class Worker:
             self.enqueue("setup-draft:" + now_iso(), "setup", "Drafting your set-up", self.draft_setup)
 
     def draft_setup(self, job: dict) -> None:
+        from . import material
+        try:        # worked out here, not when queued: reading every file can be slow, and no lock is held now
+            est = costs.setup_draft(self.project, sum(f.get("chars") or 0 for f in material.listing(self.project)))
+            job["estimate"] = {"low": est["low"], "high": est["high"]}
+        except Exception:  # noqa: BLE001
+            job["estimate"] = None
         job.update({"total": 1, "line": "Claude is reading your files and drafting the set-up"})
         code, out = self.cmd.run("draft-setup", "--json", timeout=2800)
         try:
@@ -463,14 +489,15 @@ class Worker:
         except (json.JSONDecodeError, IndexError):
             got = {}
         job["tokens"] += int(got.get("tokens") or 0)
-        self.log_usage({"kind": "setup-draft", "job": job["key"], "processed": job["tokens"], "ok": code == 0})
+        self.log_usage({"kind": "setup-draft", "job": job["key"], "processed": job["tokens"], "ok": code == 0,
+                        "estimate": job.get("estimate")})
         with self.cmd.lock:
             self.build()
         job.update({"done": 1, "line": "Done"})
         if code == 0:
-            self.note("Your set-up is drafted. Check it on the Set-up tab.", "good", got.get("result"))
+            self.note("Your set-up is drafted. Check it on the Set-up tab. " + self.spent(job), "good", got.get("result"))
         else:
-            self.note("The set-up draft stopped before it finished.", "warning", (got.get("result") or out)[-800:])
+            self.note("The set-up draft stopped before it finished. " + self.spent(job), "warning", (got.get("result") or out)[-800:])
 
     def plain_reasons(self, job: dict, ids: list[str]) -> None:
         """The plain-reasons job (`POST /api/feedback/plain-reasons`): one small Claude call per unit, outside
@@ -503,7 +530,7 @@ class Worker:
         with self.feedback_lock:
             self.build()
         self.log_usage({"kind": "plain-reasons", "job": job["key"], "processed": job["tokens"], "units": done,
-                        "failed": len(problems)})
+                        "failed": len(problems), "estimate": job.get("estimate")})
         if not problems:
             self.note(f"The reasons are written in plain words for {done} of {len(ids)}.", "good")
         else:
@@ -551,7 +578,9 @@ class Worker:
             if isinstance(r, dict) and isinstance(r.get("id"), str):
                 rule = r.get("rule") or "?"
                 self.enqueue("rerun:" + r["id"], "rerun", f"Re-run of rule {rule}",
-                             lambda job, req=dict(r): self.rerun(job, req))
+                             lambda job, req=dict(r): self.rerun(job, req),
+                             estimate=lambda req=dict(r): costs.estimate_rows(self.project, list(req.get("rows") or []),
+                                                                              [str(q) for q in req.get("questions") or []]))
 
     def _queue_rereads(self, _unused) -> None:
         """A correction whose words are in a link or a file the owner sent is read again here, blind.
@@ -565,7 +594,8 @@ class Worker:
             if not (ev.get("link") or ev.get("asset") or ev.get("local")):
                 continue
             self.enqueue("reread:" + r["id"], "reread", f"Checking your correction on {r.get('row')} question {r.get('qid')}",
-                         lambda job, rnd=dict(r): self.reread(job, rnd))
+                         lambda job, rnd=dict(r): self.reread(job, rnd),
+                         estimate=lambda rnd=dict(r): costs.estimate_rows(self.project, [str(rnd.get("row"))], [str(rnd.get("qid"))]))
 
     def _score(self, job: dict, kit: str) -> int:
         """Run one scorer on a kit (outside the project lock) and return the tokens it processed."""
@@ -576,7 +606,7 @@ class Worker:
                                                        "cache_read_input_tokens", "output_tokens"))
         job["tokens"] += tokens
         self.log_usage({"kind": "score", "job": job["key"], "kit": Path(kit).name, "processed": tokens,
-                        "turns": receipt.get("num_turns"), "ok": code == 0})
+                        "turns": receipt.get("num_turns"), "ok": code == 0, "job_estimate": job.get("estimate")})
         if code != 0 and not (Path(kit) / "answers.json").is_file():
             raise HandbookError(last_line(out) or "The scorer did not finish.")
         return tokens
@@ -642,7 +672,7 @@ class Worker:
                        f"{job['tokens']:,} tokens.")
         self.note(f"Re-run of rule {req.get('rule')} done: {done} of {len(work)} rows scored again, "
                   f"{moved} answer{'s' if moved != 1 else ''} changed.", "good" if not failed else "warning",
-                  f"{job['tokens']:,} tokens processed on your Claude plan.")
+                  self.spent(job))
 
     def reread(self, job: dict, rnd: dict) -> None:
         row, qid, cid = rnd["row"], rnd["qid"], rnd["id"]
@@ -672,7 +702,7 @@ class Worker:
         self.build()
         tone = "good" if code == 0 and "disagrees" not in out else "warning"
         self.note(last_line(out.split("The owner's answer stays")[0]) if code == 0 else "The re-read could not be recorded.",
-                  tone, f"{job['tokens']:,} tokens processed on your Claude plan.")
+                  tone, self.spent(job))
 
     # -- for the page ----------------------------------------------------------------------------
 
@@ -681,7 +711,7 @@ class Worker:
             if not job:
                 return None
             return {k: job.get(k) for k in ("key", "kind", "title", "status", "done", "total", "line", "tokens",
-                                            "started", "finished", "rule", "steps")}
+                                            "started", "finished", "rule", "steps", "estimate")}
         return {"version": self.version, "job": public(self.job), "queued": [public(j) for j in self.queue],
                 "last_job": public(self.last_job), "activity": list(self.activity), "problem": self.problem,
                 "last_sample": self.last_sample,
@@ -1148,9 +1178,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise HandbookError("None of those has a note to rewrite yet.")
                 if body.get("setting", True):
                     feedback.set_settings(project, reasons="plain")
-                queued = worker.enqueue("plain-reasons:" + now_iso(), "plain", "Writing the reasons in plain words",
-                                        lambda job: worker.plain_reasons(job, ids))
                 low, high = plainreasons.PER_UNIT
+                queued = worker.enqueue("plain-reasons:" + now_iso(), "plain", "Writing the reasons in plain words",
+                                        lambda job: worker.plain_reasons(job, ids),
+                                        estimate=lambda: {"low": low * len(ids), "high": high * len(ids)})
                 return {"queued": queued, "units": ids, "tokens": {"low": low * len(ids), "high": high * len(ids)}}
             return do(start)
         return self.fail(404, "No such call.", "not_found")

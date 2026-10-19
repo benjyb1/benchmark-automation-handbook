@@ -488,6 +488,17 @@
     return { title: job.title, line: job.line, pct, status: job.status };
   }
 
+  /** The job's tokens against its estimate (serve.py works the estimate out when it queues the job). */
+  function costWords(job, running) {
+    const est = job.estimate;
+    const tokens = Number(job.tokens) || 0;
+    const fmt = HB.cost ? HB.cost.tokens : HB.fmtInt;
+    const range = est && HB.cost ? HB.cost.range(est) : est ? "about " + HB.fmtInt(est.low) + " to " + HB.fmtInt(est.high) + " tokens" : null;
+    if (!range && !tokens) return null;
+    if (running) return (tokens ? fmt(tokens) + " tokens of your Claude plan so far" : "Starting") + (range ? ", out of an estimated " + range.replace(/^about /, "") + "." : ".");
+    return fmt(tokens) + " tokens of your Claude plan used" + (range ? ", against an estimate of " + range + "." : ".");
+  }
+
   function paintRunLine() {
     const job = state && state.job;
     const last = state && state.last_job;
@@ -502,6 +513,13 @@
     b.textContent = job ? "Running on this computer: " + w.title : w.title + (show.status === "failed" ? ": stopped" : ": done");
     head.append(b, document.createTextNode(w.line ? ". " + w.line : ""));
     lineEl.append(head);
+    const cost = costWords(show, Boolean(job));
+    if (cost) {
+      const p = document.createElement("p");
+      p.className = "hbl-run__cost";
+      p.textContent = cost;
+      lineEl.append(p);
+    }
     if (job && w.pct != null) {
       const bar = document.createElement("progress");
       bar.max = 100;
@@ -630,6 +648,7 @@
 .hbl-run:empty { display: none; }
 .hbl-run__line { margin: 0; font-size: var(--fs-12); color: var(--ink-2); }
 .hbl-run__line b { color: var(--ink); font-weight: 600; }
+.hbl-run__cost { margin: 0; font-size: var(--fs-12); color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .hbl-run__bar { width: 100%; height: 0.375rem; accent-color: var(--accent); }
 .hbl-recent { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; font-size: var(--fs-14); }
 .hbl-recent li[data-tone="critical"] { color: var(--critical, #a3242a); }

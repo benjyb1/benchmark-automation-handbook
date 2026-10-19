@@ -709,6 +709,12 @@
     return zone;
   }
 
+  /** "About 800,000 to 2.3 million tokens of your Claude plan." for the material listed (HB.cost). */
+  function draftCost(files) {
+    if (!HB.cost) return "It uses some of your Claude plan.";
+    return HB.cost.line(HB.cost.setupDraft(files.reduce((sum, f) => sum + (f.chars || 0), 0)));
+  }
+
   function paintMaterial(box) {
     const files = material.files;
     box.replaceChildren(...[
@@ -722,7 +728,7 @@
       files && files.length ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
         disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
         h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
-          "and the groups for you to check. It uses some of your Claude plan.")) : null,
+          "and the groups for you to check. " + draftCost(files))) : null,
       material.line ? h("p", { class: "small" }, material.line) : null,
     ].filter(Boolean));   // replaceChildren would write a null out as the word "null"
   }
