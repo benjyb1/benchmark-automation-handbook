@@ -21,6 +21,12 @@ From then on everything happens in that page, and its Claude button (bottom righ
 
 It only works on a Mac for now. On Windows? Email benjaminbream@gmail.com.
 
+## What you can do in the page
+
+- **Ask its Claude for anything.** The Claude button (bottom right) can change any part of your benchmark at any stage: add or remove rows or questions, reword a question, add a rule, cite section numbers instead of pages, or export a file. It tells you what each change costs before it runs, and Undo puts it back.
+- **Add documents in bulk.** Under **Add documents or instructions**, upload a spreadsheet that lists your extra documents (which row each belongs to, and its date) along with the files. You can also upload extra instructions for particular questions. Claude matches everything up and shows you a table to confirm before anything is filed.
+- **Work as a team.** Put the project folder in a shared Dropbox, Google Drive or OneDrive folder. Each person runs the tool on their own computer with their own Claude plan. Everyone's corrections and checks are saved with their name, and if two people change the same answer, the page shows both versions and asks which to keep.
+
 ## What it works from
 
 Public documents (company reports, policies, websites) and any documents you give it. It cannot log into portals, members' areas or paid databases. Download what it needs from those and add it in the page.
