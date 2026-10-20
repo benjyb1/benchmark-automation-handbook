@@ -2,7 +2,7 @@
    Handbook viewer: views/rules.js, the Rules tab (HB.views.rules).
    The judgement calls the methodology leaves open, as a list beside one rule in
    full. Top: how many are decided (in words, and one bar segment per rule) and
-   the sort (Stakes: points at most, most first; Question: the questions' order).
+   the sort (Points at stake: points at most, most first; Question order: the questions' order).
    Left: every rule, compact, each a link to #rules~<id>. Right: that rule, with
    its stakes, the cells it touches and the decision form. Below 40rem the two
    take turns: #rules is the list, #rules~R17 the rule with a link back.
@@ -81,7 +81,7 @@
 .rl-rule__ask:focus { outline: none; }
 .rl-rule__ask:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; }
 .rl-rule__bg { max-width: 68ch; margin: calc(-1 * var(--s2)) 0 0; color: var(--ink-2); font-size: var(--fs-14); line-height: 1.5; overflow-wrap: anywhere; }
-.rl-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
+.rl-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); margin: 0; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); }
 .rl-stats > div { display: flex; flex-direction: column-reverse; justify-content: flex-end; gap: 0.125rem; min-width: 0; padding: var(--s2) var(--s3); }
 .rl-stats > div + div { border-inline-start: 1px solid var(--rule); }
 .rl-stats dt { color: var(--ink-2); font-size: var(--fs-12); line-height: 1.3; }
@@ -120,6 +120,7 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
 .rl-last { padding: var(--s2) var(--s3); border: 1px dashed var(--rule-strong); border-radius: var(--radius); font-size: var(--fs-14); overflow-wrap: anywhere; }
 .rl-next { justify-self: start; }
 .rl-tray { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: var(--s2) var(--s3); min-height: 2.75rem; padding: var(--s2) var(--s3); border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); box-shadow: 0 -0.5rem 1rem -0.75rem var(--shadow); font-size: var(--fs-14); }
+.rl-tray[data-n="0"] { display: none; }   /* nothing waiting: no bar saying so */
 .rl-tray p { margin: 0; min-width: 0; color: var(--ink-2); }
 .rl-tray strong { color: var(--ink); }
 @media (pointer: coarse) { .rl-opt { padding-block: var(--s3); } }
@@ -523,7 +524,7 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
         background ? h("p", { class: "rl-rule__bg" }, background) : null,
         h("dl", { class: "rl-stats" },
           stat(fmtInt(cells.length), cells.length === 1 ? "cell affected" : "cells affected"),
-          stat(pts == null ? "Not counted" : fmtInt(pts), "points at most"),
+          pts == null ? null : stat(fmtInt(pts), "points at most"),
           stat(fmtInt(resting.length), awaiting ? "rest on Claude's reading now" : "answers cite this rule"),
           stat(qs.text, qs.n === 1 ? "question" : "questions", qs.all ? null : "rl-stats__q")),
         h("p", { class: "rl-cells" },
@@ -659,9 +660,10 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
       h("span", null, KIND[rule.kind] || "Rule"),
       h("span", { class: "rl-item__st" }, STATUS[st].short)),
     h("span", { class: "rl-item__ask" }, headline(rule) || "No question recorded"),
+    // A rule with no points worked out (a scope rule, say) shows no bar and no "points" words.
     h("span", { class: "rl-item__stakes" },
-      h("span", { class: "rl-track", "aria-hidden": "true" }, h("span", { class: "rl-track__fill", style: { width: width.toFixed(1) + "%" } })),
-      h("span", null, pts == null ? "Points not counted" : plural(pts, "point")),
+      pts == null ? null : h("span", { class: "rl-track", "aria-hidden": "true" }, h("span", { class: "rl-track__fill", style: { width: width.toFixed(1) + "%" } })),
+      pts == null ? null : h("span", null, plural(pts, "point") + " at stake"),
       h("span", { class: "rl-item__q", title: (rule.question_ids || []).join(", ") },
         qs.all ? qs.text + " questions" : qs.text))));
   }
@@ -698,7 +700,7 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
     }, word);
     return h("div", { class: "rl-sort" }, h("span", { id: "rules-sort-label" }, "Sort by"),
       h("div", { class: "segmented", role: "group", "aria-labelledby": "rules-sort-label" },
-        button("stakes", "Stakes"), button("question", "Question")));
+        button("stakes", "Points at stake"), button("question", "Question order")));
   }
 
   /* ---- The tray: what waits for Claude ------------------------------------------------ */

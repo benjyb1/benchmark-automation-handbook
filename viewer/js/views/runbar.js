@@ -14,7 +14,7 @@
 
    What it does: Pause or Resume, "Stop after <row>", Stop now, "Choose what to
    run" (a dialog: rows by label value, questions, each with "all"), and "Stop
-   after: Finding documents | Scoring | Carry on to the end". Each writes one
+   after: Finding documents | Scoring | Don't stop". Each writes one
    request to the Artifact database collection `control` through HB.edits.save:
      {action: "pause" | "resume" | "stop_now" | "stop_after_row" | "scope" |
       "stop_after", row?, rows?, questions?, stage?}  (+ id, by, at)
@@ -31,7 +31,7 @@
   const { h, fmtInt } = HB;
   const TABS = new Set(["grid"]);
   const KIND_WORDS = { trial: "Trial run", full: "Full run", rerun: "Rerun" };
-  const STOP_WORDS = { find: "Finding documents", score: "Scoring", none: "Carry on to the end" };
+  const STOP_WORDS = { find: "Finding documents", score: "Scoring", none: "Don't stop" };
   const WHEN = new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" });
 
   const CSS = `
@@ -54,6 +54,12 @@
 .rb__card p { margin: 0; }
 .rb__chat q { color: var(--ink); font-weight: 600; }
 .rb__msg:empty { display: none; }
+.rb__quiet { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); min-width: 0; }
+.rb__line { margin: 0; min-width: 0; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.rb__line b { color: var(--ink); font-weight: 600; }
+.rb__more { display: grid; gap: var(--s2); }
+.rb__more > summary { width: max-content; color: var(--accent); font-size: var(--fs-12); cursor: pointer; }
+.rb__more[open] > summary { margin-bottom: var(--s1); }
 .rb-pick__count { color: var(--ink-2); font-size: var(--fs-14); font-variant-numeric: tabular-nums; }
 .rb-pick__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 0 var(--s4); }
 .rb-pick__list .hb-check { align-items: flex-start; }
@@ -73,6 +79,7 @@
   let following = false;
   let current = null;             // {bar, viewId, ctx} of the bar on screen
   let message = null;             // {tone, text} after a save, shown once
+  let moreOpen = false;           // the owner opened "More" on the quiet bar: it stays open across redraws
   let focusId = null;             // the control to focus again after a redraw
 
   const arr = (v) => (Array.isArray(v) ? v : []);
@@ -250,6 +257,8 @@
     });
     const rowPick = h("div", { class: "hb-pick-set", id: "rb-rows-pick" }, groups.map((g) => g.node));
     const rowCount = h("p", { class: "rb-pick__count", id: "rb-rows-count", "aria-live": "polite" });
+    // The hint matches what is on screen: the label boxes only show once "All" is unticked.
+    const rowHint = labels.length ? h("p", { class: "hb-hint" }) : null;
 
     const allQs = tick("rb-qs-all", "all", !ctl.scope.questions, "All questions");
     const qBoxes = questions.map((q, i) => tick("rb-q-" + i, q.id, ctl.scope.questions && ctl.scope.questions.includes(q.id),
@@ -269,6 +278,9 @@
     }
     function sync() {
       rowPick.hidden = allRows.input.checked || !labels.length;
+      if (rowHint) rowHint.textContent = allRows.input.checked
+        ? "To run only some " + plural + ", untick All and pick by label."
+        : "Only the " + plural + " with a ticked value in every label you tick are run.";
       qPick.hidden = allQs.input.checked;
       const r = chosenRows();
       const q = chosenQs();
@@ -319,7 +331,7 @@
     h("div", { class: "hb-dialog__body" },
       h("fieldset", { class: "hb-dialog__fields", id: "rb-rows" },
         h("legend", { class: "field__label" }, plural.charAt(0).toUpperCase() + plural.slice(1)),
-        allRows.node, labels.length ? h("p", { class: "hb-hint" }, "Or tick label values: the " + plural + " run are those with a ticked value in every label you tick.") : null,
+        allRows.node, rowHint,
         rowPick, rowCount),
       h("fieldset", { class: "hb-dialog__fields", id: "rb-qs" },
         h("legend", { class: "field__label" }, "Questions"), allQs.node, qPick, qCount)),
@@ -374,7 +386,7 @@
     const chip = state === "paused" ? HB.statusChip("warning", "Paused")
       : state === "stopped" ? HB.statusChip("warning", "Stopped")
         : state === "running" ? HB.statusChip("good", "Running")
-          : HB.statusChip("neutral", "No run open");
+          : HB.statusChip("neutral", "Nothing running");
 
     const facts = [];
     if (run) {
@@ -385,12 +397,14 @@
     } else {
       facts.push(h("span", null, "Settings for the next run"));
     }
-    facts.push(h("span", null, "Runs ", h("b", null, scopeWords(ctl.scope.rows, ctl.scope.questions, b))));
+    // An open run says what it covers itself (20 Oct 2026: a one-country chat test read "every country, every question").
+    const own = (list) => (run && Array.isArray(list) && list.length ? list : null);
+    facts.push(h("span", null, "Runs ", h("b", null, scopeWords(own(run && run.rows) || ctl.scope.rows, own(run && run.questions) || ctl.scope.questions, b))));
     if (ctl.stop_after_row) facts.push(h("span", null, "Stops after ", h("b", null, name(ctl.stop_after_row))));
     facts.push(h("span", null, ctl.stop_after === "find" ? ["Stops after ", h("b", null, "finding documents")]
-      : ctl.stop_after === "score" ? ["Stops after ", h("b", null, "scoring")] : "Carries on to the end"));
+      : ctl.stop_after === "score" ? ["Stops after ", h("b", null, "scoring")] : "Runs every step, without stopping"));
 
-    const top = h("div", { class: "rb__top" }, h("h3", { class: "rb__title", id: "rb-title" }, "Run"), chip, h("p", { class: "rb__facts" }, facts));
+    const top = h("div", { class: "rb__top" }, h("h3", { class: "rb__title", id: "rb-title-full" }, "Run"), chip, h("p", { class: "rb__facts" }, facts));
     const cost = costLine(b, ctl, run, prog);
     const stopped = rowCards(b);
 
@@ -442,12 +456,54 @@
     } catch (err) {
       local = null;
     }
-    bar.replaceChildren(...[top, cost, stopped, actions || chatLine(), local, wait, msg].filter(Boolean));
-    return { show: Boolean(run) || Boolean(stopped) || Boolean(local) || waiting.length > 0 || !isDefault(ctl) || (b.project && b.project.stage !== "setup" && prog.anyLeft) };
+    /* The quiet bar (Benjy, 20 Oct 2026: "so many buttons"): one line saying what is happening, and the one
+       button that matters now (Pause, or Resume). The rest (the run's facts, its cost, Stop after, Stop now,
+       Choose what to run, the stop-after switch) waits under More. Row cards, requests waiting for Claude
+       and the latest message stay in view: they ask something of the owner. */
+    const halted = ctl.paused || ctl.stop_now;
+    const s = HB.local && typeof HB.local.state === "function" ? HB.local.state() : null;
+    const headerPause = Boolean(s && s.job && s.job.kind === "scoring");   // the top of the page has Pause then
+    const said = [];
+    if (theirs) {
+      said.push(h("b", null, (HB.team.nameOf(run.by) || "A colleague") + " is running this"));
+    } else if (halted) {
+      said.push(h("b", null, ctl.paused ? "Paused" : "Stopped"));
+    } else if (run && prog.row) {
+      said.push(h("b", null, prog.phase.charAt(0).toUpperCase() + prog.phase.slice(1) + " " + name(prog.row)));
+    } else if (run) {
+      said.push(h("b", null, "Running"));
+    } else {
+      said.push(h("b", null, "Next run"), " " + scopeWords(ctl.scope.rows, ctl.scope.questions, b));
+    }
+    if (run) said.push(" \u00b7 " + fmtInt(prog.done) + " of " + HB.data.unitWords(prog.rows) + " done");
+    if (run && HB.cost && HB.cost.part()) said.push(" \u00b7 " + HB.cost.tokens(spentOn(run)) + " tokens so far");
+    let main = null;
+    if (ready && !theirs && halted) {
+      main = button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => send({ action: "resume" }, "rb-resume"), { primary: true, disabled: wants("resume") });
+    } else if (ready && !theirs && run && !headerPause) {
+      main = button("rb-pause", wants("pause") ? "Pause asked" : "Pause", () => send({ action: "pause" }, "rb-pause"), { disabled: wants("pause") });
+    }
+    // Under More, the full bar as it was, without the button already shown on the line.
+    const extra = actions ? Array.from(actions.childNodes).filter((n) => !main || n.id !== main.id) : [];
+    const more = h("details", { class: "rb__more", open: moreOpen },
+      h("summary", null, "More"), top, cost, extra.length ? h("div", { class: "rb__actions" }, extra) : (actions ? null : chatLine()),
+      headerPause ? local : null);
+    more.addEventListener("toggle", () => { moreOpen = more.open; });
+    const quiet = h("div", { class: "rb__quiet" }, h("p", { class: "rb__line", id: "rb-title" }, said), main);
+    // The job line from local.js repeats the top of the page during a scoring run: it goes under More then.
+    bar.replaceChildren(...[quiet, more, stopped, headerPause ? null : local, wait, msg].filter(Boolean));
+    // Nothing running and nothing asked of the owner: no bar (the button at the top of the page starts a run).
+    return { show: Boolean(run) || Boolean(halted) || Boolean(stopped) || Boolean(local) || waiting.length > 0 || !isDefault(ctl) };
   }
 
   /** Tokens on the owner's Claude plan (HB.cost): during a run, what it has used so far; before one, a
       rough range for the rows left in scope (the trial's estimate when there is one, which includes finding). */
+  function spentOn(run) {
+    const usage = run && run.usage && typeof run.usage === "object" ? run.usage : {};
+    return Object.values(usage).reduce((sum, steps) => sum + Object.values(steps || {}).reduce((x, v) => x + (Number(v) || 0), 0), 0)
+      + Object.values((run && run.group_usage) || {}).reduce((x, v) => x + (Number(v) || 0), 0);
+  }
+
   function costLine(b, ctl, run, prog) {
     if (!HB.cost || !HB.cost.part()) return null;
     const est = b.estimate && b.estimate.point != null && b.estimate.rows ? b.estimate : null;

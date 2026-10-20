@@ -19,6 +19,16 @@
 (function (HB) {
   "use strict";
 
+  /** A shared folder in words: "University of Bristol" for OneDrive-UniversityofBristol, nothing for
+      iCloud's own folder, the path itself for anything else (a network drive). The full path is the title. */
+  function whereWords(p) {
+    const path = String(p.path || "");
+    const cloud = path.match(/CloudStorage\/[^/-]+-([^/]+)$/);
+    if (cloud) return "(" + cloud[1].replace(/([a-z])of([A-Z])/g, "$1 of $2").replace(/([a-z])([A-Z])/g, "$1 $2") + ")";
+    if (/Mobile Documents\/com~apple~CloudDocs$/.test(path) || /CloudStorage\/[^/]+$/.test(path)) return "";
+    return path;
+  }
+
   const { h } = HB;
 
   const CSS = `
@@ -354,7 +364,7 @@
     const other = h("input", { class: "input", id: "ht-share-other", type: "text", placeholder: "Or paste the path of a shared folder", "aria-label": "Shared folder path" });
     const radios = places.map((p, i) => h("label", { class: "ht-place" },
       h("input", { type: "radio", name: "ht-share", value: p.path, id: "ht-share-" + i, checked: i === 0 }),
-      h("span", null, h("b", null, p.service), " ", h("span", { class: "muted" }, p.path)), h("small", null, p.advice)));
+      h("span", { title: p.path }, h("b", null, p.service), " ", h("span", { class: "muted" }, whereWords(p))), h("small", null, p.advice)));
     const btn = h("button", { type: "button", class: "btn btn--primary btn--small", id: "ht-share-go" }, "Share this project");
     btn.addEventListener("click", async () => {
       const picked = other.value.trim() || ((document.querySelector('input[name="ht-share"]:checked') || {}).value || "");

@@ -108,8 +108,15 @@
       if (!values.length) continue;
       const mean = roundTenth(values.reduce((a, b) => a + b, 0) / values.length);
       const pct = key === "overall" ? overallIsPercent(sheet) : true;
+      // Points summed across sections: say what they are out of ("104.4 points out of 150").
+      let outOf = null;
+      if (!pct && key === "overall" && ((sheet && sheet.overall) || {}).method === "sum_points") {
+        const t = scored.map(totalsOf).find((x) => x && x.sections);
+        const top = t ? Object.values(t.sections).reduce((n, e) => n + (e && isNum(e.max) ? e.max : 0), 0) : 0;
+        if (top > 0) outOf = top;
+      }
       return {
-        key, pct, value: mean, count: values.length,
+        key, pct, value: mean, count: values.length, outOf,
         label: key === "overall" ? "Average overall score" : `Average score for ${nameOfSection(sheet, key)}`,
         text: fmtNum(mean, 1) + (pct ? "%" : ""),
       };
@@ -202,7 +209,7 @@
         h("p", { class: "rsum__label" }, m.figure.label),
         h("p", { class: "rsum__value" }, fmtNum(m.figure.value, 1),
           m.figure.pct ? h("span", { class: "rsum__unit" }, "%") : h("span", { class: "rsum__unit rsum__unit--word" }, " points")),
-        h("p", { class: "rsum__note" }, "Across ", h("strong", null, count), "."),
+        h("p", { class: "rsum__note" }, m.figure.outOf ? "Out of " + fmtNum(m.figure.outOf) + ", across " : "Across ", h("strong", null, count), "."),
         clarify ? h("p", { class: "rsum__note rsum__note--quiet" }, clarify) : null);
     }
     return h("div", { class: "rsum__headline" },
@@ -267,7 +274,7 @@
     const title = "Biggest movers since " + (mv ? mv.since : "last edition");
     if (!mv) {
       return h("div", { class: "rsum__movers" }, h("h4", { class: "rsum__sub" }, title),
-        h("p", { class: "rsum__quiet" }, "Movers appear once last edition's results are added."));
+        h("p", { class: "rsum__quiet" }, "Movers appear once this edition is compared with last edition's results."));
     }
     if (mv.reason) {
       return h("div", { class: "rsum__movers" }, h("h4", { class: "rsum__sub" }, title), h("p", { class: "rsum__quiet" }, mv.reason));

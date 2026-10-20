@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from .cli import command_parser
-from .folder import init_project, synced_folder_warning
+from .folder import default_root, init_project, synced_folder_warning
 
 
 def main(argv) -> int:
     parser = command_parser("init", "Create a project folder with empty set-up files.", project=False)
-    parser.add_argument("--root", default="~/Handbook",
-                        help="the folder that holds projects (default: ~/Handbook)")
+    parser.add_argument("--root", default=str(default_root()),
+                        help="the folder that holds projects (default: ~/Benchmark tool)")
     parser.add_argument("--name", required=True, help="the benchmark's name")
     parser.add_argument("--slug", required=True,
                         help="the folder name: lowercase letters, digits and dashes")

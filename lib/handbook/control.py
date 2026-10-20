@@ -176,7 +176,9 @@ def _change(c: dict, request: dict, rows: list, questions: list) -> tuple[str | 
                 return f"None of the {key} named ({_names(value)}) is in this project.", []
         if rule is not None:
             c["reruns"] = [r for r in c["reruns"] if r.get("rule") != rule]   # the latest asks for that rule
-        c["reruns"].append({"id": request.get("id"), "rule": rule, **picked, **({"why": why.strip()} if why else {}),
+        rid = request.get("id") if isinstance(request.get("id"), str) and request.get("id") else \
+            "r-" + _stamp(None).replace(":", "").replace("-", "") + "-" + str(len(c["reruns"]) + 1)
+        c["reruns"].append({"id": rid, "rule": rule, **picked, **({"why": why.strip()} if why else {}),
                             **{k: request[k] for k in ("by", "on") if request.get(k)}})
     elif action == "row_ok":
         # The owner's answer to a row card (rowwatch.py): "Leave it" for a row stopped at its budget,

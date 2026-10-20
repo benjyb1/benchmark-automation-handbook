@@ -17,7 +17,7 @@ away. **The owner decides. You draft, measure what is at stake, and recommend.**
 
 - `<plugin>` is the folder two levels above this skill's base directory (the harness states the
   base directory when the skill loads). `<lib>` is `<plugin>/lib`.
-- `<project>` is the project folder agreed with the owner in step 1 (default `~/Handbook/<slug>`).
+- `<project>` is the project folder agreed with the owner in step 1 (default `~/Benchmark tool/<slug>`).
 - Every command is run in full as `python3 "<lib>/hb.py" <command> --project "<project>"`, with
   full absolute paths (no `~`) in place of `<lib>` and `<project>`. Only `init` takes no
   `--project`.
@@ -83,7 +83,7 @@ its last line says what comes next.
 ### 1. Drop in what you have
 
 Ask, in one message: the benchmark's name and edition; what they call one row (a company, a
-country, a brand in a market); where to keep the project folder (recommend `~/Handbook/<slug>`,
+country, a brand in a market); where to keep the project folder (recommend `~/Benchmark tool/<slug>`,
 and never inside iCloud Drive, OneDrive, Dropbox or Google Drive, because syncing can damage
 files while they are being written); and whatever they have, above all **the questions** and
 **the list of rows**, then how scores are worked out, last edition's results (question by

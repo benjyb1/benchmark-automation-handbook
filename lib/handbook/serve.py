@@ -77,6 +77,11 @@ WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report",
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
+# A background job that fails (a correction's re-read, a re-run) is not queued again at once: its request
+# is still on file, and the apply loop would otherwise start it again every tick (20 Oct 2026 review: 376
+# scorer sessions in 75 seconds). It waits this long, doubling after each failure, up to RETRY_MAX_S.
+RETRY_S = 600.0
+RETRY_MAX_S = 7200.0
 ROW_RE = re.compile(r"^[a-z0-9-]+\Z")
 ASSET_RE = re.compile(r"^[a-f0-9]{16,32}\Z")
 # The content types an upload may carry: every kind the tool reads (readers.UPLOAD_MIME is the one list, which
@@ -210,6 +215,7 @@ class Worker:
         self.api_key_source: str | None = None
         self.usage_log = project.path / "page-data" / "_log" / "usage.jsonl"
         self.team = None                    # the TeamSide (teamwork.py), set by LocalServer
+        self.failed: dict[str, tuple[int, float]] = {}   # job key: (failures so far, not before this time)
 
     # -- notes for the page ----------------------------------------------------------------------
 
@@ -285,10 +291,16 @@ class Worker:
             try:
                 job["run"](job)
                 job["status"] = "done"
+                self.failed.pop(job["key"], None)
             except Exception as e:  # noqa: BLE001
                 job["status"] = "failed"
                 job["line"] = f"Stopped: {e}"
-                self.note(job["title"] + " stopped.", "critical", str(e)[-800:])
+                n = self.failed.get(job["key"], (0, 0.0))[0] + 1
+                wait = min(RETRY_S * 2 ** (n - 1), RETRY_MAX_S)
+                self.failed[job["key"]] = (n, time.monotonic() + wait)
+                again = (f" It tries again in about {round(wait / 60)} minutes, or when the page is restarted."
+                         if job["kind"] in ("rerun", "reread") else "")
+                self.note(job["title"] + " stopped." + again, "critical", str(e)[-800:])
                 traceback.print_exc()
             finally:
                 job["finished"] = now_iso()
@@ -302,6 +314,8 @@ class Worker:
         here so the page shows it while the job waits and the job's note can say how it compared."""
         if key in self.queued_ids:
             return False
+        if key in self.failed and time.monotonic() < self.failed[key][1]:
+            return False                    # failed lately: it waits (RETRY_S) rather than failing every tick
         self.queued_ids.add(key)
         est = None
         if estimate is not None:
@@ -431,12 +445,30 @@ class Worker:
                 self.note(f"Correction on {where}: Claude agrees with your answer.", "good", v.get("why"))
             elif r.get("status") == "checked" and v.get("agree") is None:
                 self.note(f"Correction on {where}: Claude read it again with your evidence.", "good", v.get("why"))
+            elif r.get("status") == "checked" and v.get("by") == "code":
+                # The code's own check of the evidence (corrections._handle): nothing was read by Claude.
+                why = str(v.get("why") or "")
+                if why.startswith(("Claude could not open the link", "The uploaded file could not be filed",
+                                   "The document could not be read")):
+                    said = f"Correction on {where}: the document could not be opened, so it was not used. Send the file itself instead."
+                else:
+                    said = f"Correction on {where}: the evidence did not check out, so it was not used."
+                if r.get("value") is not None:
+                    said += " Your answer is in."
+                self.note(said, "warning", why or None)
             elif r.get("status") == "checked":
                 self.note(f"Correction on {where}: Claude disagrees. Your answer stands.", "warning", v.get("why"))
             elif r.get("status") == "kept":
                 self.note(f"Correction on {where}: your answer is kept.", "good")
             else:
-                self.note(f"Correction on {where}: the quote checks out. Claude reads it again next.", "good")
+                ev = r.get("evidence") or {}
+                if ev.get("quote"):
+                    said = "the quote checks out. Claude reads it again next."
+                elif ev.get("link") or ev.get("asset") or ev.get("local"):
+                    said = ("your answer is in. " if r.get("value") is not None else "") + "Claude reads the document you sent next."
+                else:
+                    said = "your answer is in."
+                self.note(f"Correction on {where}: {said}", "good")
         for s in result.get("skipped") or []:
             self.note("A correction was not applied yet.", "warning", s.get("why"))
 
@@ -632,7 +664,7 @@ class Worker:
             if d.get("action") != "start" or d.get("kind") not in ("trial", "full"):
                 continue
             req = {"id": d["id"], "kind": d["kind"], "rows": [str(r) for r in d.get("rows") or []],
-                   "questions": [str(q) for q in d.get("questions") or []]}
+                   "questions": [str(q) for q in d.get("questions") or []], "asked": now_iso()}
             title = ("Trying a few " if req["kind"] == "trial" else "Scoring ") + self._plural()
             self.enqueue("scoring:" + d["id"], "scoring", title, lambda job, r=req: self.score_run(job, r),
                          estimate=lambda r=req: costs.estimate_rows(self.project, r["rows"] or self._row_ids(), r["questions"] or None))
@@ -662,6 +694,22 @@ class Worker:
             return "stopped after " + row
         return None
 
+    def _clear_old_stop(self, asked: str | None) -> None:
+        """A start the owner asked for clears a pause or stop that was already set when they asked: one left
+        on from before (20 Oct 2026: "stop the run" with nothing running, and every later start ended at
+        once with 0 tokens). A pause or stop pressed after the start was asked still holds."""
+        from . import control
+        with self.cmd.lock:
+            try:
+                c = control.read(self.project)
+            except HandbookError:
+                return
+            if not (c["paused"] or c["stop_now"] or c["stop_after_row"]):
+                return
+            if asked and (c.get("updated") or "") > asked:
+                return
+            control.set_control(self.project, [{"action": "resume"}])
+
     def score_run(self, job: dict, req: dict) -> None:
         """Find and score, row by row, rebuilding the page after each so the Grid fills in as it goes.
         Not done here yet (the run skill does them with judgement): second searches, second reads, and
@@ -670,6 +718,11 @@ class Worker:
         names = {u.get("id"): u.get("name") or u.get("id") for u in self.bundle().get("units") or []}
         project_meta = self.project.read("project")
         kind, rows, qids = req["kind"], list(req["rows"]), list(req["questions"])
+        if not [q for q in self.project.read("questions").get("questions") or [] if isinstance(q, dict) and q.get("id")]:
+            job["line"] = "Nothing to score"
+            self.note("There are no questions to score yet. Finish the questions on the Set-up tab first.", "warning")
+            return
+        self._clear_old_stop(req.get("asked"))
         if kind == "trial" and not rows:
             first = next(iter(self.project.read("questions").get("questions") or []), {}).get("id")
             rows = (self._json_out("cover", "--question", str(first), "--size", "3").get("rows") or [])[:3] if first else []
@@ -709,11 +762,14 @@ class Worker:
                     self.cmd.run("run", "usage", "--run", run_id, "--group", f"{label}={value}", "--step", "find",
                                  "--tokens", str(got.get("tokens") or 0))
         job.update({"total": len(to_find) * 2 or 1, "done": 0})
+        unsearched = []                 # rows whose search broke off: not scored blind (20 Oct 2026 review)
         for i, row in enumerate(to_find, 1):
             if (why := self._stop_now(job, row)):
                 return self._scoring_stopped(job, why)
             job["line"] = f"Finding documents for {names.get(row, row)} ({i} of {len(to_find)})"
             got = self._find(job, run_finder, row=row)
+            if got.get("broke"):
+                unsearched.append(row)
             with self.cmd.lock:
                 self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "find", "--tokens", str(got.get("tokens") or 0))
                 job["line"] = f"Reading the documents for {names.get(row, row)}"
@@ -722,7 +778,12 @@ class Worker:
             self.build()
 
         # Phase 2: score each row blind from a kit, check, rebuild.
-        work = [w for w in self._json_out("todo").get("rows") or [] if not rows or w.get("row") in rows]
+        work = [w for w in self._json_out("todo").get("rows") or []
+                if (not rows or w.get("row") in rows) and w.get("row") not in unsearched]
+        if unsearched:
+            self.note(f"The document search for {', '.join(names.get(r, r) for r in unsearched)} did not finish, so "
+                      f"{'it was' if len(unsearched) == 1 else 'they were'} not scored. Start scoring again to try once more.",
+                      "warning")
         if kind == "trial" or qids:
             work = [dict(w, questions=[q for q in w.get("questions") or [] if not qids or q in qids]) for w in work]
             work = [w for w in work if w["questions"]]
@@ -751,10 +812,21 @@ class Worker:
                 self.cmd.run("compare")
         est = self._json_out("estimate") if kind == "trial" else {}
         self.build()
-        scored = len(work) - len(failed)
+        # A row whose scorer stopped at its budget before answering anything waits on the Grid (its own note says so).
+        waiting = {st["row"] for st in job["steps"] if st.get("left") and len(st["left"]) == len(st.get("questions") or [])}
+        scored = len(work) - len(failed) - len(waiting)
+        if not work and not unsearched:
+            job["line"] = "Nothing to score"
+            self.log_usage({"kind": kind, "job": job["key"], "processed": job["tokens"], "estimate": job.get("estimate")})
+            self.note(("Those are already scored, so nothing was scored. To score them again, ask the chat to "
+                       "re-score them (it shows the cost first). " if rows or qids else "Everything is already scored. ")
+                      + (self.spent(job) if job["tokens"] else ""), "neutral")
+            return
         said = f"Scored {scored} {self._plural() if scored != 1 else (project_meta.get('unit_word') or 'row')}"
         if failed:
             said += f"; {len(failed)} could not be scored"
+        if waiting:
+            said += f"; {len(waiting)} stopped at {'its' if len(waiting) == 1 else 'their'} token budget and wait{'s' if len(waiting) == 1 else ''} on the Grid for you"
         said += ". Check the answers on the Grid. " + self.spent(job)
         if est.get("point"):
             low, high = est.get("low") or est["point"], est.get("high") or est["point"]
@@ -763,14 +835,14 @@ class Worker:
                      else f" Scoring the rest should use about {show_tokens(low)} to {show_tokens(high)}") + rough + "."
         job["line"] = "Done"
         self.log_usage({"kind": kind, "job": job["key"], "processed": job["tokens"], "estimate": job.get("estimate")})
-        self.note(said, "good" if not failed else "warning")
+        self.note(said, "good" if not failed and not waiting else "warning")
 
     def _find(self, job: dict, run_finder, **who) -> dict:
         try:
             got = run_finder(self.project, **who)
         except HandbookError as e:
             self.note("A document search could not run.", "warning", str(e)[-600:])
-            return {"tokens": 0}
+            return {"tokens": 0, "broke": True}
         job["tokens"] += int(got.get("tokens") or 0)
         self.log_usage({"kind": "find", "job": job["key"], "processed": got.get("tokens"), "ok": got.get("ok")})
         return got
@@ -879,6 +951,8 @@ class Worker:
 
     def _queue_reruns(self) -> None:
         control = read_json(self.project.file("control"), {}) or {}
+        if control.get("paused") is True or control.get("stop_now") is True:
+            return                        # a re-run waits while the owner has paused or stopped (Resume starts it)
         for r in control.get("reruns") or []:
             if isinstance(r, dict) and isinstance(r.get("id"), str) \
                     and (self.team is None or self.team.owns(r.get("by"), r.get("on"))):
@@ -914,7 +988,9 @@ class Worker:
         job["tokens"] += tokens
         self.log_usage({"kind": "score", "job": job["key"], "kit": Path(kit).name, "processed": tokens,
                         "turns": receipt.get("num_turns"), "ok": code == 0, "job_estimate": job.get("estimate")})
-        if code != 0 and not (Path(kit) / "answers.json").is_file():
+        # A scorer stopped at its budget or turn cap before it wrote any answer is not a failure: _score_row says
+        # so and the row waits on the Grid (20 Oct 2026: Argentina read "could not be scored. Receipt: /var/...").
+        if code != 0 and not (Path(kit) / "answers.json").is_file() and not receipt.get("stopped"):
             raise HandbookError(last_line(out) or "The scorer did not finish.")
         return tokens
 
@@ -944,8 +1020,8 @@ class Worker:
                 if code != 0 and not receipt.get("stopped"):
                     raise HandbookError(last_line(out) or "The answers could not be stored.")
             self.cmd.run("check")
-        job["steps"].append({"row": row, "questions": qs, "tokens": tokens, "stopped": receipt.get("stopped")})
         left = [q for q in receipt.get("left") or [] if q in qs] if receipt.get("stopped") else []
+        job["steps"].append({"row": row, "questions": qs, "tokens": tokens, "stopped": receipt.get("stopped"), "left": left})
         if left:
             self.note(f"{name} was stopped at its token budget after {tokens:,} tokens, with {len(left)} "
                       f"question{'s' if len(left) != 1 else ''} left. It waits on the Grid for you: carry on, "
@@ -995,6 +1071,8 @@ class Worker:
         self.build()                     # the run bar shows the re-run as the open run
         failed = []
         for i, (row, qs) in enumerate(work, 1):
+            if (why := self._stop_now(job)):             # Pause and Stop now hold for a re-run too
+                return self._rerun_stopped(job, req, run_id, [r for r, _ in work[i - 1:]], i - 1, len(work), why)
             label = f"{names.get(row) or row} ({i} of {len(work)})"
             try:
                 self._score_row(job, run_id, row, qs, label, names.get(row) or row)
@@ -1019,6 +1097,23 @@ class Worker:
                   f"{moved} answer{'s' if moved != 1 else ''} changed.", "good" if not failed else "warning",
                   self.spent(job))
 
+    def _rerun_stopped(self, job: dict, req: dict, run_id: str, left: list[str], done: int, total: int, why: str) -> None:
+        """A re-run stopped by Pause or Stop now: its run is closed and the request stays on file with the
+        rows still to do, so Resume picks it up from there (it is not queued again while the stop holds)."""
+        from . import control
+        with self.cmd.lock:
+            self.cmd.run("run", "finish", "--run", run_id)
+            c = control.read(self.project)
+            for r in c["reruns"]:
+                if r.get("id") == req.get("id"):
+                    r["rows"] = left
+            self.project.write("control", c)
+            self.cmd.run("check")
+        self.build()
+        job["line"] = f"Stopped ({why})"
+        self.note(f"{rerun_title(req)} {why} after {done} of {total} rows. The other {len(left)} wait: press Resume "
+                  "in the run bar to finish them. " + self.spent(job), "neutral")
+
     def reread(self, job: dict, rnd: dict) -> None:
         row, qid, cid = rnd["row"], rnd["qid"], rnd["id"]
         job.update({"total": 1, "done": 0})
@@ -1035,7 +1130,12 @@ class Worker:
                 args += ["--look", f"{look['doc']}:{look['page']}"]
             kit = last_line(self.cmd.must(*args))
         job["line"] = f"Claude is reading {row} question {qid} again, blind"
-        self._score(job, kit)
+        try:
+            self._score(job, kit)
+        except HandbookError:
+            with self.cmd.lock:          # the run is closed either way; the correction waits (RETRY_S)
+                self.cmd.run("run", "finish", "--run", run_id)
+            raise
         with self.cmd.lock:
             self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "score",
                          "--receipt", str(Path(kit) / "receipt.json"))
@@ -1087,6 +1187,7 @@ class Worker:
     def chat_job(self, job: dict, record: dict) -> None:
         job.update({"total": 1, "done": 0, "line": "Taking a copy of the project first, so you can undo this"})
         with self.cmd.lock:
+            before = chatwork.fingerprint(self.project.path)
             snap = chatwork.snapshot(self.project.path, home() / "snapshots" / self._slug(), record["id"])
         record.update({"status": "running", "started": now_iso(), "snapshot": str(snap)})
         self._save_job(record)
@@ -1094,6 +1195,7 @@ class Worker:
         brief.write_text(record["brief"], encoding="utf-8")
         job["line"] = "Claude is working on it"
         code, out = self.cmd.run("job", "--brief", str(brief), "--json", timeout=2800)
+        self._what_changed(record, before)
         try:
             got = json.loads(out.strip().splitlines()[-1])
         except (json.JSONDecodeError, IndexError):
@@ -1109,6 +1211,7 @@ class Worker:
         record.update({"status": "done" if code == 0 else "failed", "finished": now_iso(), "tokens": job["tokens"],
                        "result": said[:1500]})
         self._save_job(record)
+        self._team_log("chat_job", f"asked Claude in the chat to {record['title'][:1].lower() + record['title'][1:]}")
         job.update({"done": 1, "line": "Done"})
         self.note(("Done: " if code == 0 else "Stopped before it finished: ") + record["title"] + ". " + self.spent(job),
                   "good" if code == 0 else "warning", said[-800:] or None)
@@ -1124,14 +1227,18 @@ class Worker:
         command): a copy first, then `run()`, then check and build; listed with the jobs, so Undo puts it back."""
         rid = "change-" + datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(2)
         with self.cmd.lock:
+            before = chatwork.fingerprint(self.project.path)
             snap = chatwork.snapshot(self.project.path, home() / "snapshots" / self._slug(), rid)
             record = {"id": rid, "title": title[:90], "brief": "", "status": "running", "kind": "change",
                       "asked": now_iso(), "started": now_iso(), "snapshot": str(snap), "tokens": 0}
             self._save_job(record)
             if hold:
                 code, out = run()
+                self._what_changed(record, before)
         if not hold:                      # a slow command takes the lock itself when it writes
             code, out = run()
+            self._what_changed(record, before)
+        self._team_log("chat_change", f"changed in the chat: {record['title']}")
         with self.cmd.lock:
             self.cmd.run("check")
         self.build()
@@ -1147,6 +1254,10 @@ class Worker:
             raise HandbookError(f"hb {args[0] if args else ''} is not run from the chat: it would start another page or project.")
         if any(a.startswith("--project") for a in args):
             raise HandbookError("The chat's commands always work on this project.")
+        if args[0] == "score" or args[:2] == ["run", "start"]:
+            # 20 Oct 2026: run start from the chat left an open run that scored nothing, and the card said Done.
+            raise HandbookError("That command on its own scores nothing here. To score, use start_scoring (rows, "
+                                "questions); to score answers again, propose_rescore.")
         if args[0] in self.CHAT_HB_READ_ONLY:
             code, out = self.cmd.run(*args, timeout=300)
             return {"code": code, "out": out[-6000:]}
@@ -1170,18 +1281,45 @@ class Worker:
             raise HandbookError("That job has already been undone.")
         if record.get("status") in ("queued", "running") or self.job is not None:
             raise HandbookError("Something is still running. Undo once it has finished.")
-        later = [j for j in self.chat_jobs() if j.get("started", "") > record.get("started", "") and not j.get("undone")]
+        keep = home() / "snapshots" / self._slug() / (jid + "-undo-" + datetime.now().strftime("%H%M%S"))
+        snap = Path(record.get("snapshot") or "/nonexistent")
+        later = []
         with self.cmd.lock:
-            chatwork.restore(self.project.path, Path(record.get("snapshot") or "/nonexistent"),
-                             home() / "snapshots" / self._slug() / (jid + "-undo-" + datetime.now().strftime("%H%M%S")))
+            if isinstance(record.get("changed"), dict):
+                # Only this change's own files, and only while they are as it left them (chatwork.undo_changes).
+                chatwork.undo_changes(self.project.path, snap, record["changed"], record.get("had") or [], keep)
+            elif self.team is not None and self.team.on:
+                raise HandbookError("This change was made before the tool could undo one change on its own, and putting "
+                                    "the whole project back would lose your colleagues' work since. Ask the chat to put "
+                                    "it back as it was instead.")
+            else:                         # a change recorded by 1.0.0: the whole copy, and the later changes with it
+                later = [j for j in self.chat_jobs() if j.get("started", "") > record.get("started", "") and not j.get("undone")]
+                chatwork.restore(self.project.path, snap, keep)
+            self.cmd.run("check")
         record["undone"] = now_iso()
         self._save_job(record)
         for j in later:                   # the copy was taken before them, so they are undone too
             j["undone"] = record["undone"]
             self._save_job(j)
         self.build()
-        self.note("Undone: " + record["title"] + ". The project is back as it was before.", "good")
+        self._team_log("undone", f"undid a change made in the chat: {record['title']}")
+        self.note("Undone: " + record["title"] + (". The project is back as it was before." if later or "changed" not in record
+                  else ". What it changed is back as it was; nothing else was touched."), "good")
         return record
+
+    def _what_changed(self, record: dict, before: dict) -> None:
+        """Which files a chat change or job touched, kept on its record so Undo puts back only those."""
+        after = chatwork.fingerprint(self.project.path)
+        record["changed"] = chatwork.changes(before, after)
+        record["had"] = sorted(rel for rel in record["changed"] if rel in before)
+
+    def _team_log(self, kind: str, text: str) -> None:
+        """A chat change, job or Undo in the team's log, so colleagues see it (team.py; only in a shared folder)."""
+        if self.team is None or not self.team.on:
+            return
+        from . import team
+        person = self.team.person()
+        team.log(self.project, person, kind, text=f"{person.get('name') or 'Someone'} {text}")
 
     # -- for the page ----------------------------------------------------------------------------
 
@@ -1687,8 +1825,10 @@ class Handler(BaseHTTPRequestHandler):
             if parts == ["job"] and method == "POST":
                 return self.json(w.queue_chat_job(self.body_json() or {}))
             if parts == ["jobs"] and method == "GET":
-                return self.json({"jobs": [{k: j.get(k) for k in ("id", "title", "status", "asked", "started", "finished",
-                                                                  "tokens", "result", "undone", "estimate")}
+                return self.json({"jobs": [{**{k: j.get(k) for k in ("id", "title", "status", "asked", "started", "finished",
+                                                                     "tokens", "result", "undone", "estimate")},
+                                            # Undo takes back only this one's files (1.0.1 on); else the whole copy
+                                            "own_undo": isinstance(j.get("changed"), dict)}
                                            for j in w.chat_jobs()]})
             if parts == ["undo"] and method == "POST":
                 got = w.undo_chat_job(str((self.body_json() or {}).get("job") or ""))

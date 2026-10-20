@@ -16,7 +16,7 @@ There, the page does by itself what the sections below ask of you: what the owne
 
 ## Where the session runs
 
-Open the Code tab session in the project folder, or in its parent (for a new benchmark, `~/Handbook`). The Artifact tool only reads the page and its data files from the session's working directory or its scratchpad, and the viewer lives in `<project>/viewer/`.
+Open the Code tab session in the project folder, or in its parent (for a new benchmark, `~/Benchmark tool`). The Artifact tool only reads the page and its data files from the session's working directory or its scratchpad, and the viewer lives in `<project>/viewer/`.
 
 If the session is somewhere else, build a copy into the scratchpad and publish from that copy:
 

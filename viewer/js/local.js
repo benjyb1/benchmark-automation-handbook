@@ -568,7 +568,7 @@
     if (state && state.queued && state.queued.length) bits.push(h("span", { class: "hbl-pill" }, state.queued.length + " waiting"));
     const recent = h("button", { type: "button", class: "btn btn--quiet btn--small", id: "hbl-recent", "aria-haspopup": "dialog" }, "Recent changes");
     recent.addEventListener("click", openRecent);
-    const dl = h("a", { class: "btn btn--small", id: "hbl-copy", href: "/api/copy", title: "One file of this page, read-only, to email or upload" }, "Download a copy");
+    const dl = h("a", { class: "btn btn--small", id: "hbl-copy", href: "/api/copy", title: "One read-only file of this page, to email or upload. To send the whole project, use Share." }, "Download a copy");
     dl.addEventListener("click", downloadCopy);
     // Clashes, a colleague's job, the Team (or Share) button: views/team.js.
     const team = HB.team && typeof HB.team.top === "function" ? HB.team.top(h, state) : [];
@@ -591,7 +591,9 @@
       a.textContent = e.message || "The copy could not be made.";
       return;
     }
-    a.textContent = label;
+    // Say it happened: the browser's own download notice is easy to miss.
+    a.textContent = "Saved: one read-only file";
+    window.setTimeout(() => { a.textContent = label; }, 3000);
   }
 
   function openRecent() {
@@ -710,25 +712,31 @@
     const bits = [h("span", null, "Benchmark tool " + (u.current && u.current !== "0" ? "version " + u.current : "(no version number)") + ", " + ed + ".")];
     const busy = u.phase && RUNNING.indexOf(u.phase) >= 0;
     if (!u.development && !busy) {
-      bits.push(" ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => updateAction("check") }, "Check for updates"));
+      bits.push(" ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => { footChecked = true; updateAction("check"); } }, "Check for updates"));
+      // Say what the check found (a newer version also shows the banner at the top).
+      if (footChecked && !u.problem) bits.push(h("span", { class: "hbl-foot__small", role: "status" }, u.available ? " A newer version is out: see the top of the page." : " You have the latest version."));
+      // An install from before version numbers reports "0": call it what it is.
+      const prev = u.previous && u.previous !== "0" ? "version " + u.previous : "the version you had before";
       if (u.previous) {
         const blocked = (u.back_blocked || []).filter((b) => b.backup);
         const stuck = (u.back_blocked || []).length > blocked.length;
         if (footAsk && stuck) {
-          bits.push(" ", h("span", null, "Version " + u.previous + " cannot read " + u.back_blocked.map((b) => b.name).join(", ") +
+          bits.push(" ", h("span", null, prev.charAt(0).toUpperCase() + prev.slice(1) + " cannot read " + u.back_blocked.map((b) => b.name).join(", ") +
             ": this version upgraded its files, and there is no copy from before that to put back. "),
             h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { footAsk = false; paintFoot(); } }, "OK"));
         } else if (footAsk) {
           const when = (b) => (b.at ? new Date(b.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "the upgrade");
-          const restore = blocked.length ? " Version " + u.previous + " cannot read this version's project files, so " +
-            blocked.map((b) => b.name + " goes back to how it was on " + when(b)).join("; ") + ". How it is now is kept in a copy, not lost." : "";
-          bits.push(" ", h("span", null, (HB.local.newer(u.previous, u.current) ? "Return to version " : "Go back to version ") + u.previous + "? The page restarts on it once nothing is running." + restore + " "),
+          const restore = blocked.length ? " It can't read the files this version upgraded, so " +
+            (blocked.length === 1 ? "this project goes" : "these " + blocked.length + " projects on this computer go") +
+            " back to how they were before the upgrade: " + blocked.map((b) => b.name + " (" + when(b) + ")").join(", ") +
+            ". How they are now is kept in a copy, not lost." : "";
+          bits.push(" ", h("span", null, (HB.local.newer(u.previous, u.current) ? "Return to " : "Go back to ") + prev + "? The page restarts on it once nothing is running." + restore + " "),
             h("button", { type: "button", class: "btn btn--small", onclick: () => { footAsk = false; updateAction(blocked.length ? "back_restore" : "back"); } }, blocked.length ? "Go back and restore" : "Go back"), " ",
             h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { footAsk = false; paintFoot(); } }, "Cancel"));
         } else {
           const later = HB.local.newer(u.previous, u.current);
           bits.push(" · ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => { footAsk = true; paintFoot(); } },
-            later ? "Return to version " + u.previous : "Go back to the previous version (" + u.previous + ")"));
+            later ? "Return to " + prev : "Go back to the previous version"));
         }
       }
     }
@@ -737,11 +745,13 @@
       bits.push(h("span", { class: "hbl-foot__small" }, " Last checked " + when.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) +
         (u.problem === "offline" ? " (GitHub could not be reached)." : ".")));
     }
-    footEl.replaceChildren(h("p", null, bits), mailLine(u), u.development ? null : h("p", { class: "hbl-foot__small" }, u.privacy || ""));
+    // DOM append writes a null as the word "null" (it showed as "nullnull" under the version line).
+    footEl.replaceChildren(...[h("p", null, bits), mailLine(u), u.development ? null : h("p", { class: "hbl-foot__small" }, u.privacy || "")].filter(Boolean));
     const main = document.getElementById("main");
     if (!footEl.isConnected && main && main.parentNode) main.parentNode.insertBefore(footEl, main.nextSibling);
   }
 
+  let footChecked = false;   // "Check for updates" was pressed: say what it found
   let mailOpen = false;
   let mailSaid = "";
 
@@ -817,6 +827,9 @@
     flag: (text) => { flagText = text; paintTop(); },
     state: () => state,
     refresh: pollState,
+    /** Whether the owner's name is known on this computer; askName() asks for it (Promise of {name, id}). */
+    named: () => Boolean(me.name),
+    askName: () => askName(),
     /** Whether version a (such as "1.10.0") is newer than b. */
     newer: (a, b) => {
       const pa = String(a || "0").split(".").map(Number), pb = String(b || "0").split(".").map(Number);
@@ -862,7 +875,7 @@
 .hbl-update__notes { margin: 0; padding-left: 1.2rem; }
 .hbl-update__small { color: var(--ink-2); font-size: var(--fs-12); }
 .hbl-update__acts { display: flex; gap: var(--s2); flex-wrap: wrap; }
-.hbl-foot { margin: var(--s6, 3rem) auto var(--s4, 1rem); max-width: var(--measure-wide, 72rem); padding: var(--s3) var(--s4, 1rem); border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--fs-12); }
+.hbl-foot { margin: var(--s6, 3rem) 0 var(--s4, 1rem); max-width: var(--measure-wide, 72rem); padding: var(--s3) var(--s4, 1rem); border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--fs-12); }
 .hbl-foot p { margin: 0 0 var(--s1); }
 .hbl-foot__link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .hbl-foot__small { color: var(--ink-2); }

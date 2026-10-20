@@ -85,6 +85,21 @@
     return u && u.name ? u.name : String(id);
   }
 
+  /** Question ids as short words: "All 61" when it is every question, runs of numbers as "1 to 12". */
+  function questionList(ids, total) {
+    const list = arr(ids).map(String);
+    if (total && list.length === total) return "All " + total;
+    const out = [];
+    let i = 0;
+    while (i < list.length) {
+      let j = i;
+      while (j + 1 < list.length && /^\d+$/.test(list[j]) && /^\d+$/.test(list[j + 1]) && Number(list[j + 1]) === Number(list[j]) + 1) j += 1;
+      out.push(j - i >= 2 ? list[i] + " to " + list[j] : list.slice(i, j + 1).join(", "));
+      i = j + 1;
+    }
+    return out.join(", ");
+  }
+
   function nameList(ids, limit) {
     const list = arr(ids).map(unitName);
     const max = limit || 4;
@@ -287,7 +302,7 @@
           {
             label: "For questions",
             value: (n) => arr(n.why).join(", "),
-            render: (n) => (arr(n.why).length ? h("span", { class: "mono" }, arr(n.why).join(", ")) : "Not stated"),
+            render: (n) => (arr(n.why).length ? questionList(n.why, arr(b.questions).length) : "Not stated"),
             text: (n) => arr(n.why).join(", "),
           },
           { label: cap(plural), value: (n) => (n.rows == null ? "All " + plural : nameList(n.rows)), wide: true },
@@ -536,7 +551,6 @@
         shownLabel: [ONE, plural.toLowerCase()],
         columns: [
           { label: "Name", rowHeader: true, wide: true, value: (u) => u.name, render: (u) => editable(h("span", null, u.name ? String(u.name) : NOT_RECORDED), "unit", u.id, "name"), text: (u) => u.name || "" },
-          { label: "Id", mono: true, value: (u) => u.id },
           {
             label: "Labels",
             wide: true,
@@ -574,10 +588,10 @@
           return h(
             "li",
             null,
-            h("strong", null, words(l)),
+            h("strong", null, cap(words(l))),
             h("span", { class: "muted" }, n ? count(n, "value", "values") : "No values yet"),
             h("span", { class: "su-labels__roles" },
-              groupLabels.includes(l) ? h("span", { class: "su-role" }, "Can group by") : h("span", { class: "su-role su-role--off" }, "Not used for grouping"),
+              groupLabels.includes(l) ? h("span", { class: "su-role" }, "Can group by") : h("span", { class: "su-role su-role--off" }, "Filter only"),
               p.group_by === l ? h("span", { class: "su-role su-role--default" }, "Default grouping") : null),
           );
         }),
@@ -620,8 +634,8 @@
             h("ul", { class: "su-plan__places" }, arr(step.places).map((pl) =>
               h("li", null,
                 pl.url ? link(pl.url, pl.what || undefined) : h("span", null, pl.what ? String(pl.what) : NOT_RECORDED),
-                pl.url ? null : h("span", { class: "muted small" }, " No address yet"),
-                pl.note ? h("span", { class: "muted small" }, " " + pl.note) : null)),
+                pl.url ? null : h("span", { class: "su-plan__noaddr" }, "No address yet"),
+                pl.note ? h("span", { class: "muted small su-plan__note" }, pl.note) : null)),
             ),
           );
         })),
@@ -660,7 +674,8 @@
           expected: provided.length,
           shownLabel: ["file", "files"],
           columns: [
-            { label: "File", rowHeader: true, mono: true, value: (x) => x.name },
+            // Stored files carry a code in front ("8edaa19d...--name.pdf"): show the name the owner gave it.
+            { label: "File", rowHeader: true, value: (x) => String(x.name || "").replace(/^[0-9a-f]{16,}--/, "") },
             { label: "Used as", value: (x) => (x.role === "units" ? "List of " + plural.toLowerCase() : ROLE_WORDS[x.role] || cap(words(x.role || "other"))) },
             { label: "Note", wide: true, value: (x) => x.note || null, empty: "No note" },
           ],
@@ -746,6 +761,13 @@
     return HB.cost.line(HB.cost.setupDraft(files.reduce((sum, f) => sum + (f.chars || 0), 0)));
   }
 
+  /** Whether any part of the set-up is confirmed already (so a draft would replace it). */
+  function redraft() {
+    const b = HB.data && typeof HB.data.bundle === "function" ? HB.data.bundle() || {} : {};
+    const list = (b.project && b.project.checklist) || {};
+    return MUST_HAVES.some((k) => list[k] === "confirmed");
+  }
+
   function paintMaterial(box) {
     const files = material.files;
     const job = draftJob();
@@ -757,10 +779,15 @@
       files === null ? h("p", { class: "small muted" }, "Looking\u2026")
         : files.length ? h("ul", { class: "su-files small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
             (f.chars == null ? ": can't be read" : "")))) : null,
-      files && files.length && !job ? h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
-        disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
-        h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
-          "and the groups for you to check. " + draftCost(files))) : null,
+      files && files.length && !job ? (redraft()
+        // Some parts are confirmed already: a new draft writes over them, so the button is quiet and says so.
+        ? h("p", null, h("button", { type: "button", class: "btn btn--small",
+          disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft it again from these files"),
+          h("span", { class: "small muted" }, " This replaces the parts you have confirmed with a new draft, for you to check again. " + draftCost(files)))
+        : h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
+          disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
+          h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
+            "and the groups for you to check. " + draftCost(files)))) : null,
       job ? draftingNow(job) : null,
       material.line ? h("p", { class: "small" }, material.line) : null,
     ].filter(Boolean));   // replaceChildren would write a null out as the word "null"
@@ -781,7 +808,8 @@
   function materialSection() {
     const box = h("section", { class: "section stack", "aria-label": "Your material" });
     materialBox = box;
-    if (material.files === null) loadMaterial(box); else paintMaterial(box);
+    paintMaterial(box);   // at once, with "Looking..." until the list arrives (a blank gap read as broken)
+    if (material.files === null) loadMaterial(box);
     return box;
   }
 
@@ -818,7 +846,9 @@
         h("h2", null, "Set-up"),
         h("p", { class: "lede" }, stage === "setup" || !stage
           ? "Claude drafts the benchmark with you here. This page fills in as it works."
-          : "The benchmark as agreed for this edition."),
+          : MUST_HAVES.some((k) => !["confirmed", "skipped", "not_needed"].includes(((b.project && b.project.checklist) || {})[k]))
+            ? "Some parts are still drafts. Confirm each one in the checklist below."
+            : "The benchmark as agreed for this edition."),
         editsReady() ? null : h("p", { class: "su-edits-line muted small" }, EDITS_LINE()),
       ),
       HB.local ? safely("your material", () => materialSection()) : null,
@@ -954,7 +984,9 @@
 .su-plan__step { display: grid; gap: var(--s1); padding-left: var(--s3); border-left: 2px solid var(--rule-strong); }
 .su-plan__for { font-weight: 600; }
 .su-plan__kicker { color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-.su-plan__places { display: grid; gap: var(--s1); margin: 0; padding: 0; list-style: none; font-size: var(--fs-14); overflow-wrap: anywhere; }
+.su-plan__places { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; font-size: var(--fs-14); overflow-wrap: anywhere; }
+.su-plan__noaddr { display: inline-block; margin-left: var(--s2); padding: 0 0.375rem; border: 1px solid var(--rule); border-radius: 999px; color: var(--ink-2); font-size: var(--fs-12); }
+.su-plan__note { display: block; }
 `);
 
   HB.views.setup = { id: "setup", label: "Set-up", order: 10, render, visible: () => true };

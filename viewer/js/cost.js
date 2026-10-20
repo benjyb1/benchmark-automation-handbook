@@ -126,7 +126,7 @@
       return { tokens: run.tokens, words: (KIND[run.kind] || "your run") + (Number.isFinite(d) ? " on " + WHEN.format(new Date(d)) : "") };
     }
     const drafts = u.setup_drafts || [];
-    if (drafts.length) return { tokens: drafts[drafts.length - 1], words: "your set-up draft" };
+    if (drafts.length) return { tokens: drafts[drafts.length - 1], words: "your set-up draft", draft: true };
     return null;
   }
 
@@ -134,6 +134,8 @@
     const ref = reference();
     if (!ref || !n) return null;
     const r = n / ref.tokens;
+    // A set-up draft is a poor yardstick for a big scoring run ("264 times what your set-up draft used").
+    if (ref.draft && r >= 10) return null;
     const what = ref.words + " used (" + tokens(ref.tokens) + ")";
     if (r >= 1.5) return "about " + (r >= 10 ? HB.fmtInt(Math.round(r)) : String(Math.round(r * 2) / 2).replace(".5", "½")) + " times what " + what;
     if (r >= 0.75) return "about the same as " + what;

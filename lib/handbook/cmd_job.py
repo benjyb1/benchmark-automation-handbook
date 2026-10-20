@@ -92,7 +92,7 @@ def main(argv) -> int:
     if not brief.strip():
         raise HandbookError("The job has no task.")
     proc = subprocess.run(command(project.path, sys.executable, brief), cwd=project.path, capture_output=True,
-                          text=True, timeout=TIMEOUT_S)
+                          text=True, timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
     try:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:

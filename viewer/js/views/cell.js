@@ -519,10 +519,15 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       next.disabled = !targets.next;
       toggle.setAttribute("aria-checked", String(nav.flaggedOnly));
       const where = list.indexOf(row);
-      const kind = nav.flaggedOnly ? " flagged" : "";
-      if (nav.flaggedOnly && !list.length) pos.textContent = "None flagged in " + qid;
-      else if (where >= 0) pos.textContent = fmtInt(where + 1) + " of " + fmtInt(list.length) + kind + " in " + qid;
-      else pos.textContent = fmtInt(list.length) + kind + " in " + qid;
+      // "2 of 142 countries on question 20": which row this is among those the question applies to.
+      const pr = ctx.bundle.project || {};
+      const many = String(pr.unit_word_plural || "rows");
+      const one = String(pr.unit_word || "row");
+      const rows = (n) => (n === 1 ? one : many);
+      const kind = nav.flaggedOnly ? "flagged " : "";
+      if (nav.flaggedOnly && !list.length) pos.textContent = "None flagged on question " + qid;
+      else if (where >= 0) pos.textContent = fmtInt(where + 1) + " of " + fmtInt(list.length) + " " + kind + rows(list.length) + " on question " + qid;
+      else pos.textContent = fmtInt(list.length) + " " + kind + rows(list.length) + " on question " + qid;
     }
 
     function go(dir, from) {

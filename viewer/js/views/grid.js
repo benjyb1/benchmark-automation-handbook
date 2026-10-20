@@ -72,11 +72,12 @@
   const STYLE = `
 .hb-view[data-view="grid"] { gap: var(--s2); }
 .hbg-progress { margin-top: -2px; }
+.hbg-more { margin: 0 0 var(--s1); }
 .hbg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
 .hbg-bar__grow { flex: 1 1 0; min-width: 0; }
 .hbg-seg > .btn { min-height: 1.875rem; padding-inline: 0.625rem; font-size: var(--fs-12); }
 .hbg-sel { width: auto; min-height: 2rem; max-width: 13rem; padding: 0.1875rem 1.75rem 0.1875rem var(--s2); font-size: var(--fs-14); }
-.hbg-group .hbg-sel { max-width: 10.5rem; }
+.hbg-group .hbg-sel { max-width: 15rem; }
 .hbg-sel.is-set { border-color: var(--accent); background-color: var(--accent-soft); }
 .hbg-filters { display: contents; }
 .hbg-group, .hbg-group__seg { display: inline-flex; align-items: center; gap: var(--s2); }
@@ -89,6 +90,7 @@
 .hbg-key__list { display: grid; gap: 0.375rem; margin: 0; padding: 0; list-style: none; color: var(--ink-2); }
 .hbg-key__list li { display: flex; align-items: center; gap: var(--s2); }
 .hbg-key__list li > :first-child { flex: none; }
+.hbg-key__list li > .hbg-key__text { flex: 1 1 auto; min-width: 0; }   /* a line with no sample wraps inside the panel */
 .hbg-key__ramp { display: inline-flex; gap: 2px; }
 .hbg-key__ramp .hbg-cell { width: 1.25rem; height: 1rem; }
 .hbg-key .flag-glyph { width: 0.875rem; height: 0.875rem; color: var(--critical); }
@@ -123,8 +125,9 @@
 /* The strips box is its own scroller (both ways, like the Table view), so a benchmark with many
    questions scrolls sideways inside it. Every child is at least --ov-w wide (the columns at their
    widest), the row names stay pinned on the left, Overall and Tier on the right, and the section
-   names sit in the same column as their marks, so they move together. */
-.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-max: 15rem; --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
+   names sit in the same column as their marks, so they move together. Row names take spare width
+   (up to 28rem) when the strips leave room, so long names such as trial titles are not cut. */
+.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-max: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
 .hbg-ov > * { min-width: var(--ov-w); }
 .hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--ov-gap); padding-inline: var(--ov-pad); }
 .hbg-ov__head { position: sticky; top: 0; z-index: 5; align-items: end; padding-block: var(--s2) var(--s1); border-bottom: 1px solid var(--rule-strong); border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; }
@@ -139,7 +142,7 @@
 .hbg-ov__gh > .hbg-ov__pin-r { justify-content: flex-end; }
 .hbg-ov__secs, .hbg-ov__mk { display: flex; gap: var(--sec-gap); }
 .hbg-ov__sec { display: grid; gap: 2px; min-width: 0; }
-.hbg-ov__secname { width: 0; min-width: 100%; overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.hbg-ov__secname { width: 0; min-width: 100%; overflow: hidden; color: var(--ink); line-height: 1.2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }   /* two lines before it is cut */
 .hbg-ov__qs, .hbg-ov__mks { display: flex; gap: var(--mk-gap); }
 .hbg-ov__q { display: grid; justify-items: center; width: var(--mk-w); font-size: 0.6875rem; font-weight: 500; }
 .hbg-ov__q .hbg-qid { padding: 0; }
@@ -173,7 +176,7 @@
 .hbg-mk__stale { position: absolute; top: 0; left: 0; z-index: 1; border-style: solid; border-width: 6px 6px 0 0; border-color: var(--ink) transparent transparent transparent; }
 
 /* Tables (a group opened in place, or the Table view) */
-.hbg-scroll { position: relative; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); }
+.hbg-scroll { position: relative; width: fit-content; max-width: 100%; overflow: auto; overscroll-behavior-x: contain; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); }
 .hbg-scroll--all { max-height: calc(100dvh - 2rem); }
 .hbg-table { border-collapse: separate; border-spacing: 0; font-size: var(--fs-14); line-height: 1.25; font-variant-numeric: tabular-nums; }
 .hbg-table thead th { position: sticky; z-index: 3; }
@@ -240,8 +243,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   .hbg-only-wide, .hbg-key__list .hbg-k-wide { display: none; }
   .hbg-key__list .hbg-k-phone { display: flex; }
   .hbg-filters { display: none; }
-  .hbg-filters.is-open { display: flex; flex-wrap: wrap; gap: var(--s2); flex-basis: 100%; }
-  .hbg-filters.is-open .hbg-sel { flex: 1 1 9rem; max-width: none; }
+  .hbg-filters.is-open { display: flex; flex-wrap: wrap; gap: var(--s2); flex-basis: 100%; min-width: 0; max-width: 100%; }
+  .hbg-filters.is-open .hbg-sel { flex: 1 1 9rem; width: 0; min-width: 0; max-width: 100%; }   /* a long option never widens the page */
   .hbg-counts { font-size: var(--fs-12); }
   .hbg-counts__kinds { padding-left: 0; border-left: 0; }
   .hbg-counts__part + .hbg-counts__part::before { content: none; }
@@ -262,6 +265,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   .hbg-ov__q .hbg-qid { writing-mode: vertical-rl; }   /* two-digit numbers fit over narrow marks */
   .hbg-ov__head, .hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r, .hbg-ov__table, .hbg-table :is(th, td) { position: static; }
   .hbg-ov__table { width: auto; }
+  .hbg-ov { --name-max: 14rem; }
+  .hbg-ov__nm { white-space: normal; overflow: visible; text-overflow: clip; }   /* the full name on paper */
 }
 @media (forced-colors: active) {
   :is(.hbg-mk, .hbg-cell, .hbg-sq).is-hl { outline-color: Highlight; }
@@ -525,6 +530,14 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     }
 
     const m = {
+      // Group by offers the labels set-up marks "Can group by" (all of them when none is marked);
+      // every label stays a filter.
+      groupLabels: (() => {
+        const marked = Array.isArray(p.group_labels) ? p.group_labels.map(String).filter((l) => labels.includes(l)) : [];
+        const list = marked.length ? marked : labels.slice();
+        if (groupBy && !list.includes(groupBy)) list.push(groupBy);
+        return list;
+      })(),
       bundle, p, labels, units, shown, groupBy, sortLabel, filters, groups, sections, hl,
       grouped: Boolean(groupBy),
       cols: totalsColumns(bundle),
@@ -579,7 +592,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       out.label = (unit.name || unit.id) + ", " + q.id + (q.short ? " " + q.short : "") + ": " + words;
       return out;
     };
-    m.totals = (unit) => (bundle.totals ? bundle.totals[unit.id] : null) || null;
+    // A row with no answer at all has no score yet: its totals (0, partial) would read as a real 0.
+    const anyScored = (unit) => Boolean(bundle.cells && bundle.cells[unit.id] &&
+      Object.values(bundle.cells[unit.id]).some((c) => ctx.data.isScored(c)));
+    m.totals = (unit) => (bundle.totals && anyScored(unit) ? bundle.totals[unit.id] : null) || null;
     m.groupMean = (rows) => {
       const vals = rows.map((u) => m.totals(u)).filter((t) => t && !t.partial && isNum(t.overall)).map((t) => t.overall);
       return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
@@ -822,7 +838,9 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   }
 
   function bodyRow(ctx, m, unit, sections) {
-    const sub = m.sortLabel ? labelOf(unit, m.sortLabel) : null;
+    let sub = m.sortLabel ? labelOf(unit, m.sortLabel) : null;
+    // "Canada / Canada": a label that only repeats what the name already says is left off.
+    if (sub && String(unit.name || unit.id).toLowerCase().includes(String(sub).toLowerCase())) sub = null;
     const cells = [h("th", { scope: "row", class: "hbg-rh" }, unit.name || unit.id, HB.gridGaps.marker(unit), sub ? h("span", { class: "hbg-sub" }, sub) : null)];
     const docs = HB.gridGaps.note(ctx, m, unit);
     if (docs) {
@@ -896,7 +914,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   }
 
   function groupControl(ctx, m) {
-    const opts = m.labels.map((l) => [l, cap(labelName(l))]).concat([["", "No grouping"]]);
+    const opts = m.groupLabels.map((l) => [l, cap(labelName(l))]).concat([["", "No grouping"]]);
     const pick = (v) => {
       ctx.setGroupBy(v);
       refocus('.hbg-group [aria-pressed="true"], .hbg-group select');
@@ -904,7 +922,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const select = h("select", {
       class: "input hbg-sel", "aria-label": "Group by", onchange: (e) => pick(e.target.value),
     }, opts.map(([v, text]) => h("option", { value: v, selected: v === m.groupBy }, v ? "Group by " + text.toLowerCase() : text)));
-    if (m.labels.length <= 4) {
+    if (m.groupLabels.length <= 4) {
       // Wide screens get the segmented control; a phone the select (one is hidden).
       return h("div", { class: "hbg-group" },
         h("span", { class: "hbg-group__seg hbg-only-wide" },
@@ -977,10 +995,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     items.push(li(phone, sample("hbg-sq", sq, HB.flagGlyph("quote_not_found")),
       "Red sign on a square: something to check, one of the kinds below. Open it to see what to do"));
     for (const k of HB.flagKinds.factual) {
-      items.push(li(null, view === "strips" ? null : HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", null, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k]));
+      items.push(li(null, view === "strips" ? null : HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", { class: "hbg-key__text" }, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k]));
     }
     items.push(li(null, h("span", { class: "hbg-rm", "aria-hidden": "true" }, "12"),
-      "Under a question: answers in view resting on Claude's reading of open rules (hover or focus for the rules)"));
+      "Under a question: how many answers shown rest on Claude's reading of a rule you have not decided yet (hover to see which rules)"));
     if (m.showRests) items.push(li(null, sample("hbg-cell", box + " outline: 1.5px dashed var(--ink); outline-offset: -2px"), "Rests on an open rule"));
     if (m.hl.size) items.push(li(null, sample("hbg-cell is-hl", box), "Highlighted"));
     return h("div", { class: "hbg-key__panel" }, h("h3", null, "Key"), h("ul", { class: "hbg-key__list" }, items));
@@ -1045,7 +1063,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     if (c.waiting) parts.push(part(mark("is-wait"), h("b", null, fmtInt(c.waiting)), " not scored yet"));
     parts.push(part(strips ? mark("is-flag") : null, h("b", null, fmtInt(c.flagged)), strips ? " flagged (red corner)" : " flagged"));
     if (c.stale) parts.push(part(strips ? h("span", { class: "hbg-mk hbg-cnt-mk", "aria-hidden": "true" }, h("i", { class: "hbg-mk__stale" })) : mark("is-stale"),
-      h("b", null, fmtInt(c.stale)), " question changed since scored (dark corner)"));
+      h("b", null, fmtInt(c.stale)), (c.stale === 1 ? " answer" : " answers") + " scored before its question changed (dark corner)"));
     const kinds = h("span", { class: "hbg-counts__kinds", "aria-label": "Flags by kind" },
       // Only the kinds with some in view: a bare glyph and a 0 read as noise (the Key lists them all).
       // The strips show every kind as the same red corner, so there the kinds are words: their signs
@@ -1064,7 +1082,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
             refocus(".hbg-switch input");
           },
         }),
-        "Show the " + fmtInt(c.rests) + (c.rests === 1 ? " answer" : " answers") + " resting on open rules"));
+        "Outline the " + fmtInt(c.rests) + (c.rests === 1 ? " answer that rests" : " answers that rest") + " on rules you have not decided"));
     }
     const out = [line];
     if (m.live) {
@@ -1077,6 +1095,18 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   }
 
   /* ---- The tab ----------------------------------------------------------------- */
+
+  /** A line over the grid when questions are off to the right, so nobody takes the visible ones for all
+      of them (the box's own scrollbar sits at its foot, often off screen). It goes once scrolled to the end. */
+  function moreToTheRight(root) {
+    requestAnimationFrame(() => {
+      const box = root.querySelector(".hbg-desk .hbg-ov, .hbg-desk .hbg-scroll");
+      if (!box || box.scrollWidth <= box.clientWidth + 4) return;
+      const note = h("p", { class: "hbg-more small muted" }, "More questions to the right: scroll the grid sideways (Shift and the mouse wheel, or swipe) to see them.");
+      box.parentNode.insertBefore(note, box);
+      box.addEventListener("scroll", () => { note.hidden = box.scrollLeft + box.clientWidth >= box.scrollWidth - 4; }, { passive: true });
+    });
+  }
 
   function render(root, ctx) {
     HB.addStyles("grid", scoped(STYLE));
@@ -1111,6 +1141,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     } else {
       root.append(h("div", { class: "hbg-desk" }, view === "table" ? allTable(ctx, m) : strips(ctx, m)));
       if (typeof HB.gridPhone === "function") root.append(h("div", { class: "hbg-phone" }, HB.gridPhone(ctx, m)));
+      moreToTheRight(root);
     }
     const inView = new Set(m.shown.map((u) => u.id));
     const hidden = (Array.isArray(state.highlight) ? state.highlight : []).filter((c) => !inView.has(String(c[0]))).length;
@@ -1148,6 +1179,19 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     }
     lastHighlight = hlKey;
   }
+
+  // Printing the Table view: a table wider than the paper is shrunk to fit, so no question falls off
+  // the right edge (A4 or Letter landscape leaves about 950 CSS pixels).
+  const PRINT_W = 950;
+  window.addEventListener("beforeprint", () => {
+    for (const t of document.querySelectorAll(".hbg-table")) {
+      const w = t.scrollWidth;
+      t.style.zoom = w > PRINT_W ? String(Math.max(0.35, PRINT_W / w)) : "";
+    }
+  });
+  window.addEventListener("afterprint", () => {
+    for (const t of document.querySelectorAll(".hbg-table")) t.style.zoom = "";
+  });
 
   // A key panel closes on Escape or a click outside it.
   document.addEventListener("click", (e) => {

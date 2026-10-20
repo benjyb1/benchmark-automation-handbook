@@ -19,6 +19,7 @@
      start({kind, rows, questions})  saves one scoring request (the chat's start_scoring too):
                             kind "trial" | "full", rows and questions null for all;
                             Promise of the saved doc
+     carryOn(run)           Resume, then start the open run again on its own rows and questions
    }
    The request goes to the `scoring` collection; serve.py finds the documents and
    scores, row by row, as the trial and run skills do.
@@ -77,12 +78,12 @@
     const status = (b.project && b.project.checklist) || {};
     const open = MUST_HAVES.filter((k) => !SETTLED.has(status[k] || "missing"));
     if (open.length) {
-      return { label: "Finish set-up", hint: fmtInt(open.length) + " of " + fmtInt(MUST_HAVES.length) + " still to settle",
+      return { label: "Finish set-up", hint: fmtInt(open.length) + " of " + fmtInt(MUST_HAVES.length) + " set-up parts still to confirm",
         go: () => HB.go("setup") };
     }
     const runs = arr(b.runs);
     const full = runs.find((r) => r.kind === "full" && !r.finished);
-    if (full) return { label: "Carry on scoring", hint: "the run stopped part way", go: () => carryOn() };
+    if (full) return { label: "Carry on scoring", hint: "the run stopped part way", go: () => carryOn(full) };
     const left = rowsLeft();
     const total = arr(b.units).length;
     if (!left.length && total) return { label: "See the results", go: () => HB.go("results") };
@@ -94,6 +95,7 @@
   }
 
   let timer = null;
+  let pausedJob = null;          // the job whose Pause the owner pressed
   function node() {
     if (!HB.local) return null;
     clearTimeout(timer);
@@ -102,11 +104,17 @@
     if (job) {
       const parts = [HB.working(job.line && job.line !== "Waiting to start" ? job.line : job.title || "Claude is working on it", { large: true })];
       if (job.kind === "scoring") {
-        const pause = h("button", { type: "button", class: "btn btn--small", id: "hb-next-pause" }, "Pause");
+        // Once pressed it keeps saying so until the run stops (20 Oct 2026: it went back to "Pause" at the next
+        // redraw, so the owner could not tell it had worked).
+        const ctl = bundle().control || {};
+        const asked = pausedJob === job.key || ctl.paused === true || ctl.stop_now === true;
+        const pause = h("button", { type: "button", class: "btn btn--small", id: "hb-next-pause", disabled: asked },
+          asked ? "Pausing after this " + words().one : "Pause");
         pause.addEventListener("click", async () => {
           pause.disabled = true;
           try {
             await HB.edits.save("control", { action: "pause" });
+            pausedJob = job.key;
             pause.textContent = "Pausing after this " + words().one;
           } catch (err) {
             pause.disabled = false;
@@ -115,7 +123,16 @@
         parts.push(pause);
       }
       box = h("div", { class: "hb-next", id: "hb-next" }, parts);
-      timer = setTimeout(() => { const old = document.getElementById("hb-next"); if (old) old.replaceWith(node() || ""); }, 2000);
+      // Look again in 2 s, but only swap the header when what it says has changed: swapping it every time
+      // restarted the dots and jolted the top of the page (Benjy, 20 Oct 2026).
+      timer = setTimeout(function again() {
+        const old = document.getElementById("hb-next");
+        if (!old) return;
+        const fresh = node();
+        if (!fresh) old.remove();
+        else if (fresh.textContent !== old.textContent) old.replaceWith(fresh);
+        else { clearTimeout(timer); timer = setTimeout(again, 2000); }
+      }, 2000);
     } else {
       const s = step();
       const go = h("button", { type: "button", class: "btn btn--primary hb-next__go", id: "hb-next-go",
@@ -136,10 +153,12 @@
     return doc;
   }
 
-  async function carryOn() {
+  /** Carry on the open run: only the rows and questions it was started on (20 Oct 2026: a one-country test
+      left open would have carried on into every country). */
+  async function carryOn(run) {
     try {
       await HB.edits.save("control", { action: "resume" });
-      await start({ kind: "full" });
+      await start({ kind: "full", rows: run && run.rows, questions: run && run.questions });
     } catch (err) {
       if (HB.local && HB.local.flag) HB.local.flag(err && err.message ? err.message : "This could not be saved.");
     }
@@ -162,7 +181,8 @@
 
     const radio = (value, title, text) => {
       const input = h("input", { type: "radio", name: "hb-score-kind", value, id: "hb-score-" + value });
-      input.checked = value === (choice || (tried ? "all" : "few"));
+      // Never tick the biggest spend for the owner: "all" is only ever their own click.
+      input.checked = value === (choice === "all" ? null : choice || (tried ? null : "few"));
       return { input, node: h("label", { class: "hb-score__choice", for: "hb-score-" + value }, input,
         h("div", null, h("strong", null, title), h("span", null, text))) };
     };
@@ -188,11 +208,17 @@
     const status = h("div", { class: "hb-dialog__status", id: "hb-score-status", "aria-live": "polite" });
     const go = h("button", { type: "submit", class: "btn btn--primary", id: "hb-score-start" }, "Start");
 
-    const chosen = () => (few.input.checked ? "few" : pick.input.checked ? "choose" : "all");
+    const chosen = () => (few.input.checked ? "few" : pick.input.checked ? "choose" : all.input.checked ? "all" : null);
     const rowsFor = (c) => (c === "few" ? left.slice(0, TRY) : c === "choose" ? ticks.filter((t) => t.input.checked).map((t) => t.id) : left);
     function sync() {
       const c = chosen();
       pickBox.hidden = c !== "choose";
+      if (!c) {
+        cost.textContent = "Pick one above to see what it costs.";
+        go.disabled = true;
+        go.textContent = "Start";
+        return;
+      }
       const ids = rowsFor(c);
       cost.textContent = ids.length ? (c === "few" ? "About this much for " + fmtInt(ids.length) + " " + w.many + ": " : "") + costOf(ids)
         : "Tick at least one " + w.one + ".";
@@ -209,6 +235,7 @@
       onsubmit: async (ev) => {
         ev.preventDefault();
         const c = chosen();
+        if (!c) return;
         go.disabled = true;
         try {
           // A trial is the server's pick (rows that cover the groups) unless the owner chose rows.
@@ -240,5 +267,5 @@
   }
 
   if (HB.addStyles) HB.addStyles("hb-nextstep", CSS);
-  HB.nextStep = { node, openScore, start, step };
+  HB.nextStep = { node, openScore, start, step, carryOn };
 })((window.HB = window.HB || {}));

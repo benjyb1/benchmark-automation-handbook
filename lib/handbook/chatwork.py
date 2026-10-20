@@ -208,3 +208,73 @@ def restore(project_path: Path, snap: Path, keep_current: Path) -> None:
             shutil.rmtree(dest)
         dest.parent.mkdir(parents=True, exist_ok=True)
         _copy_tree(log, dest)
+
+
+# --- Undo of one change only ------------------------------------------------------------------
+# A whole-folder restore also took back what happened after the change: a colleague's correction in a
+# shared folder, a later run, the team's log (20 Oct 2026 review). So each change records which files
+# it touched (size and time, before and after), and Undo puts back only those, and only while they are
+# still as the change left them.
+
+# Not part of any change's Undo: files made for the owner, the record of tokens used, the team's shared
+# files, and what `check` and `build` make again straight after.
+NOT_UNDONE = (EXPORTS, "page-data/_log", "team", "team.json", "viewer", "checks")
+
+
+def _undone(rel: str) -> bool:
+    return not any(rel == x or rel.startswith(x + "/") for x in NOT_UNDONE)
+
+
+def fingerprint(project_path: Path) -> dict[str, list]:
+    """{relative path: [size, mtime_ns]} for the project's files that an Undo may put back."""
+    out: dict[str, list] = {}
+    for f in project_path.rglob("*"):
+        try:
+            if f.is_dir() and not f.is_symlink():
+                continue
+            rel = f.relative_to(project_path).as_posix()
+            if _undone(rel):
+                st = f.lstat()
+                out[rel] = [st.st_size, st.st_mtime_ns]
+        except OSError:
+            continue
+    return out
+
+
+def changes(before: dict, after: dict) -> dict:
+    """What a change did: {path: its fingerprint after the change, or None where it removed the file},
+    with {"had": [paths that were there before]} kept beside it by the caller."""
+    return {rel: after.get(rel) for rel in set(before) | set(after) if before.get(rel) != after.get(rel)}
+
+
+def undo_changes(project_path: Path, snap: Path, changed: dict, had: list, keep_current: Path) -> int:
+    """Puts back, from the copy `snap` taken just before the change, only the files the change touched.
+    Refuses (HandbookError, naming the files) when any of them has changed again since: putting it back
+    would lose that later work. What is there now is first copied to `keep_current`. Returns how many
+    files were put back."""
+    if not (snap / "project.json").is_file():
+        raise HandbookError("That copy of the project is gone, so it cannot be put back.")
+    now = fingerprint(project_path)
+    moved = sorted(rel for rel, sig in changed.items() if now.get(rel) != sig)
+    if moved:
+        shown = ", ".join(moved[:6]) + (f" and {len(moved) - 6} more" if len(moved) > 6 else "")
+        raise HandbookError("Undo would lose work done since this change (by a later change, a run or a colleague) "
+                            f"in {shown}. Undo the later changes first, or ask the chat to put it back as it was.")
+    had = set(had)
+    for rel in changed:
+        dest = project_path / rel
+        if dest.exists() or dest.is_symlink():
+            keep = keep_current / rel
+            keep.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(dest, keep, follow_symlinks=False)
+            dest.unlink()
+        if rel in had:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(snap / rel, dest, follow_symlinks=False)
+    # Folders the change made and left empty go too.
+    for rel in sorted({str(Path(r).parent) for r in changed if r not in had}, key=len, reverse=True):
+        d = project_path / rel
+        while d != project_path and d.is_dir() and not any(d.iterdir()):
+            d.rmdir()
+            d = d.parent
+    return len(changed)

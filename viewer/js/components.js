@@ -115,17 +115,18 @@
     );
   }
 
-  /* working(text): Claude is busy on something. Three dots that bounce gently, then a few words
-     ("Claude is drafting this", "Reading law-kenya.pdf (4 of 12)"). For anything still under way: a
-     grey dash read as "stopped" to the first newcomer who saw one (19 Oct 2026). Still dots when the
-     owner has asked for less motion. */
+  /* working(text): Claude is busy on something. The words in italics ("Thinking", "Reading
+     law-kenya.pdf (4 of 12)") and three dots after them that count . .. ... and round again. For
+     anything still under way: a grey dash read as "stopped" to the first newcomer who saw one (19 Oct
+     2026). No box and no bouncing (Benjy, 20 Oct 2026), and the dots always take the room of three, so
+     nothing around them moves as they count. */
   function working(text, opts) {
     const o = opts || {};
     return h(
       "span",
       { class: ["working", o.large && "working--lg"], role: o.status === false ? null : "status" },
-      h("span", { class: "working__dots", "aria-hidden": "true" }, h("span", null), h("span", null), h("span", null)),
-      h("span", { class: "working__word" }, isEmpty(text) ? "Claude is working on it" : String(text)),
+      h("span", { class: "working__word", title: isEmpty(text) ? null : String(text) }, isEmpty(text) ? "Claude is working on it" : String(text)),
+      h("span", { class: "working__dots", "aria-hidden": "true" }, h("span", null, "."), h("span", null, "."), h("span", null, ".")),
     );
   }
 
@@ -474,6 +475,10 @@
       // A docked drawer is not modal, so the browser leaves Escape to the page.
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape" || event.defaultPrevented || !docked || !dialog || !dialog.open) return;
+        // A modal on top (Correct this, Score...) takes Escape first: leave the drawer open behind it.
+        let top = null;
+        try { top = document.querySelector("dialog[open]:modal"); } catch (e) { top = null; }   // :modal is new (2022)
+        if (top && top !== dialog) return;
         event.preventDefault();
         close();
       });

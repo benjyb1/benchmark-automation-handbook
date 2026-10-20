@@ -260,7 +260,9 @@ def run_finder(project, row: str | None = None, group: tuple[str, str] | None = 
     write_json(receipt, {"rounds": results, "saved": rounds})
     saved = sum(len(r["saved"]) for r in rounds)
     return {"saved": saved, "failed": len(rounds[-1]["failed"]), "not_found": not_found, "rounds": len(rounds),
-            "tokens": tokens, "ok": any(r.get("finds") for r in results), "reply": replies[-1]}
+            "tokens": tokens, "ok": any(r.get("finds") for r in results), "reply": replies[-1],
+            # every session ended in an error (stopped, timed out, signed out) with nothing listed: no search happened
+            "broke": all(r.get("is_error") for r in results) and not any(r.get("finds") for r in results)}
 
 
 def _session(context: dict, meta: dict, timeout_s: int) -> tuple[dict, dict]:
@@ -269,7 +271,8 @@ def _session(context: dict, meta: dict, timeout_s: int) -> tuple[dict, dict]:
     (folder / "brief.md").write_text(brief_for(context, meta.get("unit_word") or "row", meta.get("unit_word_plural") or "rows"),
                                      encoding="utf-8")
     try:
-        proc = subprocess.run(command(folder), cwd=folder, capture_output=True, text=True, timeout=timeout_s)
+        proc = subprocess.run(command(folder), cwd=folder, capture_output=True, text=True, timeout=timeout_s,
+                              stdin=subprocess.DEVNULL)
         try:
             result = json.loads(proc.stdout)
         except json.JSONDecodeError:

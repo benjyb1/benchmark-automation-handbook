@@ -38,6 +38,7 @@
   const STYLE = `
 .hbb.hb-dialog { width: min(76rem, calc(100vw - 2rem)); max-width: none; }
 .hbb .hb-dialog__body { display: grid; gap: var(--s4); }
+.hbb-kinds { margin: 0; padding-left: 1.25rem; display: grid; gap: 2px; }
 .hbb-drop { display: grid; gap: var(--s2); justify-items: start; padding: var(--s5); border: 2px dashed var(--rule-strong); border-radius: var(--radius); background: var(--paper); }
 .hbb-drop.is-over { border-color: var(--accent); background: var(--accent-soft); }
 .hbb-drop p { margin: 0; max-width: var(--measure); }
@@ -148,9 +149,12 @@
     const zone = h("div", { class: "hbb-drop" },
       h("p", null, h("b", null, "Drop files here"), ", or ",
         h("button", { type: "button", class: "btn btn--small", onclick: () => input.click() }, "choose files"), "."),
-      h("p", { class: "hb-hint" }, "Any mix of: a list of documents (an Excel with a row per document: its " + w.one
-        + ", title, file name or web address, the date it is in force from and its type); the documents themselves, or a zip of them; "
-        + "documents with no list (Claude reads the start of each and says whose it is); and an Excel of extra instructions by question number."),
+      h("p", { class: "hb-hint" }, "You can drop any mix of:"),
+      h("ul", { class: "hb-hint hbb-kinds" },
+        h("li", null, "the documents themselves, or a zip of them"),
+        h("li", null, "a list of documents: an Excel with one row each (its " + w.one + ", title, file name or web address, the date it is in force from, its type)"),
+        h("li", null, "documents with no list: Claude reads the start of each and says whose it is"),
+        h("li", null, "extra instructions: an Excel with one row per question number")),
       input);
     zone.addEventListener("dragover", (ev) => { ev.preventDefault(); zone.classList.add("is-over"); });
     zone.addEventListener("dragleave", () => zone.classList.remove("is-over"));
@@ -504,10 +508,15 @@
       h("div", { class: "hb-dialog__foot" }, foot)));
   }
 
-  function open() {
+  /** Opens the dialog; files (a FileList or array, such as those dropped on the corner chat) go straight in. */
+  function open(files) {
     if (!isLocal()) return;
     HB.addStyles("bulk", STYLE);
-    if (ui && ui.dialog && ui.dialog.open) return;
+    const given = files && typeof files.length === "number" ? files : null;
+    if (ui && ui.dialog && ui.dialog.open) {
+      if (given && ui.step === "drop") add(given);
+      return;
+    }
     const d = h("dialog", { class: "hb-dialog hbb", "aria-labelledby": "hbb-title" });
     ui = { step: "drop", files: [], plan: null, docs: [], ins: [], error: null, dialog: d };
     const timer = setInterval(tick, 1000);
@@ -522,12 +531,13 @@
     draw();
     if (typeof d.showModal === "function") d.showModal();
     else d.setAttribute("open", "");
+    if (given) add(given);
   }
 
   /** The Grid toolbar's button; null on a page that is not the local one. */
   function button() {
     if (!isLocal()) return null;
-    return h("button", { type: "button", class: "btn btn--small", id: "hbb-open", onclick: open }, "Add documents or instructions");
+    return h("button", { type: "button", class: "btn btn--small", id: "hbb-open", onclick: () => open() }, "Add documents or instructions");
   }
 
   HB.bulk = { button, open };

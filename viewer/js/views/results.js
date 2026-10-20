@@ -409,8 +409,11 @@
 
   function perQuestion() {
     const b = bundle();
-    const units = b.units || [];
     const cells = b.cells || {};
+    // Rows with no answer at all are left out: 137 untouched countries would make every bar a sliver.
+    const all = b.units || [];
+    const units = all.filter((u) => Object.values(cells[u.id] || {}).some((c) => c && HB.data.isScored(c)));
+    const left = all.length - units.length;
     const nouns = unitNouns();
     const rows = (b.questions || []).map((q) => {
       const levels = (((q.answer || {}).levels) || []).slice().sort((x, y) => (x.points || 0) - (y.points || 0));
@@ -446,7 +449,8 @@
       partHeader: "Answer",
       empty: "No question applies to any row yet.",
       caption: `One bar per question, out of the ${nouns.many} it applies to. The level with the most points is on the ` +
-        "left, darker in light mode and brighter in dark mode. The table names every level.",
+        "left, in the darkest colour. The table names every level." +
+        (left > 0 ? ` ${plural(left, nouns.one, nouns.many)} with no answers yet ${left === 1 ? "is" : "are"} left out.` : ""),
     });
   }
 
@@ -456,14 +460,14 @@
     const nouns = unitNouns();
     const sets = bandSets();
     const parts = [h("div", { class: "section__head" }, h("h3", { id: "res-charts" }, "Scores at a glance"))];
-    parts.push(h("p", { class: "small muted" },
-      `${fmtInt(complete.length)} of ${plural(units.length, nouns.one, nouns.many)} have every question scored. ` +
-      "The charts of scores use only those; the chart of answers uses every scored answer."));
-    if (!sets.length) {
-      parts.push(HB.notice("neutral", "The score sheet has no bands, or scores can't be worked out yet, so there is no chart of bands."));
-    } else if (!complete.length) {
+    parts.push(h("p", { class: "small muted" }, complete.length
+      ? `${fmtInt(complete.length)} of ${plural(units.length, nouns.one, nouns.many)} have every question scored. ` +
+        "The charts of scores use only those; the chart of answers uses every scored answer."
+      : `No ${nouns.one} has a full score yet, so only the chart of answers is shown. It uses every scored answer.`));
+    // "No bands" is already said in the summary above; say nothing more here.
+    if (sets.length && !complete.length) {
       parts.push(HB.notice("neutral", `No ${nouns.one} has every question scored yet, so there is no chart of bands.`));
-    } else {
+    } else if (sets.length) {
       const set = sets.find((s) => s.of === "overall") || sets[0];
       parts.push(h("div", { class: "res-pair" }, bandCounts(set, complete), bandsByLabel(set, complete, ctx, rerender)));
     }

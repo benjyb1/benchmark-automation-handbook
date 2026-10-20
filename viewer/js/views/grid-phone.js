@@ -6,8 +6,9 @@
 
    A list of the rows in view: a sticky header per group (name, count, mean
    overall), then one card per row with its name, overall score, tier, a flag
-   summary ("No flags", or a glyph, word and count per factual flag kind) and a
-   strip of small numbered squares, one per question (shaded like the table;
+   summary (blank, or a glyph, word and count per factual flag kind) and a
+   strip of small numbered squares, one per question (over 16 questions the
+   sections wrap and the squares drop their numbers; shaded like the table;
    hatched = no evidence; empty outline = not scored yet; a gap for a question
    that does not apply). Each square is an <a data-row data-q> that grid.js's
    one click handler opens in the cell panel.
@@ -38,6 +39,11 @@
 .hbg-sq.is-ne { color: var(--ink-2); font-weight: 400; box-shadow: inset 0 0 0 1px var(--rule-strong); background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink-2) 28%, transparent) 0 1px, transparent 1px 4px); }
 .hbg-sq.is-wait { box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .hbg-sq.is-na { box-shadow: none; }
+/* Many questions (RTI has 61): the sections wrap onto more lines and the squares keep a size a finger can
+   hit, with no numbers in them (the shade carries the score; a tap opens the cell). */
+.hbg-li__strip--many { flex-wrap: wrap; gap: 4px 8px; }
+.hbg-li__strip--many .hbg-li__sec { flex: 0 0 auto; flex-wrap: wrap; }
+.hbg-li__strip--many .hbg-sq { flex: 0 0 1rem; width: 1rem; height: 1rem; font-size: 0; }
 .hbg-sq .flag-glyph { position: absolute; top: -4px; right: -4px; z-index: 1; width: 0.6875rem; height: 0.6875rem; color: var(--critical); }
 `;
 
@@ -48,7 +54,7 @@
       if (x) for (const k of x.kinds) per[k] = (per[k] || 0) + 1;
     }
     const kinds = HB.flagKinds.factual.filter((k) => per[k]);
-    if (!kinds.length) return h("span", { class: "hbg-li__flags" }, "No flags");
+    if (!kinds.length) return h("span", { class: "hbg-li__flags" });
     return h("span", { class: "hbg-li__flags" }, kinds.map((k) =>
       h("span", { class: "hbg-li__flag" }, HB.flagGlyph(k), HB.flagKinds.words[k] + " " + fmtInt(per[k]))));
   }
@@ -81,7 +87,7 @@
         t && t.partial ? h("span", { class: "visually-hidden" }, " (partial)") : null),
       docs ? h("span", { class: "hbg-docnote" }, docs) : flagSummary(m, unit),
       m.bandNode(m.bandName(unit)),
-      docs ? null : h("span", { class: "hbg-li__strip" }, m.sections.map((sec) =>
+      docs ? null : h("span", { class: "hbg-li__strip" + (m.sections.reduce((n, sec) => n + sec.qs.length, 0) > 16 ? " hbg-li__strip--many" : "") }, m.sections.map((sec) =>
         h("span", { class: "hbg-li__sec" }, sec.qs.map((q) => square(ctx, m, unit, q))))));
   }
 

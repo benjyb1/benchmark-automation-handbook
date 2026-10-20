@@ -64,9 +64,10 @@
   function line(unit, g, words) {
     const ready = HB.supply && typeof HB.supply.ready === "function" && HB.supply.ready();
     const key = sentKey(unit.id, g.pattern, g.what);
-    const button = !ready ? null : h("button", { type: "button", class: "sb-sendbtn" }, "Send");
+    // "Add file or link", not "Send": it opens a box to give the document, it does not send anything away.
+    const button = !ready ? null : h("button", { type: "button", class: "sb-sendbtn" }, "Add file or link");
     if (button) {
-      const done = () => { button.textContent = "Sent"; button.classList.add("is-sent"); button.disabled = true; };
+      const done = () => { button.textContent = "Added"; button.classList.add("is-sent"); button.disabled = true; };
       if (SENT.has(key)) done();
       else {
         button.addEventListener("click", async () => {

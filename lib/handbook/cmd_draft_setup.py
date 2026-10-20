@@ -149,7 +149,8 @@ def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> di
              "wrote": [], "started": now_iso(), "at": now_iso()}
     read: set[str] = set()
     write_json(path, state)
-    proc = subprocess.Popen(cmd, cwd=project, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+    proc = subprocess.Popen(cmd, cwd=project, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8")
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
     result, last = {}, ""

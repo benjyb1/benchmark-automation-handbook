@@ -486,63 +486,32 @@ h4, .h4,
   height: 1.5rem;
 }
 
-/* Claude at work (HB.working): a friendly moving sign instead of a grey "waiting" chip. */
+/* Claude at work (HB.working): "Thinking..." in italics, the dots counting . .. ... in place. */
 .working {
   display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
+  align-items: baseline;
   max-width: 100%;
-  padding: 0.1875rem 0.625rem 0.1875rem 0.5rem;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--surface));
-  border-radius: 0.75rem;
-  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
-  color: var(--ink);
-  font-size: var(--fs-12);
-  font-weight: 600;
+  min-width: 0;
+  color: var(--ink-2);
+  font-style: italic;
   line-height: 1.35;
-  overflow-wrap: anywhere;
-  vertical-align: middle;
+  vertical-align: baseline;
 }
 
-.working--lg { font-size: var(--fs-16); padding: var(--s1) var(--s4) var(--s1) var(--s2); border-radius: 1rem; }
-.working__word { min-width: 0; }
-.working__dots { display: inline-flex; gap: 0.1875rem; flex: none; }
+.working--lg { font-size: var(--fs-16); }
+.working__word { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.working__dots { flex: none; display: inline-flex; }
+.working__dots span:nth-child(2) { animation: working-dot2 1.2s steps(1, end) infinite; }
+.working__dots span:nth-child(3) { animation: working-dot3 1.2s steps(1, end) infinite; }
 
-.working__dots span {
-  width: 0.375rem;
-  height: 0.375rem;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: working-bounce 1.2s ease-in-out infinite;
-}
-
-.working__dots span:nth-child(2) { animation-delay: 0.15s; }
-.working__dots span:nth-child(3) { animation-delay: 0.3s; }
-
-/* The words end in "..." that counts up: . .. ... and round again (static "..." with less motion). */
-.working__word::after {
-  content: "...";
-  display: inline-block;
-  width: 0;
-  overflow: hidden;
-  vertical-align: bottom;
-  animation: working-ellipsis 1.6s steps(4, end) infinite;
-}
-
-@keyframes working-ellipsis {
-  to { width: 1.25em; }
-}
+@keyframes working-dot2 { 0% { opacity: 0; } 33% { opacity: 1; } }
+@keyframes working-dot3 { 0% { opacity: 0; } 66% { opacity: 1; } }
 
 @media (prefers-reduced-motion: reduce) {
-  .working__word::after { width: auto; }
+  .working__dots span { animation: none !important; opacity: 1 !important; }
 }
 
-@keyframes working-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
-  30% { transform: translateY(-0.25rem); opacity: 1; }
-}
-
-.hb-applying { position: fixed; z-index: 40; left: 50%; bottom: max(1rem, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100vw - 2rem); box-shadow: 0 0.5rem 1.5rem -0.75rem var(--shadow); border-radius: 0.75rem; }
+.hb-applying { position: fixed; z-index: 40; left: 50%; bottom: max(1rem, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100vw - 2rem); padding: 0.375rem 0.75rem; border: 1px solid var(--rule); background: var(--surface); box-shadow: 0 0.5rem 1.5rem -0.75rem var(--shadow); border-radius: 0.75rem; }
 .hb-applying[hidden] { display: none; }
 
 /* ---- Buttons, segmented control, tabs ------------------------------------ */
@@ -1308,12 +1277,9 @@ textarea.input {
 
 @media (forced-colors: active) {
   .chip,
-  .working,
   .notice {
     border: 1px solid CanvasText;
   }
-
-  .working__dots span { background: CanvasText; }
 
   .status-icon__disc { fill: CanvasText; }
   .status-icon__glyph { stroke: Canvas; }
@@ -1957,16 +1923,24 @@ textarea.input {
   padding-block: 0 var(--s7);
 }
 
-/* The Grid tab uses the whole window, not the centred column: a benchmark with
-   many questions needs the width (the strips box scrolls sideways past that). */
-.hb:has(.hb-view[data-view="grid"]) {
+/* The Grid tab uses the whole window: a benchmark with many questions needs the width (the strips
+   box scrolls sideways past that). The top bar always spans the window too, so the name and tabs stay
+   put when you change tab; the other tabs keep a readable width, starting at the same left edge. */
+.hb {
   max-width: none;
+}
+.hb-main > .hb-view:not([data-view="grid"]) {
+  max-width: var(--page-max);
 }
 
 @media print {
   .hbc-fab,
   .hbc-panel {
     display: none !important;   /* the corner chat's button and panel */
+  }
+  /* Paper gets the results, not the controls: no tabs, run box, Score button, toolbars or footer. */
+  .skip-link, .hb-tabs, .hb-theme, .hb-next, .hb-banner, .hbl-top, .rb, .hbg-bar, .hbg-ov__open, .hbg-more, .hbl-foot, .drawer {
+    display: none !important;
   }
 }
 
@@ -2079,7 +2053,7 @@ a.tabs__tab {
 @media (width < 40rem) {
   .hb-top { gap: 0 var(--s3); padding-top: var(--s2); }
   .hb-head { display: contents; }
-  .hb-head__title { flex: 1 1 0; min-width: 0; font-size: 1.0625rem; }
+  .hb-head__title { flex: 1 1 100%; min-width: 0; font-size: 1.0625rem; }   /* its own line: a long name never breaks mid-word */
   .hb-head__facts { flex: 1 1 100%; order: 2; gap: 0 var(--s2); font-size: var(--fs-12); }
   .hb-head__facts > span + span::before { margin-right: var(--s2); }
   .hb-theme__switch > .btn { min-height: 2rem; }

@@ -62,6 +62,8 @@
      badge()                  refreshes the count on the button (app.js, after each draw)
      notices()                what the count covers: [{id, text, show}]
      send(text)               asks Claude (Promise; the reply lands in the panel)
+     draft(text)              opens the panel with the words in the box, not sent: the
+                              owner presses Send (nothing is spent until then)
      watchDraft()             shows a running set-up draft in the conversation, step by
                               step, and carries on with what to check when it is done
      tools()                  the tool list given to `sample` (each {name,
@@ -389,6 +391,15 @@
         ? { rows_left: b.estimate.rows, tokens: HB.cost.range(b.estimate), assumptions: arr(b.estimate.assumptions).slice(0, 4) } : null,
       one_chat_reply: HB.cost.range(HB.cost.chatTurn()),
     };
+    // One figure for "the full run", every time it is asked (20 Oct 2026: 148-640M once, 148-378M the next).
+    const leftIds = ids.filter((r) => !scored(r));
+    const trialEst = b.estimate && b.estimate.point != null ? b.estimate : null;
+    const scoreEst = leftIds.length ? HB.cost.rows(leftIds, qids) : null;
+    out.full_run = trialEst && !qids
+      ? { rows_left: trialEst.rows, tokens: HB.cost.range(trialEst), includes: "finding documents and scoring (from the trial)",
+        say: "Quote this range for the whole run, every time." }
+      : scoreEst ? { rows_left: leftIds.length, tokens: HB.cost.range(scoreEst), includes: "scoring only; finding documents adds more",
+        say: "Quote this range for the whole run, every time." } : null;
     let rows = null;
     if (arr(input.rows).length) rows = arr(input.rows).map(rowOf);
     else if (input.label) rows = arr(b.units).filter((x) => String((x.labels || {})[input.label]) === String(input.value)).map((x) => x.id);
@@ -632,6 +643,27 @@
     if (!(HB.runBar && typeof HB.runBar.request === "function")) throw new Error("The run can't be changed from this page.");
     const action = String(input.action || "");
     if (!RUN_ACTIONS.includes(action)) throw new Error("Actions are: " + RUN_ACTIONS.join(", ") + ".");
+    const knows = Boolean(HB.local && typeof HB.local.state === "function" && HB.local.state());
+    const busy = knows ? scoringJob() : null;
+    if (knows && !busy && ["pause", "stop_now", "stop_after_row"].includes(action)) {
+      // 20 Oct 2026: "stop the run" with nothing running saved a stop, and it silently ended the next start.
+      const last = (HB.local.state() || {}).last_job;
+      return { proposed: null, nothing_running: true, last_job: last ? { title: last.title, line: last.line, finished: last.finished } : null,
+        note: "Nothing is running now, so nothing was put to the owner and nothing was saved. Tell them so in one line (say what last ran, if anything); do not say you are stopping a run." };
+    }
+    const open = arr(bundle().runs).find((r) => r && !r.finished && (r.kind === "full" || r.kind === "trial"));
+    if (action === "resume" && knows && !busy && open && HB.nextStep && typeof HB.nextStep.carryOn === "function") {
+      // Resume on its own lifted the pause and started nothing ("Done. Applied.", 20 Oct 2026): carry the open run on.
+      const what = HB.runBar && typeof HB.runBar.describe === "function" ? HB.runBar.describe({ action: "scope", rows: open.rows || null, questions: open.questions || null }) : "";
+      return Object.assign(propose("Carry on scoring where the run stopped" + (what ? " (" + what.replace(/^Run /, "") + ")" : "") + ". It uses your Claude plan; Pause at the top stops it again.", async () => {
+        const since = new Date().toISOString().slice(0, 19) + "Z";
+        await HB.nextStep.carryOn(open);
+        const got = startedWords(await scoringNow(since));
+        return { __result: true, started: got.started, applied: !got.started,
+          note: got.started ? "The header at the top shows progress, with Pause." : "It ended at once: " + (got.said || got.ended || "see the run bar") + ".",
+          told: "Scoring " + (got.started ? "carries on" : "ended at once: " + (got.said || got.ended)) + ".)" };
+      }), { next: "Do not say it has started until they press Confirm." });
+    }
     const body = { action };
     if (action === "stop_after_row") body.row = rowOf(input.row);
     if (action === "scope") {
@@ -791,17 +823,90 @@
 
   /** Starts scoring as the green next-step button does (views/nextstep.js): no Confirm, because the
       owner asked for it in words. */
+  const SCORING_KINDS = ["scoring", "rerun"];
+  const BIG_START = 3;          // a full run over more rows than this is put to the owner with its cost first
+
+  /** The scoring or re-run job running or waiting now, or null. */
+  function scoringJob() {
+    const s = HB.local && HB.local.state ? HB.local.state() : null;
+    if (!s) return null;
+    if (s.job && SCORING_KINDS.includes(s.job.kind)) return s.job;
+    return arr(s.queued).find((j) => j && SCORING_KINDS.includes(j.kind)) || null;
+  }
+
+  /** A few seconds after a start, what the scoring job is doing. A start that ended at once is said as
+      such, never reported as started (20 Oct 2026: "Andorra has started", and it had stopped with 0 tokens). */
+  async function scoringNow(since) {
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try { if (typeof HB.local.refresh === "function") await HB.local.refresh(); } catch (e) { /* the next poll */ }
+      const s = HB.local.state ? HB.local.state() : null;
+      if (!s) continue;
+      const last = s.last_job;
+      if (last && last.kind === "scoring" && last.finished && String(last.finished) >= since) {
+        const said = arr(s.activity)[0];
+        return { running: false, line: last.line, said: said ? said.text : null };
+      }
+      const busy = scoringJob();
+      if (busy && (busy.status === "running" || i >= 2)) return { running: true, line: busy.line || busy.title };
+    }
+    return { running: null };
+  }
+
+  /** What to tell the owner once a start is saved, from scoringNow. */
+  function startedWords(got) {
+    if (got.running === false) {
+      return { started: false, ended: got.line, said: got.said,
+        note: "It ended at once (" + (got.line || "no reason given") + ")" + (got.said ? ": " + got.said : "") + ". Do not say it has started. " +
+          "Tell the owner plainly what happened and offer the route: answers already scored are scored again with propose_rescore; a pause or stop still on is lifted with propose_run_control resume." };
+    }
+    return { started: true, now: got.line || null,
+      note: (got.running ? "It has started (" + (got.line || "finding documents") + ")." : "It is saved and waiting its turn behind other work.") +
+        " The header at the top of the page says what Claude is doing, with Pause. Tell the owner in two short lines what is happening " +
+        "(documents first, then scoring, one at a time) and that the Grid fills in as it goes. Do not tell them to press anything." };
+  }
+
+  /** Starts scoring as the green next-step button does (views/nextstep.js): no Confirm, because the
+      owner asked for it in words, unless it is a big run, which goes on a card with its cost. */
   async function startScoring(input) {
     if (!HB.local || !HB.nextStep) throw new Error(NOT_SAVED_HERE());
     canSave();
     const kind = input.kind === "full" ? "full" : "trial";
     const rows = arr(input.rows).map((r) => rowOf(r));
-    const est = HB.cost && rows.length ? HB.cost.rows(rows, arr(input.questions)) : null;
-    await HB.nextStep.start({ kind, rows, questions: arr(input.questions) });
-    return { started: true, kind, rows: rows.length ? rows : "chosen by Claude to cover the groups" + (kind === "full" ? " (every row still to score)" : ""),
-      cost: est ? HB.cost.line(est) : null,
-      note: "It has started. The header at the top of the page now says what Claude is doing, with Pause. Tell the owner in two " +
-        "short lines what is happening (documents first, then scoring, one at a time) and that the Grid fills in as it goes. Do not tell them to press anything." };
+    const qids = arr(input.questions).map((q) => qidOf(q));
+    const cells = bundle().cells || {};
+    const toDo = (row) => !Object.keys(cells[row] || {}).length || Object.entries(cells[row]).some(([q, c]) => (!qids.length || qids.includes(q)) &&
+      (!c || c.state === "not_run" || c.state === "missing" || c.out_of_date));
+    if (rows.length && !rows.some(toDo)) {
+      throw new Error("Those are already scored, so a start would score nothing. To score them again use propose_rescore (it shows the cost on a Confirm card).");
+    }
+    const left = rows.length ? rows.filter(toDo) : arr(bundle().units).map((u) => u.id).filter(toDo);
+    if (!left.length) throw new Error("Everything is already scored. To score answers again use propose_rescore.");
+    const est = HB.cost && left.length ? HB.cost.rows(left, qids) : null;
+    const req = { kind, rows: rows.length ? left : [], questions: qids };
+    const go = async () => {
+      const since = new Date().toISOString().slice(0, 19) + "Z";
+      await HB.nextStep.start(req);
+      return startedWords(await scoringNow(since));
+    };
+    if (kind === "full" && left.length > BIG_START) {
+      // 20 Oct 2026: "start the run" got its cost and a question back, and the owner had to type yes.
+      const w = (bundle().project || {});
+      const line = "Score " + fmtInt(left.length) + " " + (left.length === 1 ? w.unit_word || "row" : w.unit_word_plural || "rows") +
+        (qids.length ? " on " + fmtInt(qids.length) + " question" + (qids.length === 1 ? "" : "s") : "") +
+        ", finding their documents first. " + (est ? HB.cost.line(est) + " Finding the documents adds a little more." : "It uses your Claude plan.") +
+        " Pause at the top stops it at any time.";
+      return Object.assign(propose(line, async () => {
+        const got = await go();
+        return { __result: true, started: got.started, applied: !got.started,
+          note: got.started ? "The header at the top shows progress, with Pause." : "It ended at once: " + (got.said || got.ended || "see the run bar") + ".",
+          told: "Scoring " + (got.started ? "has started" : "ended at once: " + (got.said || got.ended)) + ".)" };
+      }), { cost: est ? HB.cost.line(est) : null,
+        next: "The card shows the cost; do not ask them to type yes, and do not say it has started until they press Confirm. Suggest scoring a few first if nothing has been tried." });
+    }
+    const got = await go();
+    return Object.assign({ kind, rows: rows.length ? left : "chosen by Claude to cover the groups" + (kind === "full" ? " (every row still to score)" : ""),
+      cost: est ? HB.cost.line(est) : null }, got);
   }
 
   /* While the set-up draft runs, one entry at the end of the conversation says what Claude is doing now
@@ -1006,13 +1111,13 @@
       { name: "propose_rerun", description: "Puts to the owner a request to score again the answers resting on a rule (usually after it is decided). Saved only when they click Confirm; " +
           HB.when("it then runs behind the page, with progress in the Run bar.", "it runs the next time Claude works on this project."),
         inputSchema: S({ rule: RULE }, ["rule"]), execute: proposeRerun },
-      { name: "propose_run_control", description: "Puts a run request to the owner: pause, resume, stop_now, stop_after_row (row), scope (rows and/or questions; null means all) or stop_after (stage find, score or none). Saved only when they click Confirm. It only changes how a run behaves or what the next run covers: it starts nothing, so never say it starts scoring. To start scoring, use start_scoring.",
+      { name: "propose_run_control", description: "Puts a run request to the owner: pause, resume, stop_now, stop_after_row (row), scope (rows and/or questions; null means all) or stop_after (stage find, score or none). Saved only when they click Confirm. It only changes how a run behaves or what the next run covers, so never say it starts scoring (to start scoring, use start_scoring). Two exceptions, said in its result: with nothing running, pause and stops save nothing; resume with a run left part way puts carrying that run on to the owner.",
         inputSchema: S({ action: { type: "string", enum: RUN_ACTIONS }, row: ROW, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID }, stage: { type: "string", enum: ["find", "score", "none"] } }, ["action"]), execute: proposeRunControl },
       { name: "propose_correction", description: "Puts a correction of one answer to the owner: their evidence (quote, and document id plus page, or link), a new value with their reason, or both. Saved only when they click Confirm.",
         inputSchema: S({ row: ROW, question: QID, value: { type: ["number", "string"] }, reason: { type: "string" }, quote: { type: "string" }, doc: { type: "string" }, page: { type: "number" }, link: { type: "string" } }, ["row", "question"]), execute: proposeCorrection },
       { name: "read_material", description: "The owner's set-up files (added on the Set-up tab under Your material): without file, the list (id, name, kind, length); with file, its text as PDF, Word, Excel or text, 20,000 characters from start. For the fit check.",
         inputSchema: S({ file: { type: "string" }, start: { type: "number" } }), execute: readMaterial },
-      { name: "start_scoring", description: "Starts scoring now, as the page's green next-step button does: kind \"trial\" scores a few rows first (give rows, or leave them out and Claude picks rows that cover the groups), kind \"full\" scores every row still to do (or the rows given). Claude finds each row's documents, then scores it; the header shows progress, with Pause. It starts at once, with no Confirm, so use it when the owner asks to score (\"score Liberia\", \"try a few\", \"go\"). Before a full run with no trial yet, give its cost with get_costs and start only once they say yes.",
+      { name: "start_scoring", description: "Starts scoring now, as the page's green next-step button does: kind \"trial\" scores a few rows first (give rows, or leave them out and Claude picks rows that cover the groups), kind \"full\" scores every row still to do (or the rows given). Claude finds each row's documents, then scores it; the header shows progress, with Pause. Use it when the owner asks to score (\"score Liberia\", \"try a few\", \"go\", \"start the run\"). A trial, or a full run of three rows or fewer, starts at once with no Confirm; a bigger full run is put to the owner on a Confirm card with its cost, so never ask them to type yes. It only scores answers not scored yet: to score answers again, use propose_rescore. Its result says whether the run really started; say only what it says.",
         inputSchema: S({ kind: { type: "string", enum: ["trial", "full"] }, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID } }, ["kind"]),
         execute: startScoring },
       { name: "start_draft_setup", description: "Starts Draft my set-up now: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions as rules to decide and data to supply. It starts at once, with no Confirm, so use it when the owner asks for the set-up (or says yes to it) and their files are in. The chat then shows its progress and, when it is done, you carry on with what to check.",
@@ -1770,6 +1875,9 @@
     if (!quiet) HB.store.set(draftKey(), null);
     repaint();
     try {
+      // Ask for the owner's name now, not halfway through a tool call (which then waited behind the name box
+      // until it timed out: 20 Oct 2026 review).
+      if (HB.local && typeof HB.local.named === "function" && !HB.local.named()) await HB.local.askName();
       const list = await toolList();
       await compact(ctl.signal);
       if (setupMode()) await loadGuide();
@@ -1817,6 +1925,7 @@
       // A feedback change answers with its own words (fbDone): it is applied at once, not waiting for Claude.
       const own = out && out.__result === true ? out : null;
       p.applied = Boolean(own && own.applied);
+      p.started = Boolean(own && own.started);       // a run or re-score: started behind the page, not done yet
       p.folder = (own && own.folder) || null;
       p.note = own && own.note ? own.note
         : HB.when("Saved. It is being applied now.", "Saved. It shows as Waiting for Claude, and Claude applies it the next time it works on this project.");
@@ -1839,7 +1948,8 @@
     return h("dl", { class: "hbc-change__context" }, p.context.flatMap(([label, text]) => [h("dt", null, label), h("dd", null, String(text))]));
   }
 
-  /** "Change it": the proposal stays unsaved and its words go into the message box for the owner to edit. */
+  /** Change it (no longer a button on the card since 20 Oct 2026: two ways to say no confused Benjy; Cancel,
+      then saying what to change, does the same): the proposal stays unsaved and its words go into the message box for the owner to edit. */
   function changeIt(id) {
     const p = st.proposals.get(id);
     if (!p || p.state !== "asked") return;
@@ -1974,15 +2084,15 @@
       yes.addEventListener("click", () => confirm(p.id));
       const no = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-cancel", disabled: p.state === "saving" }, "Cancel");
       no.addEventListener("click", () => cancel(p.id));
-      const edit = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-edit", disabled: p.state === "saving" }, "Change it");
-      edit.addEventListener("click", () => changeIt(p.id));
-      box.append(line, contextNode(p), h("div", { class: "cluster" }, yes, edit, no));
+      box.append(...[line, contextNode(p), h("div", { class: "cluster" }, yes, no)].filter(Boolean));
     } else if (p.state === "done") {
       // Saved; moving dots while the page still lists it as waiting, then Done once it has been applied.
-      const waiting = !p.applied && HB.edits && typeof HB.edits.pending === "function" && Number(HB.edits.pending()) > 0;
-      if (!p.applied && !waiting && HB.local) p.applied = true;
-      box.append(line, h("p", { class: "hbc-change__done" }, p.applied ? HB.statusChip("good", "Done") : HB.working("Claude is on it", { status: false }),
-        h("span", null, " " + (p.applied && HB.local ? "Applied." : p.note))));
+      const waiting = !p.applied && !p.started && HB.edits && typeof HB.edits.pending === "function" && Number(HB.edits.pending()) > 0;
+      if (!p.applied && !p.started && !waiting && HB.local) p.applied = true;
+      // 20 Oct 2026: a re-score said "Done. Applied." the moment Confirm was clicked, with a minute of scoring to go.
+      box.append(line, h("p", { class: "hbc-change__done" }, p.started ? HB.statusChip("good", "Started")
+        : p.applied ? HB.statusChip("good", "Done") : HB.working("Claude is on it", { status: false }),
+        h("span", null, " " + (p.started ? p.note : p.applied && HB.local ? "Applied." : p.note))));
       if (waiting && HB.local) setTimeout(() => { if (box.isConnected) box.replaceWith(changeNode(p)); }, 2000);
       if (p.folder && fbLocalNow()) {
         const show = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-folder" }, "Show the folder");
@@ -1990,9 +2100,9 @@
         box.append(h("div", { class: "cluster" }, show));
       }
     } else if (p.state === "changing") {
-      box.append(line, contextNode(p), h("p", { class: "small muted" }, "Edit it in the message box below and send it. Nothing was saved."));
+      box.append(...[line, contextNode(p), h("p", { class: "small muted" }, "Edit it in the message box below and send it. Nothing was saved.")].filter(Boolean));
     } else if (p.state === "cancelled") {
-      box.append(line, h("p", { class: "small muted" }, "Cancelled. Nothing was saved."));
+      box.append(line, h("p", { class: "small muted" }, "Cancelled. Nothing was saved. Say below what you'd like instead."));
     } else {
       box.append(line, HB.notice("critical", p.note || "This could not be saved."));
     }
@@ -2014,7 +2124,7 @@
     const u = arr(b.units)[0];
     const q = arr(b.questions)[0];
     const out = [];
-    if (u && q) out.push("Why is " + (u.name || u.id) + " scored as it is on " + q.id + "?");
+    if (u && q) out.push("Why is " + (u.name || u.id) + " scored as it is on question " + q.id + (q.short ? " (" + q.short + ")" : "") + "?");
     if (arr(b.rules).some((r) => r && r.status === "open")) out.push("Which rules are still open, and which matters most?");
     if (b.results && b.results.compare) out.push("Where do we differ most from last edition, and why?");
     return out;
@@ -2043,7 +2153,7 @@
       .sort((x, y) => (Number(y.stakes.points) || 0) - (Number(x.stakes.points) || 0))
       .slice(0, 3)
       .forEach((r) => out.push({ id: "rule:" + r.id, show: () => goTo({ tab: "rules", rule: r.id }),
-        text: "Rule " + r.id + " is undecided and governs " + fmtInt(r.stakes.cells) + " answers: " + clipText(r.ask || r.why || "", 110) }));
+        text: "Rule " + r.id + " is still open and affects " + fmtInt(r.stakes.cells) + " answers: " + clipText(r.ask || r.why || "", 110) }));
     const needs = arr(b.needs).filter((n) => n && n.status === "needed");
     if (needs.length) {
       out.push({ id: "needs:" + needs.map((n) => n.id).join(","), show: () => goTo({ tab: "setup" }),
@@ -2056,8 +2166,10 @@
       const bits = [];
       if (lost) bits.push("couldn't get copies of " + fmtInt(lost) + (lost === 1 ? " document" : " documents") + " (a site blocked me or the file broke)");
       if (missing) bits.push("couldn't find " + fmtInt(missing) + (missing === 1 ? " document" : " documents") + " the questions need");
-      out.push({ id: "docs:" + lost + ":" + missing, show: () => filterGrid({ rows: HB.data.gapRows() }),
-        text: "I " + bits.join(", and ") + ". If you have them, sending them improves the scores." });
+      const rows = HB.data.gapRows();
+      out.push({ id: "docs:" + lost + ":" + missing, show: () => filterGrid({ rows }),
+        text: "I " + bits.join(", and ") + (rows.length ? ", for " + HB.data.unitWords(rows.length) : "") +
+          ". If you have them, adding them improves the scores." });
     }
     const seen = new Set(arr(HB.store.get(seenKey(), [])));
     return out.filter((n) => !seen.has(n.id));
@@ -2089,12 +2201,16 @@
   function noticesNode() {
     const list = notices();
     if (!list.length) return null;
+    const note = (n) => h("div", { class: "hbc-note" }, h("p", null, n.text),
+      h("p", { class: "hbc-note__acts" },
+        h("button", { type: "button", class: "btn btn--small", onclick: () => { try { n.show(); } catch (e) { /* tab missing */ } } }, "Show"),
+        h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => gotIt(n.id) }, "Got it")));
+    // Two at most in view: a stack of notices pushed the chat itself off a phone screen.
+    const more = list.slice(2);
     return h("div", { class: "hbc-notes", "aria-label": "Worth your attention" },
       h("p", { class: "hbc-notes__title" }, "Worth your attention"),
-      list.map((n) => h("div", { class: "hbc-note" }, h("p", null, n.text),
-        h("p", { class: "hbc-note__acts" },
-          h("button", { type: "button", class: "btn btn--small", onclick: () => { try { n.show(); } catch (e) { /* tab missing */ } } }, "Show"),
-          h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => gotIt(n.id) }, "Got it")))));
+      list.slice(0, 2).map(note),
+      more.length ? h("details", { class: "hbc-notes__more" }, h("summary", null, fmtInt(more.length) + " more"), more.map(note)) : null);
   }
 
   function repaint() {
@@ -2256,9 +2372,12 @@
       h("div", { class: "hbc-head" }, glyph("hbc-head__glyph"), ui.title = h("h2", { class: "hbc-title", id: "hbc-title" }, "Ask Claude"), closeBtn),
       ui.body, ui.foot);
     ui.panel.addEventListener("keydown", onKey);
-    // In the Set-up tab's column, files dropped on the chat go to Your material (views/setup.js).
+    // In the Set-up tab's column, files dropped on the chat go to Your material (views/setup.js); anywhere
+    // else they open "Add documents or instructions" (views/bulk.js) with the files in it. 20 Oct 2026: a PDF
+    // dropped on the chat outside set-up was not caught, and the browser opened it in place of the page.
+    const takesFiles = () => (setupMode() ? Boolean(HB.setupMaterial) : Boolean(HB.bulk && HB.local));
     const dropOn = (on) => (ev) => {
-      if (!setupMode() || !(HB.setupMaterial && ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files"))) return;
+      if (!takesFiles() || !(ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files"))) return;
       ev.preventDefault();
       ui.panel.classList.toggle("is-drop", on);
     };
@@ -2267,13 +2386,28 @@
     ui.panel.addEventListener("dragleave", (ev) => { if (!ui.panel.contains(ev.relatedTarget)) ui.panel.classList.remove("is-drop"); });
     ui.panel.addEventListener("drop", (ev) => {
       ui.panel.classList.remove("is-drop");
-      if (!setupMode() || !HB.setupMaterial || !ev.dataTransfer || !ev.dataTransfer.files.length) return;
+      if (!takesFiles() || !ev.dataTransfer || !ev.dataTransfer.files.length) return;
       ev.preventDefault();
       const files = Array.from(ev.dataTransfer.files);
+      if (!setupMode()) {
+        HB.bulk.open(files);
+        st.log.push({ kind: "note", tone: "neutral", text: "Your " + (files.length === 1 ? "file is" : files.length + " files are") +
+          " in the Add documents or instructions window. Press Read them there: it works out which rows each document is for, and nothing is filed until you confirm." });
+        st.turns.push({ role: "user", content: "(I dropped " + files.map((f) => f.name).join(", ") + " on the chat; the page opened Add documents or instructions with them, where they are filed for their rows after I confirm.)" });
+        repaint();
+        return;
+      }
       HB.setupMaterial.add(files).then((added) => {
         if (added && added.length) send("(I added " + added.join(", ") + " to Your material.)");
       });
     });
+    // A file dropped anywhere else on the page must never replace the page (and the conversation) in the browser.
+    if (!window.__hbDropGuard) {
+      window.__hbDropGuard = true;
+      const files = (ev) => ev.dataTransfer && Array.from(ev.dataTransfer.types || []).includes("Files");
+      window.addEventListener("dragover", (ev) => { if (files(ev)) ev.preventDefault(); });
+      window.addEventListener("drop", (ev) => { if (files(ev)) ev.preventDefault(); });
+    }
     ui.host.replaceChildren(ui.fab, ui.panel);
     repaint();
 
@@ -2300,6 +2434,8 @@
 .hbc-fab__badge[hidden] { display: none; }
 .hbc-notes { display: grid; gap: var(--s2); padding: var(--s3); border-bottom: 1px solid var(--rule); background: var(--accent-soft); font-size: var(--fs-14); }
 .hbc-notes__title { font-weight: 600; }
+.hbc-notes__more > summary { cursor: pointer; color: var(--accent); font-size: var(--fs-14); }
+.hbc-notes__more[open] > summary { margin-bottom: var(--s2); }
 .hbc-note { display: grid; gap: var(--s1); }
 .hbc-note__acts { display: flex; gap: var(--s2); }
 .hbc-panel { position: fixed; right: max(var(--gutter-end), 16px); bottom: max(16px, env(safe-area-inset-bottom, 0px)); z-index: 37; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; width: min(380px, 100vw - 32px); height: min(40rem, 100dvh - 32px); border: 1px solid var(--rule-strong); border-radius: 0.75rem; background: var(--surface); color: var(--ink); box-shadow: 0 1.25rem 3rem var(--shadow); overflow: hidden; }
@@ -2360,9 +2496,22 @@
 @media (prefers-reduced-motion: reduce) { .hbc-fab { transition: none; } }
 `);
 
+  /** Put words in the box for the owner to send or change. Nothing goes to Claude. */
+  function draft(text) {
+    open();
+    if (!ui.input) return;
+    ui.input.value = String(text || "");
+    ui.input.dispatchEvent(new Event("input"));
+    if (!ui.input.disabled) {
+      ui.input.focus();
+      ui.input.setSelectionRange(ui.input.value.length, ui.input.value.length);
+    }
+  }
+
   HB.chat = {
     start,
     inline,
+    draft,
     watchDraft,
     setupTools,
     badge,

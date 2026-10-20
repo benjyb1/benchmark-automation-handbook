@@ -232,6 +232,15 @@ def set_status(project: Project, key: str, status: str) -> dict:
         raise HandbookError(f"A checklist item can be set to draft, confirmed, skipped or not_needed, not {status!r}.")
     p = project.read("project")
     files: dict[str, dict] = {}
+    if status == "confirmed":
+        # 20 Oct 2026 review: questions and a score sheet that had both been refused (nothing kept) could still
+        # be confirmed, and a trial then searched for documents with nothing to score.
+        empty = {"questions": "There are no questions saved yet", "units": "There are no rows saved yet",
+                 "scoresheet": "There is no score sheet saved yet"}
+        d = project.read(key) if key in empty else None
+        if key in empty and not (d.get(key) if key in ("questions", "units") else d):
+            return {"ok": False, "problems": [empty[key] + ", so there is nothing to confirm. Draft or add it first."],
+                    "said": None}
     if status == "confirmed" and key in ("questions", "units"):
         d = project.read(key)
         for item in d.get(key) or []:

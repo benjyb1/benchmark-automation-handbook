@@ -235,5 +235,6 @@ def last_upgrade(path) -> dict | None:
 
 def upgrade_words(entry: dict) -> str:
     """One plain line for the page's Recent changes."""
+    # No folder path here: owners read this line, and the copy's place matters only to "go back".
     return (f"This project's files were upgraded for version {entry.get('tool')} of the tool. A copy of them as "
-            f"they were is in {entry.get('backup')}.")
+            f"they were is kept on this computer, so going back to the earlier version puts them back.")

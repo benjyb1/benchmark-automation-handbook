@@ -196,12 +196,16 @@
     const rows = arr(input.rows).length ? arr(input.rows).map(api.rowOf) : arr(b.units).map((u) => u.id);
     const qids = arr(input.questions).length ? arr(input.questions).map(api.qidOf) : arr(b.questions).map((q) => q.id);
     const scored = rows.filter((r) => qids.some((q) => { const c = HB.data.cell(r, q); return c && c.state !== "not_run"; }));
-    if (!scored.length) throw new Error("None of those answers has been scored yet, so there is nothing to score again: the run scores them (propose_run_control).");
+    if (!scored.length) throw new Error("None of those answers has been scored yet, so there is nothing to score again: start_scoring scores them.");
     const est = HB.cost && typeof HB.cost.rows === "function" ? HB.cost.rows(scored, input.questions ? qids : null) : null;
     const why = String(input.why || "").trim();
     const line = "Score again " + scopeWords(api, input.rows ? scored : null, input.questions ? qids : null) + (why ? " (" + api.cut(why, 100) + ")" : "") +
       ". " + (est ? HB.cost.line(est) : "It uses some of your Claude plan.");
-    return api.propose(line, () => HB.edits.save("control", { action: "rerun", rule: null, rows: scored, questions: qids, why: why || null }));
+    return api.propose(line, async () => {
+      await HB.edits.save("control", { action: "rerun", rule: null, rows: scored, questions: qids, why: why || null });
+      return { __result: true, started: true, note: "Scoring again behind the page; the run bar on the Grid shows progress, and a note says when it is done.",
+        told: "The re-score is saved and runs behind the page; it is not done yet.)" };
+    });
   }
 
   async function proposeSections(input, api) {
@@ -272,11 +276,17 @@
   }
 
   function undoLine(e, api) {
-    return api.propose("Undo the job “" + api.cut(e.title, 100) + "”: put the whole project back as it was before it ran. Anything changed since, including later jobs, is undone too.",
+    // Since 1.0.1 an Undo takes back only what that change touched (serve.undo_chat_job); older ones still put
+    // the whole project back (20 Oct 2026: the card said "whole project" for both).
+    const own = e.own_undo !== false;
+    return api.propose("Undo “" + api.cut(e.title, 100) + "”: " + (own
+      ? "what it changed goes back as it was. Anything done since, by you or a colleague, stays."
+      : "the whole project goes back as it was before it, and anything changed since is undone too."),
       async () => {
         await HB.local.post("chat/undo", { job: e.id });
         e.undone = true;
-        return { __result: true, applied: true, note: "Undone. The project is back as it was.", told: "The job was undone: the project is back as it was before it.)" };
+        return { __result: true, applied: true, note: own ? "Undone. What it changed is back as it was." : "Undone. The project is back as it was.",
+          told: "It was undone" + (own ? ": only what it changed; later work stays.)" : ": the project is back as it was before it.)") };
       });
   }
 
@@ -377,7 +387,10 @@
     if (!EDIT_SAYS[field]) throw new Error("A " + (target === "unit" ? "row" : "question") + " edit changes one of: " + (target === "unit" ? "name, labels" : "wording, short, rule, levels_points, applies_to") + ". Anything else (adding or deleting a question or row, level wording, the score sheet) is a background job (propose_job).");
     const value = input.value;
     const who = target === "unit" ? api.unitName(id) : "question " + id;
-    const shown = typeof value === "string" ? "“" + api.cut(value, 160) + "”" : api.cut(JSON.stringify(value), 160);
+    const shown = typeof value === "string" ? "“" + api.cut(value, 160) + "”"
+      : field === "levels_points" && value && typeof value === "object" && !Array.isArray(value)
+        ? Object.entries(value).map(([lvl, pts]) => "level " + lvl + " gives " + pts + (Number(pts) === 1 ? " point" : " points")).join(", ")
+        : api.cut(JSON.stringify(value), 160);
     return api.propose("Change " + who + "'s " + field.replace("_", " ") + " to " + shown + ": " + EDIT_SAYS[field] + ".",
       () => HB.edits.edit(target, id, field, value));
   }
@@ -417,7 +430,7 @@
     api.canSave();
     const rows = arr(input.rows).map(api.rowOf);
     const link = String(input.link || "").trim();
-    if (!rows.length || !/^https?:\/\//i.test(link)) throw new Error("A document needs the rows it is for and its web address (https://...). For a file on the owner's computer, they drop it on the Set-up tab under Your material, or on a step's brief.");
+    if (!rows.length || !/^https?:\/\//i.test(link)) throw new Error("A document needs the rows it is for and its web address (https://...). For a file on the owner's computer: they drop it on this chat, or use Add documents or instructions above the Grid, which files it for its rows after they confirm.");
     return api.propose("Add " + link + " as a document for " + rows.map(api.unitName).join(", ") + ". It is saved, and nothing is scored again until you ask (then the line shows the cost).",
       () => HB.edits.save("supplied", { rows, link, what: input.title ? String(input.title) : null }));
   }
@@ -445,10 +458,18 @@
     if (n(imp.unscored)) bits.push(n(imp.unscored) + " new to score");
     if (imp.kept != null) bits.push(imp.kept + " kept as they are");
     const redo = imp.rescore || { rows: [], questions: [] };
-    const est = n(redo.rows) && HB.cost && typeof HB.cost.rows === "function" ? HB.cost.rows(redo.rows, redo.questions) : null;
+    let est = n(redo.rows) && HB.cost && typeof HB.cost.rows === "function" ? HB.cost.rows(redo.rows, redo.questions) : null;
+    const fresh = arr(redo.questions).filter((q) => !arr(api.bundle().questions).some((x) => x.id === q));
+    if (!est && n(redo.rows) && fresh.length && HB.cost && typeof HB.cost.rows === "function") {
+      // A new question has no answers to size it by: one existing question on the same rows, times the new ones
+      // (20 Oct 2026: the add-question card said only "uses some of your plan").
+      const like = arr(api.bundle().questions).map((q) => q.id).find(Boolean);
+      const one = like ? HB.cost.rows(redo.rows, [like]) : null;
+      if (one) est = Object.assign({}, one, { point: one.point * fresh.length, low: one.low * fresh.length, high: one.high * fresh.length });
+    }
     const title = String(input.title || dry.said || op.op);
     const line = title.replace(/\.$/, "") + ": " + (bits.join(", ") || "no answer changes") + ". One click undoes it." +
-      (n(redo.rows) ? " Scoring the affected answers again: " + (est ? HB.cost.line(est) : "uses some of your plan") + (n(imp.unscored) && op.op === "add_rows" ? " (finding their documents comes on top)" : "") + "." : "");
+      (n(redo.rows) ? " Scoring the affected answers again: " + (est ? HB.cost.line(est).replace(/\.$/, "") : "uses some of your plan") + (n(imp.unscored) && op.op === "add_rows" ? " (finding their documents comes on top)" : "") + "." : "");
     return Object.assign(api.propose(line, async () => {
       const got = await HB.local.post("chat/change", { op, apply: true, title });
       if (!got.ok) throw new Error(arr(got.problems).join(" ") || "It was not changed.");
@@ -468,6 +489,10 @@
       api.progress("Asking the tool");
       if (args[0] === "help" || args.includes("--help")) return api.fit(await getJson("chat/hb-help" + (args[0] !== "help" ? "?command=" + encodeURIComponent(args[0]) : "")));
       return api.fit(await HB.local.post("chat/hb", { args }));
+    }
+    if (args[0] === "score" || (args[0] === "run" && args[1] === "start")) {
+      // 20 Oct 2026: run start from here left an open run that scored nothing, and the card said Done.
+      throw new Error("That command on its own scores nothing here. To score, use start_scoring (rows, questions); to score answers again, propose_rescore.");
     }
     api.canSave();
     const why = String(input.why || "").trim();
@@ -534,7 +559,7 @@
         inputSchema: S({ rows: ROWS, questions: QIDS, why: { type: "string" } }), execute: w(proposeRescore) },
       { name: "propose_sections", description: "Finds the section or article number (such as s. 4(4) or art. 35(1)) for quotes already saved, from the headings above each quote, with plain code and no tokens, and puts adding them to the owner. Says how many could not be placed that way and what reading those with Claude would cost. Saved only when they click Confirm.",
         inputSchema: S({ rows: ROWS }), execute: w(proposeSections) },
-      { name: "background_jobs", description: "The background jobs so far, newest first: title, status, tokens used, what each said, whether undone. With undo (a job id): puts Undo to the owner, which puts the whole project back as it was before that job (files made for download stay). Saved only when they click Confirm.",
+      { name: "background_jobs", description: "The background jobs so far, newest first: title, status, tokens used, what each said, whether undone. With undo (a job id): puts Undo to the owner, which takes back what that job or change did and keeps everything done since (if it cannot without losing later work, it says so). When the owner says \"undo\" about something done here, use this, not a new change. Saved only when they click Confirm.",
         inputSchema: S({ undo: { type: "string" } }), execute: w(backgroundJobs) },
       { name: "propose_job", description: "For anything no other tool does: puts to the owner a background job, one Claude session that does the task on the project's files behind the page (it can read every document and change any answer, rule, question or file, with a copy taken first so one click undoes it). title: a few words for the owner. brief: the task in full for that session, with the rows, questions and what done looks like. size: small (one row or a few answers), medium (several rows), large (most of the project), or tokens [low, high] when you know better. Saved only when they click Confirm.",
         inputSchema: S({ title: { type: "string" }, brief: { type: "string" }, size: { type: "string", enum: ["small", "medium", "large"] }, tokens: { type: "array", items: { type: "number" } } }, ["title", "brief"]), execute: w(proposeJob) },
@@ -549,9 +574,10 @@
     const routes = "Pick the cheapest route that does what the owner asked, in this order: the Grid's view (set_grid_view: free and at once), an edit or a set-up change (propose_edit" + (local() ? ", propose_setup_change" : "") + ": one Confirm, no Claude), " +
       "scoring again (propose_rescore: tokens), and only then a background job (" + (local() ? "propose_job" : "saved for Claude's next session") + ": tokens). Everyday asks: \"remove the groupings\" or \"group by X\": set_grid_view; \"remove the X label\": propose_setup_change remove_labels; " +
       "\"rename Kenya\" or \"Kenya's region is wrong\": propose_edit on the row; \"reword question 5\", its coding instructions, its points: propose_edit on the question, then offer propose_rescore; \"change the cut-off\": propose_setup_change cutoff, then offer propose_rescore; " +
-      "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; \"export everything for Kenya\": make_file with rows [kenya]; " +
+      "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; a file, a list of documents or an Excel of coding instructions: the owner drops them on this chat or uses Add documents or instructions above the Grid (it files them for their rows, and instructions under their questions, after a Confirm); \"export everything for Kenya\": make_file with rows [kenya]; " +
+      "\"score Liberia\", \"start the run\", \"carry on\": start_scoring (answers already scored: propose_rescore); \"pause\", \"stop\": propose_run_control; " +
       "add, remove, rename or merge rows, add, remove or change questions and their levels or points, remove rules: propose_change; the score sheet and bands, where to look, data needed, new rules: propose_change set_part (get_setup with formats first); " +
-      "anything else the tool does (start scoring, compare, charts, checks, any step): run_command, after run_command [\"help\"] if you are unsure what exists; a task that needs Claude to read and write across the project: propose_job. " +
+      "anything else the tool does (compare, charts, checks, any step): run_command, after run_command [\"help\"] if you are unsure what exists; a task that needs Claude to read and write across the project: propose_job. " +
       "If you notice you are about to write can't, cannot, unable, not possible or do it yourself, stop and put the route instead.";
     if (!local()) return [routes];
     return [charge, routes,
