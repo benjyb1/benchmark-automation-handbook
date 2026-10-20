@@ -100,7 +100,7 @@
 .hbg-kind .flag-glyph { width: 0.875rem; height: 0.875rem; color: var(--critical); }
 .hbg-counts__part { display: inline-flex; align-items: center; gap: 0.3em; }
 .hbg-cnt-mk { display: inline-block; flex: none; --mk-w: 14px; width: 14px; height: 14px; margin-right: 0.05rem; }
-.hbg-cnt-cell { width: 1.25rem; height: 0.875rem; border: 1px solid var(--rule); }
+.hbg-cell.hbg-cnt-cell { width: 1.25rem; height: 0.875rem; border: 1px solid var(--rule); }
 .hbg-live { color: var(--ink); font-weight: 600; }
 .hbg-progress { height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
 .hbg-progress > span { display: block; height: 100%; background: var(--accent); }
@@ -120,10 +120,23 @@
 .hbg-qid:focus-visible { outline: 2px solid var(--focus); outline-offset: 0; }
 
 /* Strips */
-.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --ov-cols: minmax(8rem, 15rem) var(--strip-w) 3.5rem minmax(6rem, 1fr); border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
-.hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--s4); padding-inline: var(--s3); }
+/* The strips box is its own scroller (both ways, like the Table view), so a benchmark with many
+   questions scrolls sideways inside it. Every child is at least --ov-w wide (the columns at their
+   widest), the row names stay pinned on the left, Overall and Tier on the right, and the section
+   names sit in the same column as their marks, so they move together. */
+.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-max: 15rem; --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
+.hbg-ov > * { min-width: var(--ov-w); }
+.hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--ov-gap); padding-inline: var(--ov-pad); }
 .hbg-ov__head { position: sticky; top: 0; z-index: 5; align-items: end; padding-block: var(--s2) var(--s1); border-bottom: 1px solid var(--rule-strong); border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; }
 .hbg-ov__head > .hbg-num { text-align: right; }
+.hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r { position: sticky; z-index: 4; align-self: stretch; background: inherit; }
+.hbg-ov__pin-l { left: 0; margin-inline: calc(-1 * var(--ov-pad)) calc(-1 * var(--ov-gap)); padding-inline: var(--ov-pad) var(--ov-gap); box-shadow: inset -1px 0 0 var(--rule); }
+.hbg-ov__pin-n { right: calc(var(--tier-w) + var(--ov-pad)); display: flex; align-items: center; justify-content: flex-end; margin-inline: calc(-1 * var(--ov-gap)); padding-inline: var(--ov-gap); box-shadow: inset 1px 0 0 var(--rule); }
+.hbg-ov__pin-r { right: 0; display: flex; align-items: center; min-width: 0; margin-right: calc(-1 * var(--ov-pad)); padding-right: var(--ov-pad); }
+.hbg-ov__pin-r > * { min-width: 0; }
+.hbg-ov__head > :is(.hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r) { display: flex; align-items: flex-end; }
+.hbg-ov__gh > .hbg-ov__pin-l { align-self: center; }
+.hbg-ov__gh > .hbg-ov__pin-r { justify-content: flex-end; }
 .hbg-ov__secs, .hbg-ov__mk { display: flex; gap: var(--sec-gap); }
 .hbg-ov__sec { display: grid; gap: 2px; min-width: 0; }
 .hbg-ov__secname { width: 0; min-width: 100%; overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
@@ -135,9 +148,9 @@
 .hbg-ov__gname { overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
 .hbg-ov__gmeta { color: var(--ink-2); font-size: var(--fs-12); white-space: nowrap; }
 .hbg-ov__gh .hbg-num { font-weight: 600; }
-.hbg-ov__open { justify-self: end; }
+.hbg-ov__open { justify-self: end; white-space: nowrap; }
 .hbg-ov__rows { padding-block: 2px; }
-.hbg-ov__r { min-height: 1.625rem; }
+.hbg-ov__r { min-height: 1.625rem; background: var(--surface); }
 .hbg-ov__r:nth-child(even) { background: color-mix(in srgb, var(--paper) 40%, var(--surface)); }
 .hbg-ov__r:hover { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .hbg-ov__nm { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
@@ -145,7 +158,7 @@
 .hbg-ov__r .hbg-num { font-weight: 600; }
 .hbg-tier { overflow: hidden; color: var(--ink-2); font-size: var(--fs-12); text-overflow: ellipsis; white-space: nowrap; }
 .hbg-tier b { color: var(--ink); font-weight: 600; }
-.hbg-ov__table { padding: var(--s2) var(--s3) var(--s3); border-bottom: 1px solid var(--rule); }
+.hbg-ov__table { position: sticky; left: 0; width: 100cqi; padding: var(--s2) var(--s3) var(--s3); border-bottom: 1px solid var(--rule); }   /* a group opened as a table stays in view however far the strips are scrolled; it scrolls on its own */
 .hbg-mk { position: relative; display: block; flex: none; width: var(--mk-w, 18px); height: 18px; border-radius: 2px; background: color-mix(in srgb, var(--rule) 75%, var(--surface)); }
 .hbg-mk::after { content: ""; position: absolute; inset: auto 0 0 0; height: calc(var(--v, 0) * 100%); border-radius: 2px; background: var(--accent); }
 .hbg-mk:hover { box-shadow: 0 0 0 1px var(--rule-strong); }
@@ -198,6 +211,12 @@
 .hbg-table td.hbg-tot { padding: var(--s1) var(--s2); text-align: right; white-space: nowrap; }
 .hbg-table td.hbg-overall { font-weight: 600; }
 .hbg-table td.hbg-band { text-align: left; }
+.hbg-table { --band-w: 8.5rem; }
+.hbg-table :is(.hbg-pin-n, .hbg-pin-r, .hbg-pin-end) { position: sticky; right: 0; z-index: 1; }
+.hbg-table.has-band .hbg-pin-n { right: var(--band-w); }
+.hbg-table .hbg-pin-r { width: var(--band-w); min-width: var(--band-w); max-width: var(--band-w); overflow: hidden; text-overflow: ellipsis; }
+.hbg-table :is(.hbg-pin-n, .hbg-pin-end) { box-shadow: inset 1px 0 0 var(--rule-strong); }
+.hbg-table thead :is(.hbg-pin-n, .hbg-pin-r, .hbg-pin-end) { z-index: 4; }
 .hbg-partial { display: block; color: var(--ink-2); font-size: var(--fs-12); font-weight: 400; }
 
 /* Marks of state shared by every view */
@@ -206,10 +225,10 @@
 a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline-offset: 1px; }
 
 @media (width < 60rem) {
-  .hbg-ov { --ov-cols: minmax(6rem, 12rem) var(--strip-w) 3rem minmax(4.5rem, 1fr); }
+  .hbg-ov { --name-min: 6rem; --name-max: 12rem; --num-w: 3rem; --tier-w: 4.5rem; }
   .hbg-ov__gmeta { white-space: normal; }
 }
-@media all { .hb.has-dock .hbg-ov { --ov-cols: minmax(6rem, 11rem) var(--strip-w) 3rem minmax(7.5rem, 1fr); } }   /* the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
+@media all { .hb.has-dock .hbg-ov { --name-min: 6rem; --name-max: 11rem; --num-w: 3rem; --tier-w: 7.5rem; } }   /* the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
 @media (width < 52rem) {
   .hbg-ov { --mk-w: 15px; --mk-gap: 2px; --sec-gap: 10px; }
   .hbg-ov .hbg-rm { min-width: 0; width: var(--mk-w); padding: 0; font-size: 0.5625rem; letter-spacing: -0.02em; }
@@ -231,6 +250,18 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 }
 @media (width >= 40rem) {
   .hbg-phone { display: none; }
+}
+/* Printed, the boxes stop scrolling (nothing hidden past an edge) and the strips' marks shrink
+   to fit the page's width (the grid tab is a size container in print only). */
+@media print {
+  .hb-view[data-view="grid"] { container-type: inline-size; }
+  .hbg-ov, .hbg-scroll, .hbg-scroll--all { max-height: none; overflow: visible; }
+  .hbg-ov { --name-max: 10rem; --ov-gap: var(--s2); --mk-gap: 1px; --sec-gap: 6px; --mk-w: clamp(5px, calc((100cqi - var(--name-max) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px - (var(--nq) - var(--ns)) * var(--mk-gap) - (var(--ns) - 1) * var(--sec-gap)) / var(--nq)), 18px); container-type: normal; }
+  .hbg-ov > * { min-width: 0; }
+  .hbg-ov__q { font-size: 0.5rem; }
+  .hbg-ov__q .hbg-qid { writing-mode: vertical-rl; }   /* two-digit numbers fit over narrow marks */
+  .hbg-ov__head, .hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r, .hbg-ov__table, .hbg-table :is(th, td) { position: static; }
+  .hbg-ov__table { width: auto; }
 }
 @media (forced-colors: active) {
   :is(.hbg-mk, .hbg-cell, .hbg-sq).is-hl { outline-color: Highlight; }
@@ -538,6 +569,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       }
       if (out.kinds.length) words += ", flagged: " + out.kinds.map((k) => HB.flagKinds.words[k]).join(", ");
       if (out.stale) words += ", the question changed since";
+      if (c.checked) {
+        out.checked = true;
+        words += ", " + (HB.team && HB.team.checkedWords ? HB.team.checkedWords(c.checked, true) : "checked by a person");
+      }
       if (out.rests && m.showRests) words += ", rests on an open rule" + (out.rests.length ? " (" + out.rests.join(", ") + ")" : "");
       out.hl = m.hl.has(unit.id + SEP + q.id);
       if (out.hl) words += ", highlighted";
@@ -574,6 +609,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     if (x.kinds.length) cls.push("is-flag");
     if (x.stale) cls.push("is-stale");
     if (x.hl) cls.push("is-hl");
+    if (x.checked) cls.push("is-checked");
     if (x.rests && rests) cls.push("is-rest");
     return cls;
   }
@@ -622,7 +658,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const t = m.totals(unit);
     const short = m.shortName(unit, group);
     const docs = HB.gridGaps.note(ctx, m, unit);
-    const who = h("span", { class: "hbg-ov__who" },
+    const who = h("span", { class: "hbg-ov__who hbg-ov__pin-l" },
       h("span", { class: "hbg-ov__nm", title: unit.name || unit.id }, short,
         short !== (unit.name || unit.id) ? h("span", { class: "visually-hidden" }, " (" + (unit.name || unit.id) + ")") : null),
       HB.gridGaps.marker(unit));
@@ -631,8 +667,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" },
       who,
       h("span", { class: "hbg-ov__mk" }, marks),
-      h("span", { class: "hbg-num" }, m.overallText(t)),
-      tierCell(ctx, m, unit, t));
+      h("span", { class: "hbg-num hbg-ov__pin-n" }, m.overallText(t)),
+      h("span", { class: "hbg-ov__pin-r" }, tierCell(ctx, m, unit, t)));
   }
 
   // The tier column: the band, "Partial score" while a scored row still has questions to
@@ -651,7 +687,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     let col = 0;
     const total = m.sections.reduce((n, s) => n + s.qs.length, 0);
     return h("div", { class: "hbg-ov__head" },
-      h("span", null, unitWord),
+      h("span", { class: "hbg-ov__pin-l" }, unitWord),
       h("span", { class: "hbg-ov__secs" }, m.sections.map((sec) => {
         const nums = m.shortIds(sec);
         const full = sec.name ? sec.id + " " + sec.name : sec.id;
@@ -663,8 +699,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
             return h("span", { class: "hbg-ov__q" }, qidTip(q, nums[i], end), restBox(m, q, end));
           })));
       })),
-      h("span", { class: "hbg-num" }, "Overall"),
-      h("span", null, m.cols && m.cols.band ? "Tier" : ""));
+      h("span", { class: "hbg-num hbg-ov__pin-n" }, "Overall"),
+      h("span", { class: "hbg-ov__pin-r" }, m.cols && m.cols.band ? "Tier" : ""));
   }
 
   function strips(ctx, m) {
@@ -678,11 +714,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         const mean = m.groupMean(g.rows);
         const flagged = m.groupFlagged(g.rows);
         sec.append(h("div", { class: "hbg-ov__gh" },
-          h("h3", { class: "hbg-ov__gname", title: g.title }, g.title),
+          h("h3", { class: "hbg-ov__gname hbg-ov__pin-l", title: g.title }, g.title),
           h("span", { class: "hbg-ov__gmeta" }, ctx.unitWords(g.rows.length) + (flagged ? " · " + fmtInt(flagged) + " flagged" : "")),
-          h("span", { class: "hbg-num", title: "Mean overall score" }, mean === null ? DASH : m.overallText({ overall: Math.round(mean) }),
+          h("span", { class: "hbg-num hbg-ov__pin-n", title: "Mean overall score" }, mean === null ? DASH : m.overallText({ overall: Math.round(mean) }),
             h("span", { class: "visually-hidden" }, " mean overall")),
-          h("button", {
+          h("span", { class: "hbg-ov__pin-r" }, h("button", {
             type: "button",
             class: "btn btn--small btn--quiet hbg-ov__open",
             "aria-expanded": isOpen ? "true" : "false",
@@ -693,7 +729,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
               const again = document.querySelector('.hbg-ov__open[data-group="' + index + '"]');
               if (again) again.focus({ preventScroll: true });
             },
-          }, isOpen ? "Back to strips" : "Open as table")));
+          }, isOpen ? "Back to strips" : "Open as table"))));
       }
       if (isOpen) {
         sec.append(h("div", { class: "hbg-ov__table" }, groupTable(ctx, m, g)));
@@ -724,9 +760,9 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       class: "hbg-tot" + (i === 0 ? " hbg-start" : ""),
       title: t && t.bands && t.bands[s.id] ? String(s.id) + ": " + bandText(t.bands[s.id]) : null,
     }, sectionText(s, t && t.sections ? t.sections[s.id] : null, partial)));
-    out.push(h("td", { class: "hbg-tot hbg-overall" + (cols.sections.length ? "" : " hbg-start") },
+    out.push(h("td", { class: "hbg-tot hbg-overall hbg-pin-n" + (cols.sections.length ? "" : " hbg-start") },
       m.overallText(t), partial ? h("span", { class: "hbg-partial" }, "partial") : null));
-    if (cols.band) out.push(h("td", { class: "hbg-tot hbg-band" }, m.bandNode(m.bandName(unit))));
+    if (cols.band) out.push(h("td", { class: "hbg-tot hbg-band hbg-pin-r" }, m.bandNode(m.bandName(unit))));
     return out;
   }
 
@@ -744,7 +780,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         "data-q": q.id,
         "aria-label": x.label,
         title: x.label,
-      }, x.text, x.state === "no_evidence" ? h("span", { class: "hbg-ne", "aria-hidden": "true" }, "∅") : null, glyphs(x.kinds)));
+      }, x.text, x.state === "no_evidence" ? h("span", { class: "hbg-ne", "aria-hidden": "true" }, "∅") : null, glyphs(x.kinds),
+        x.checked ? h("span", { class: "hbg-tick", "aria-hidden": "true" }, HB.team && HB.team.tickText ? HB.team.tickText(x.c.checked) : "✓") : null));
   }
 
   function tableHead(m, sections) {
@@ -766,14 +803,20 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     }
     const cols = m.cols;
     if (cols) {
-      const span = cols.sections.length + 1 + (cols.band ? 1 : 0);
-      secRow.push(h("th", { class: "hbg-sec hbg-start", scope: "colgroup", colspan: String(span) },
-        h("div", { class: "hbg-secname" }, "Score")));
+      // Overall and Tier stay pinned on the right, so they get a header cell of their own over
+      // them; the section totals scroll with the questions under "Score".
+      const end = 1 + (cols.band ? 1 : 0);
+      if (cols.sections.length) {
+        secRow.push(h("th", { class: "hbg-sec hbg-start", scope: "colgroup", colspan: String(cols.sections.length) },
+          h("div", { class: "hbg-secname" }, "Score")));
+      }
+      secRow.push(h("th", { class: "hbg-sec hbg-pin-end" + (cols.sections.length ? "" : " hbg-start"), scope: "colgroup", colspan: String(end) },
+        cols.sections.length ? null : h("div", { class: "hbg-secname" }, "Score")));
       cols.sections.forEach((s, i) => qRow.push(h("th", {
         scope: "col", class: i === 0 ? "hbg-start" : null, title: s.name ? String(s.name) : null,
       }, String(s.id))));
-      qRow.push(h("th", { scope: "col", class: cols.sections.length ? null : "hbg-start" }, "Overall"));
-      if (cols.band) qRow.push(h("th", { scope: "col", style: "text-align: left" }, cols.band === "overall" ? "Tier" : "Tier " + cols.band));
+      qRow.push(h("th", { scope: "col", class: "hbg-pin-n" + (cols.sections.length ? "" : " hbg-start") }, "Overall"));
+      if (cols.band) qRow.push(h("th", { scope: "col", class: "hbg-pin-r", style: "text-align: left" }, cols.band === "overall" ? "Tier" : "Tier " + cols.band));
     }
     return { head: h("thead", null, h("tr", null, secRow), h("tr", null, qRow)), width: 1 + qCount + (cols ? cols.sections.length + 1 + (cols.band ? 1 : 0) : 0) };
   }
@@ -803,7 +846,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const sections = sectionsFor(m.bundle, qids);
     const { head } = tableHead(m, sections);
     return h("div", { class: "hbg-scroll", role: "region", tabindex: "0", "aria-label": g.title + " table" },
-      h("table", { class: "hbg-table" },
+      h("table", { class: "hbg-table" + (m.cols && m.cols.band ? " has-band" : "") },
         h("caption", { class: "visually-hidden" }, g.title + ": points per question"),
         head,
         h("tbody", null, g.rows.map((u) => bodyRow(ctx, m, u, sections)))));
@@ -827,7 +870,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         rows);
     });
     return h("div", { class: "hbg-scroll hbg-scroll--all", role: "region", tabindex: "0", "aria-label": "The grid as a table" },
-      h("table", { class: "hbg-table" },
+      h("table", { class: "hbg-table" + (m.cols && m.cols.band ? " has-band" : "") },
         h("caption", { class: "visually-hidden" }, "Points per question for every " + (m.p.unit_word || "row") + " in view"),
         head, bodies));
   }
@@ -962,6 +1005,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         refocus(".hbg-group button, .hbg-group select");
       } }, "Clear filters") : null));
     parts.push(h("span", { class: "hbg-bar__grow" }));
+    const addMore = HB.bulk ? HB.bulk.button() : null;   // "Add documents or instructions", the local page only (bulk.js)
+    if (addMore) parts.push(addMore);
     const hlCount = Array.isArray(state.highlight) ? state.highlight.length : 0;
     if (hlCount) {
       parts.push(h("button", { type: "button", class: "btn btn--small", onclick: () => ctx.highlight([]) },

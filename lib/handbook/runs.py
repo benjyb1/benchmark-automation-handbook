@@ -30,6 +30,15 @@ def _get_run(project: Project, run_id: str) -> dict:
     return run
 
 
+def _person(project: Project) -> dict | None:
+    """Who is running this, in a team project (None otherwise): see team.py."""
+    if not project.is_team():
+        return None
+    from . import team
+    from .localstore import Config
+    return team.me(Config())
+
+
 def start_run(project: Project, kind: str, questions=None, rows=None,
               when: datetime | None = None) -> dict:
     """Create `runs/<id>.json` and set the project stage (trial, or running for full and rerun).
@@ -46,7 +55,14 @@ def start_run(project: Project, kind: str, questions=None, rows=None,
            "questions": list(dict.fromkeys(questions)) if questions else None,
            "rows": list(dict.fromkeys(rows)) if rows else None,
            "started": now_stamp(), "finished": None, "usage": {}, "group_usage": {}, "models": {}}
+    person = _person(project)
+    if person:                       # a team project: the run is this person's, and only they stop it
+        run.update({"by": person["id"], "by_name": person.get("name")})
     project.write_run(run)
+    if person:
+        from . import team
+        team.log(project, person, "run_started", run=run["id"], run_kind=kind,
+                 text=f"{person.get('name') or 'Someone'} started a {kind} run")
     proj = project.read("project")
     proj["stage"] = STAGE_FOR[kind]
     project.write("project", proj)
@@ -174,6 +190,11 @@ def finish_run(project: Project, run_id: str) -> dict:
         raise HandbookError(f"Run {run_id} already finished at {run['finished']}.")
     run["finished"] = now_stamp()
     project.write_run(run)
+    person = _person(project)
+    if person:
+        from . import team
+        team.log(project, person, "run_finished", run=run_id,
+                 text=f"{person.get('name') or 'Someone'}'s {run.get('kind') or ''} run finished".replace("  ", " "))
     progress = cell_progress(project)
     proj = project.read("project")
     if progress["cells_expected"] and progress["cells_done"] == progress["cells_expected"]:

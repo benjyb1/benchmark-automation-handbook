@@ -237,6 +237,9 @@ def used(project: Project) -> dict:
         by_kind["setup"] = sum(drafts)
     if chat:
         by_kind["chat"] = sum(chat)
+    bulk = [e["processed"] for e in _log(project) if e.get("kind") == "bulk" and isinstance(e.get("processed"), int)]
+    if bulk:
+        by_kind["bulk"] = sum(bulk)        # reading what an owner added in bulk (bulk.py)
     return {"total": sum(by_kind.values()), "by_kind": by_kind, "runs": runs, "setup_drafts": drafts,
             "chat": {"replies": len(chat), "tokens": sum(chat), "median": round(median(chat)) if chat else None}}
 

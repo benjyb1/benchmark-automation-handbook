@@ -23,7 +23,7 @@ import zlib
 from pathlib import Path
 
 from .cli import command_parser, open_project
-from .folder import HandbookError
+from .folder import HandbookError, handbook_home
 
 HB = Path(__file__).resolve().parents[1] / "hb"
 
@@ -38,13 +38,15 @@ def _applescript_text(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def script(hb: Path, project: Path) -> str:
-    """The AppleScript: start `hb serve` in the background and return at once."""
+def script(hb: Path, project: Path, log: Path | None = None) -> str:
+    """The AppleScript: start `hb serve` in the background and return at once. Its output goes to
+    `<project>/.serve.log`, or to `log` (a team project's goes to the person's own home folder)."""
     return "\n".join([
         f"set hb to {_applescript_text(str(hb))}",
         f"set proj to {_applescript_text(str(project))}",
+        f"set logfile to {_applescript_text(str(log))}" if log else 'set logfile to proj & "/.serve.log"',
         'do shell script quoted form of hb & " serve --app-window --project " & quoted form of proj & '
-        '" > " & quoted form of (proj & "/.serve.log") & " 2>&1 &"',
+        '" > " & quoted form of logfile & " 2>&1 &"',
     ])
 
 
@@ -170,8 +172,16 @@ def main(argv) -> int:
     args = parser.parse_args(argv)
     project = open_project(args.project)
     name = app_name((project.read("project") or {}).get("name"))
-    text = script(HB, project.path)
-    places = [project.path] + ([Path.home() / "Desktop"] if args.desktop else [])
+    if project.is_team():
+        # A shared folder holds nothing that belongs to one person: the app (it names this computer's
+        # copy of the tool) and its output go in this person's own places.
+        log = handbook_home() / "logs" / f"{project.slug}.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        text = script(HB, project.path, log)
+        places = [Path.home() / "Desktop"]
+    else:
+        text = script(HB, project.path)
+        places = [project.path] + ([Path.home() / "Desktop"] if args.desktop else [])
     for place in places:
         make_app(place / name, text)
         print(f"Made {place / name}.")

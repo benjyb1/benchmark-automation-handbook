@@ -104,6 +104,7 @@ def main(argv) -> int:
             raise HandbookError(f"Port {args.port} is in use. Pick another with --port, or leave it out.") from None
         server = LocalServer(project, 0, config)
     server.alive_key = project_key(project.path)
+    server.team.can_relaunch, server.team.app_window = True, args.app_window
     if not server.worker.build():
         print("The page could not be rebuilt; showing the last build.", flush=True)
     config.remember(project.path, name)

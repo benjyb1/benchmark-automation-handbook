@@ -81,11 +81,19 @@
 
   /* ---- Files ------------------------------------------------------------------ */
 
+  /** "person:p-..." (the Checked by column) as the person's name on the local page,
+      else "A person": a published page never names anyone. */
+  function person(v) {
+    if (typeof v !== "string" || v.indexOf("person:") !== 0) return v;
+    const name = HB.personName ? HB.personName(v.slice(7)) : null;
+    return name || "A person";
+  }
+
   function plainCell(v) {
     if (v == null) return "";
     if (typeof v === "boolean") return v ? "Yes" : "No";
     if (typeof v === "object") return JSON.stringify(v);
-    return String(v);
+    return String(person(v));
   }
 
   /** A CSV cell. Text that a spreadsheet would read as a formula gets a leading
@@ -142,7 +150,7 @@
     const wb = XLSX.utils.book_new();
     const used = new Set();
     chosen.forEach((s) => {
-      const rows = s.rows.map((r) => r.map((v) => (v == null ? null : typeof v === "object" ? plainCell(v) : v)));
+      const rows = s.rows.map((r) => r.map((v) => (v == null ? null : typeof v === "object" ? plainCell(v) : person(v))));
       const ws = XLSX.utils.aoa_to_sheet([s.columns, ...rows]);
       XLSX.utils.book_append_sheet(wb, ws, sheetName(s.name, used));
     });

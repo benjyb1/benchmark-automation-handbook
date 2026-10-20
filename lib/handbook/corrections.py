@@ -196,9 +196,13 @@ def _handle(project: Project, c: dict, stamp: str, rounds: list) -> dict:
     if value is not None:
         owner = {"value": value, "correction": c["id"], "agreed": False if why else None,
                  "why": why, "claude": None, "kept": False}
+        if c.get("by"):
+            owner.update({"by": c.get("by"), "at": c.get("at")})
         evidence = [item] if item else (list((current or {}).get("evidence") or [])
                                         if current and _same(current.get("value"), value) else [])
         cell = owner_cell(question, current, value, evidence, owner)
+        cell.pop("checked", None)        # a changed answer has not been checked yet
+        cell.pop("rescored", None)
         problems = check_answers({"row": row, "cells": {qid: cell}}, project.read("questions"))
         if problems:
             raise _Skip("The answer could not be stored: " + "; ".join(problems))

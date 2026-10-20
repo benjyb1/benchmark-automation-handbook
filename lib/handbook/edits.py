@@ -218,6 +218,8 @@ def _decide(f: _Folder, d: dict, via: str) -> str | None:
     if option is not None and option not in options:
         return f"Rule {rid} has no option {option!r} (its options are {', '.join(map(repr, options))})."
     decision = {"option": option, "text": d.get("text") or options.get(option), "at": d["at"], "via": via}
+    if d.get("by"):
+        decision["by"] = d["by"]
     old = rule.get("decision")
     if rule.get("status") == "decided" and isinstance(old, dict) \
             and (old.get("option"), old.get("text")) == (option, decision["text"]):

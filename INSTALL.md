@@ -49,6 +49,12 @@ Say: "One last check: I'll start a tiny Claude session in the background to make
 
 ## 7. Name the benchmark and choose its folder
 
+First ask whether they are starting a benchmark of their own or joining a colleague's (a team works on one project folder that a service such as Dropbox, Google Drive or OneDrive shares between them).
+
+If they are joining a colleague's: ask where the shared folder is, and find the project folder in it (the one holding `team.json`). Check it with `TOOL/lib/hb team status --project "<project folder>"`. Tell them to keep that folder on this computer: in Dropbox "Make available offline", in Google Drive "Available offline" (or Mirror files), in OneDrive "Always keep on this device". Then run `TOOL/lib/hb launcher --project "<project folder>" --desktop` (it puts "Open <name>" on their Desktop only, never in the shared folder) and go to step 8. Their name on their changes is the name on their Claude account; they can change it in the page.
+
+If they are starting their own:
+
 Ask what the benchmark is called and which edition (year). Say its files will go in a folder called "Benchmark tool" in their home folder, with each benchmark in its own folder inside it, and that they can choose another place, but not one synced by iCloud, OneDrive, Dropbox or Google Drive, and not in Desktop, Documents or Downloads. Name folders the way Finder shows them ("Benchmark tool, in your home folder"), never as a full path. `PLACE` is `~/Benchmark tool` or the place they chose. Check it with `TOOL/lib/hb doctor --folder "PLACE"`.
 
 Make the slug from the name and edition (lowercase letters, digits and dashes), then run the two commands below. The first makes the project folder `PLACE/<slug>`; pass `PLACE` itself as `--root`, not a folder inside it.
@@ -69,7 +75,7 @@ If the page has not opened after half a minute, read `PLACE/<slug>/.serve.log` a
 Then tell them, in about four lines:
 - From now on everything happens in that page. Its Claude button (bottom right) walks them through the rest, starting with whether their benchmark suits the tool.
 - To come back another day, double-click "Open <name>" on their Desktop.
-- Their files stay on this Mac, in the folder they chose (say where, the Finder way).
+- Their files stay on this Mac, in the folder they chose (say where, the Finder way; for a team, the shared folder, where each colleague's tool keeps it in step).
 - They can close this chat.
 
 ## Updating

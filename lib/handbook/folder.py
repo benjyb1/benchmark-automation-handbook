@@ -52,6 +52,11 @@ def now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def handbook_home() -> Path:
+    """This person's own folder for the tool: $HANDBOOK_HOME, else ~/.handbook (never shared)."""
+    return Path(os.environ.get("HANDBOOK_HOME") or Path.home() / ".handbook").expanduser()
+
+
 def read_json(path, default=None):
     """The JSON in `path`, or a copy of `default` when the file does not exist."""
     path = Path(path)
@@ -131,6 +136,28 @@ class Project:
     def exists(self) -> bool:
         """True when the folder holds a project.json."""
         return (self.path / "project.json").is_file()
+
+    def is_team(self) -> bool:
+        """True when the project is shared by a team (`team.json` in the folder; see team.py)."""
+        return (self.path / "team.json").is_file()
+
+    @property
+    def viewer(self) -> Path:
+        """Where `build` writes the page: `viewer/` in the project, or, for a team project, a folder of
+        this person's own under the home folder, so two computers never rebuild the same shared files."""
+        if self.is_team():
+            import hashlib
+            key = hashlib.sha1(str(self.path.resolve()).encode("utf-8")).hexdigest()[:10]
+            return handbook_home() / "views" / f"{self.slug}-{key}"
+        return self.path / "viewer"
+
+    def shown_path(self, path) -> str:
+        """`path` relative to the project when it is inside it, else in full (a team project's page)."""
+        path = Path(path)
+        try:
+            return path.relative_to(self.path).as_posix()
+        except ValueError:
+            return str(path)
 
     # --- locations ----------------------------------------------------------------------------
 
@@ -315,9 +342,12 @@ def protected_folder(path, home: Path | None = None) -> str | None:
 
 def synced_folder_warning(path, home: Path | None = None) -> str | None:
     """A warning naming the sync service when `path` is inside iCloud Drive, OneDrive, Dropbox or
-    Google Drive, or inside ~/Desktop or ~/Documents while iCloud syncs them; None otherwise."""
+    Google Drive, or inside ~/Desktop or ~/Documents while iCloud syncs them; None otherwise, and None
+    for a project shared by a team (its `team.json`), which belongs in a shared folder."""
     given = Path(path).expanduser()
     home = home or Path.home()
+    if (given / "team.json").is_file():
+        return None              # a team project is in a shared folder on purpose; team.py deals with syncing
     if icloud_desktop_and_documents(home):
         for kept in (home / "Desktop", home / "Documents"):
             if given == kept or kept in given.parents:

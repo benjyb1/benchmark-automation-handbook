@@ -368,6 +368,8 @@
     const wants = (action, extra) => waiting.some((d) => d.action === action && (!extra || extra(d)));
 
     const state = ctl.paused ? "paused" : ctl.stop_now ? "stopped" : run ? "running" : "idle";
+    // A colleague's run, in a team project on the local page (a published page knows no one).
+    const theirs = Boolean(run && run.by && HB.team && typeof HB.team.knows === "function" && HB.team.knows() && !HB.team.isMe(run.by));
     bar.setAttribute("data-state", state);
     const chip = state === "paused" ? HB.statusChip("warning", "Paused")
       : state === "stopped" ? HB.statusChip("warning", "Stopped")
@@ -376,7 +378,8 @@
 
     const facts = [];
     if (run) {
-      facts.push(h("span", null, h("b", null, KIND_WORDS[run.kind] || "Run"), ", started " + startedWords(run)));
+      facts.push(h("span", null, h("b", null, KIND_WORDS[run.kind] || "Run"), ", started " + startedWords(run)
+        + (theirs ? " by " + (HB.team.nameOf(run.by) || "a colleague") : "")));
       facts.push(h("span", null, h("b", null, fmtInt(prog.done)), " of " + HB.data.unitWords(prog.rows) + " done"));
       if (prog.row) facts.push(h("span", null, "In progress: ", h("b", null, name(prog.row)), " (" + prog.phase + ")"));
     } else {
@@ -392,7 +395,12 @@
     const stopped = rowCards(b);
 
     let actions = null;
-    if (ready) {
+    if (ready && theirs) {
+      // A team project: a run belongs to the person who started it, and only they pause or stop it.
+      actions = h("div", { class: "rb__actions" }, h("p", { class: "rb__facts" },
+        (HB.team.nameOf(run.by) || "A colleague") + " is running this on their computer and Claude plan. "
+        + "Only they can pause or stop it; its results show here as they come in."));
+    } else if (ready) {
       const halted = ctl.paused || ctl.stop_now;
       const list = [];
       if (run || halted) {

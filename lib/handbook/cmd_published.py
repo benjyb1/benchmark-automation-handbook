@@ -12,7 +12,7 @@ def main(argv) -> int:
     parser = command_parser("published", "Record that the viewer built last was published.")
     args = parser.parse_args(argv)
     project = open_project(args.project)
-    viewer = project.path / "viewer"
+    viewer = project.viewer
     info = read_json(viewer / "publish.json")
     if not isinstance(info, dict) or not isinstance(info.get("hashes"), dict):
         raise HandbookError("There is no viewer/publish.json yet. Run hb build, publish, then hb published.")

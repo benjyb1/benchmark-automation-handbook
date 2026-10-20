@@ -27,6 +27,12 @@ What happens when the owner saves something (the Worker):
 - a correction waiting on a link or a file (one on a saved page is checked by the page itself):
   the blind re-read as the run skill says, `kit --look`, `score`, `apply-corrections --record`.
 Heavy work runs as one job at a time; the page polls its progress.
+- a project shared by a team (`team.json`; team.py, teamwork.py): this server applies only this person's
+  saves and starts only their re-runs and re-reads; a save made before a colleague's newer change synced
+  in is held as a clash; a request to pause someone else's run is refused. Every few seconds it merges
+  the sync service's clash copies, notes colleagues' actions and rebuilds when their changes arrive.
+  The page is built into this person's own home folder (`Project.viewer`). `/api/team/...`: the Team
+  panel (clashes, the log, snapshots, share, send a copy) and the check mark on an answer.
 - the Feedback tab (`/api/feedback/...`, see `Handler._feedback`): make packs, mark them sent, read
   dropped reply files, decide a point, undo it, set a stage, move or remove a file, start a unit
   over. Each call runs the matching `feedback.py`, `packs.py` or `replies.py` function and then
@@ -56,7 +62,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from . import chatwork, costs, edition, readers
 from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
-from .localstore import Config, Store, home, user_id
+from .localstore import Config, Store, home
 from .page import VIEWER_SRC, json_for_script
 from .sampler import Sampler, SampleError
 
@@ -64,7 +70,8 @@ HB = Path(__file__).resolve().parents[1] / "hb.py"
 LOCAL_JS = VIEWER_SRC / "js" / "local.js"
 PAGE_CLAUDE = Path(__file__).resolve().parents[2] / "guide" / "page-claude.md"
 DATA_TAG = '<script type="application/json" id="hb-data">'
-WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons", "setup", "scoring")
+WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report", "charts", "reasons", "setup", "scoring",
+           "bulk")
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
@@ -76,6 +83,9 @@ UPLOAD_TYPES = {}
 for _ext, _mime in readers.UPLOAD_MIME.items():
     UPLOAD_TYPES.setdefault(_mime.lower(), _ext)
 UPLOAD_TYPES.update(readers.MIME_ALIASES)
+# A zip is not a kind the tool reads, but the bulk upload (bulk.py) opens one: documents sent together.
+ZIP_TYPES = {"application/zip": ".zip", "application/x-zip-compressed": ".zip", "application/x-zip": ".zip"}
+UPLOAD_TYPES.update(ZIP_TYPES)
 UPLOAD_GENERIC = ("", "application/octet-stream", "binary/octet-stream")   # a browser that did not know the type
 
 
@@ -197,11 +207,17 @@ class Worker:
         self.last_sample: dict | None = None
         self.api_key_source: str | None = None
         self.usage_log = project.path / "page-data" / "_log" / "usage.jsonl"
+        self.team = None                    # the TeamSide (teamwork.py), set by LocalServer
 
     # -- notes for the page ----------------------------------------------------------------------
 
     def note(self, text: str, tone: str = "neutral", detail: str | None = None) -> None:
         self.activity.appendleft({"at": now_iso(), "text": text, "tone": tone, "detail": detail})
+
+    def _usage_path(self) -> Path:
+        if self.team is not None and self.team.on:        # one file per person: two computers never append to one
+            return self.project.path / "page-data" / "_log" / f"usage-{self.team.me['id']}.jsonl"
+        return self.usage_log
 
     def log_usage(self, entry: dict) -> None:
         if entry.get("kind") == "sample":
@@ -210,14 +226,15 @@ class Worker:
             if entry.get("api_key_source"):
                 self.api_key_source = entry["api_key_source"]
         try:
-            self.usage_log.parent.mkdir(parents=True, exist_ok=True)
-            with self.usage_log.open("a", encoding="utf-8") as f:
+            path = self._usage_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({"at": now_iso(), **entry}, ensure_ascii=False) + "\n")
         except OSError:
             pass
 
     def bundle(self) -> dict:
-        return read_json(self.project.path / "viewer" / "bundle.json", {}) or {}
+        return read_json(self.project.viewer / "bundle.json", {}) or {}
 
     def build(self) -> bool:
         with self.cmd.lock:
@@ -228,6 +245,8 @@ class Worker:
             return False
         self.problem = None
         self.version += 1
+        if self.team is not None:
+            self.team.built()
         return True
 
     # -- the loops -------------------------------------------------------------------------------
@@ -242,6 +261,8 @@ class Worker:
     def _apply_loop(self) -> None:
         while not self.stopping:
             try:
+                if self.team is not None:
+                    self.team.tick()
                 self.apply_saved()
             except Exception as e:  # noqa: BLE001 - one bad save must not stop the server
                 self.note("Something the page saved could not be applied.", "critical",
@@ -321,6 +342,12 @@ class Worker:
     def apply_saved(self) -> bool:
         """Apply whatever the page saved since the last look. Returns True when it rebuilt the page."""
         changed = [c for c in WATCHED if self.store.version(c) != self.versions.get(c)]
+        if self.team is not None and self.team.on and self.team.recheck:
+            self.team.recheck = False
+            for c in ("corrections", "decisions", "edits"):
+                self.seen[c] = {}
+                if c not in changed:
+                    changed.append(c)
         if not changed:
             self._queue_rereads(None)
             return False
@@ -329,33 +356,44 @@ class Worker:
             for c in changed:
                 self.versions[c] = self.store.version(c)
             docs = {c: self.store.list(c) for c in changed}
+            screen = self.team.screen if self.team is not None else (lambda _c, d: d)
             if "control" in docs and self._new("control", docs["control"]):
-                code, out = self._run_with({"requests": docs["control"]}, "control", "apply")
+                code, out = self._run_with({"requests": screen("control", docs["control"])}, "control", "apply")
                 self._said(code, out, "Your run request is applied.", "A run request could not be applied.")
                 rebuild = True
             ed = {k: docs.get(k) for k in ("edits", "decisions") if k in docs}
             if ed and any([self._new(k, v) for k, v in ed.items()]):
-                payload = {"edits": self.store.list("edits"), "decisions": self.store.list("decisions")}
+                payload = {"edits": screen("edits", self.store.list("edits")),
+                           "decisions": screen("decisions", self.store.list("decisions"))}
+                pending = {c: self.team.before(c, payload[c]) for c in payload} if self.team is not None else {}
                 code, out = self._run_with(payload, "apply-edits", "--via", "viewer")
                 self._said(code, out, self._edit_words(out), "Your change could not be applied.")
+                for c, p in pending.items():
+                    self.team.logged(c, p)
                 rebuild = True
             if "corrections" in docs and self._new("corrections", docs["corrections"]):
-                code, out = self._run_with({"corrections": [self._with_local(d) for d in docs["corrections"]]},
+                mine = screen("corrections", docs["corrections"])
+                pending = self.team.before("corrections", mine) if self.team is not None else {}
+                code, out = self._run_with({"corrections": [self._with_local(d) for d in mine]},
                                            "apply-corrections", "--json")
                 self._corrections_said(code, out)
+                if self.team is not None:
+                    self.team.logged("corrections", pending)
                 rebuild = True
             if "supplied" in docs and self._new("supplied", docs["supplied"]):
-                rebuild = self._take_supplied(docs["supplied"]) or rebuild
+                rebuild = self._take_supplied(screen("supplied", docs["supplied"])) or rebuild
             if "report" in docs and docs["report"] and self._new("report", docs["report"]):
-                rebuild = self._adopt_report(docs["report"]) or rebuild
+                rebuild = self._adopt_report(screen("report", docs["report"])) or rebuild
             if "charts" in docs and self._new("charts", docs["charts"]):
-                rebuild = self._take_charts(docs["charts"]) or rebuild
+                rebuild = self._take_charts(screen("charts", docs["charts"])) or rebuild
             if "reasons" in docs and self._new("reasons", docs["reasons"]):
-                rebuild = self._take_reasons(docs["reasons"]) or rebuild
+                rebuild = self._take_reasons(screen("reasons", docs["reasons"])) or rebuild
             if "setup" in docs and self._new("setup", docs["setup"]):
-                self._take_setup(docs["setup"])
+                self._take_setup(screen("setup", docs["setup"]))
             if "scoring" in docs and self._new("scoring", docs["scoring"]):
-                self._take_scoring(docs["scoring"])
+                self._take_scoring(screen("scoring", docs["scoring"]))
+            if "bulk" in docs and self._new("bulk", docs["bulk"]):
+                rebuild = self._take_bulk(screen("bulk", docs["bulk"])) or rebuild
             if rebuild:
                 self.build()
         self._queue_reruns()
@@ -443,10 +481,57 @@ class Worker:
                 self.store.delete("supplied", d["id"])
                 self._rescore_after(rows, d.get("what"))
                 self.note(f"Filed what you sent for {', '.join(rows)}.", "good", last_line(out))
+                if self.team is not None:
+                    self.team.note_action("document_added", f"{self.team.me.get('name') or 'Someone'} added a document "
+                                          f"for {', '.join(rows)}", rows=rows)
                 filed = True
             else:
                 self.note("What you sent could not be filed.", "warning", out[-600:])
         return filed
+
+    def _take_bulk(self, docs: list[dict]) -> bool:
+        """What the owner confirmed in "Add documents or instructions" (views/bulk.js): {plan, documents,
+        instructions} goes to `hb bulk apply`, which files the documents, adds the instructions and keeps
+        what it did on the plan (the page reads it there to offer the re-score); then `hb prepare`."""
+        changed = False
+        for d in docs:
+            plan = d.get("plan")
+            payload = {"documents": d.get("documents") or [], "instructions": d.get("instructions") or []}
+            code, out = self._run_with(payload, "bulk", "apply", "--plan", str(plan), "--json")
+            self.store.delete("bulk", d["id"])
+            if code != 0:
+                self._bulk_failed(plan, out)
+                self.note("What you added could not be filed.", "critical", out[-800:] or None)
+                continue
+            try:
+                result = json.loads(last_line(out))
+            except ValueError:
+                result = {}
+            if result.get("filed"):
+                self.cmd.run("prepare", timeout=1800)
+            changed = True
+            stale = sum(len(v) for v in (result.get("out_of_date") or {}).values())
+            filed, failed = len(result.get("filed") or []), len(result.get("failed") or [])
+            added = sum(1 for i in result.get("instructions") or [] if i.get("added"))
+            said = []
+            if filed:
+                said.append(f"Filed {filed} document{'s' if filed != 1 else ''}")
+            if added:
+                said.append(f"added {added} instruction{'s' if added != 1 else ''}")
+            if stale:
+                said.append(f"{stale} answer{'s are' if stale != 1 else ' is'} now out of date")
+            self.note((", ".join(said) or "Nothing was filed") + "." + (f" {failed} could not be filed." if failed else ""),
+                      "good" if not failed else "warning")
+        return changed
+
+    def _bulk_failed(self, plan, out: str) -> None:
+        from . import bulk
+        try:
+            p = bulk.load_plan(self.project, plan)
+        except HandbookError:
+            return
+        p["status"], p["error"] = "failed", (out or "").strip()[-600:]
+        bulk.save_plan(self.project, p)
 
     def _rescore_after(self, rows: list[str], what) -> None:
         """A document the owner sent in answer to a scorer's "missing" note: the note is taken off the
@@ -793,7 +878,8 @@ class Worker:
     def _queue_reruns(self) -> None:
         control = read_json(self.project.file("control"), {}) or {}
         for r in control.get("reruns") or []:
-            if isinstance(r, dict) and isinstance(r.get("id"), str):
+            if isinstance(r, dict) and isinstance(r.get("id"), str) \
+                    and (self.team is None or self.team.owns(r.get("by"), r.get("on"))):
                 self.enqueue("rerun:" + r["id"], "rerun", rerun_title(r),
                              lambda job, req=dict(r): self.rerun(job, req),
                              estimate=lambda req=dict(r): costs.estimate_rows(self.project, list(req.get("rows") or []),
@@ -807,6 +893,8 @@ class Worker:
         for r in rounds:
             if r.get("status") != "to_check" or not r.get("id"):
                 continue
+            if self.team is not None and not self.team.owns(r.get("by"), r.get("on")):
+                continue                      # a colleague's correction: their own tool reads it again
             ev = r.get("evidence") or {}
             if not (ev.get("link") or ev.get("asset") or ev.get("local")):
                 continue
@@ -1095,12 +1183,15 @@ class Worker:
 
     # -- for the page ----------------------------------------------------------------------------
 
+    @staticmethod
+    def public_job(job):
+        if not job:
+            return None
+        return {k: job.get(k) for k in ("key", "kind", "title", "status", "done", "total", "line", "tokens",
+                                        "started", "finished", "rule", "steps", "estimate")}
+
     def state(self) -> dict:
-        def public(job):
-            if not job:
-                return None
-            return {k: job.get(k) for k in ("key", "kind", "title", "status", "done", "total", "line", "tokens",
-                                            "started", "finished", "rule", "steps", "estimate")}
+        public = self.public_job
         return {"version": self.version, "job": public(self.job), "queued": [public(j) for j in self.queue],
                 "last_job": public(self.last_job), "activity": list(self.activity), "problem": self.problem,
                 "last_sample": self.last_sample,
@@ -1142,7 +1233,7 @@ COPY_SCRIPT = r"""
 def copy_html(project: Project) -> str:
     """One self-contained, read-only HTML file of the page: the bundle, every evidence file and the
     download tables inlined. It has no `window.claude`, so nothing in it can be edited or ask Claude."""
-    viewer = project.path / "viewer"
+    viewer = project.viewer
     page = (viewer / "page.html").read_text(encoding="utf-8")
     files = {}
     for p in sorted((viewer / "evidence").glob("*.json")):
@@ -1173,6 +1264,8 @@ class LocalServer(ThreadingHTTPServer):
         self.config = config or Config()
         self.store = Store(project.path)
         self.worker = Worker(project, self.store)
+        from .teamwork import TeamSide
+        self.worker.team = self.team = TeamSide(self.worker, self.config)
         self.feedback_lock = self.worker.feedback_lock     # one feedback write at a time (a Claude check can take a minute)
         slug = re.sub(r"[^a-z0-9-]+", "-", project.path.name.lower()).strip("-") or "project"
         self.sampler = Sampler(home() / "chat" / slug, self.bridge_url, page_claude_text,
@@ -1327,7 +1420,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(500, f"{type(e).__name__}: {e}", "unavailable")
 
     def _static(self, path: str) -> None:
-        viewer = self.server.project.path / "viewer"
+        viewer = self.server.project.viewer
         if path in ("/", "/index.html"):
             return self._page()
         if path == "/local.js":
@@ -1340,7 +1433,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.fail(404, "Not found.", "not_found")
 
     def _page(self) -> None:
-        index = self.server.project.path / "viewer" / "index.html"
+        index = self.server.project.viewer / "index.html"
         if not index.is_file():
             self.server.worker.build()
         text = index.read_text(encoding="utf-8")
@@ -1358,10 +1451,24 @@ class Handler(BaseHTTPRequestHandler):
         srv = self.server
         parts = path.split("/")
         if path == "state" and method == "GET":
-            name = srv.config.user_name()
             p = srv.project.read("project")
-            return self.json({**srv.worker.state(), "edition": edition.edition(), "user": {"name": name, "id": user_id(name)},
-                              "project": {"name": p.get("name"), "path": str(srv.project.path)}})
+            team_state = srv.team.state()
+            return self.json({**srv.worker.state(), "edition": edition.edition(), "user": team_state["me"],
+                              "team": team_state, "project": {"name": p.get("name"), "path": str(srv.project.path)}})
+        if parts[0] == "team":
+            if parts[1:] == ["copy"] and method == "GET":
+                from . import team as team_files
+                from .teamwork import copy_name
+                with tempfile.TemporaryDirectory(prefix="hb-copy-") as tmp:
+                    made = team_files.copy_zip(srv.project, Path(tmp) / "copy.zip")
+                    data = made.read_bytes()
+                return self._send(200, data, "application/zip",
+                                  {"Content-Disposition": f'attachment; filename="{copy_name(srv.project)}"'})
+            try:
+                code, data = srv.team.api(method, parts[1:], (self.body_json() or {}) if method == "POST" else {})
+            except HandbookError as e:
+                return self.fail(400, str(e))
+            return self.json(data, code)
         if parts[0] == "material" and method == "GET":
             from . import material
             try:
@@ -1373,6 +1480,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.fail(400, str(e), "unreadable")
         if parts[0] == "setup":
             return self._setup(method, parts[1:])
+        if parts[0] == "bulk":
+            return self._bulk(method, parts[1:])
         if parts[0] == "feedback":
             if not edition.has_feedback():                       # the free edition has no feedback round
                 return self.fail(404, edition.in_full("The feedback round"), "not_found")
@@ -1380,8 +1489,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "page-claude" and method == "GET":
             return self.json({"text": page_claude_text()})
         if path == "user" and method == "POST":
-            name = srv.config.set_user_name((self.body_json() or {}).get("name"))
-            return self.json({"name": name, "id": user_id(name)})
+            me = srv.team.rename((self.body_json() or {}).get("name"))
+            return self.json({"name": me.get("name"), "id": me["id"]})
         if parts[0] == "db":
             return self._db(method, parts[1:], query)
         if parts[0] == "assets":
@@ -1682,6 +1791,43 @@ class Handler(BaseHTTPRequestHandler):
             return do(start)
         return self.fail(404, "No such call.", "not_found")
 
+    def _bulk(self, method: str, parts: list[str]) -> None:
+        """POST bulk/read {files: [{asset, name}]}: make the plan for what the owner dropped (bulk.read; one
+        small Claude call); the uploads are taken into the plan's folder. GET bulk/<plan id>: the plan, with
+        what Confirm did once it is done."""
+        from . import bulk
+        srv = self.server
+        if parts == ["read"] and method == "POST":
+            body = self.body_json() or {}
+            files = body.get("files") if isinstance(body.get("files"), list) else []
+            if not files:
+                return self.fail(400, "Drop a list, some documents or a zip first.", "bad_request")
+            taken, assets = [], []
+            for item in files:
+                asset = item.get("asset") if isinstance(item, dict) else None
+                src = srv.worker.asset_path(asset)
+                if not src:
+                    return self.fail(400, "One of the files you dropped could not be found among the uploads. "
+                                          "Drop it again.", "not_found")
+                assets.append(src)
+                taken.append((src, str(item.get("name") or src.name.split("--", 1)[-1])))
+            try:
+                plan = bulk.read(srv.project, taken)
+            except HandbookError as e:
+                return self.fail(400, str(e), "unreadable")
+            finally:
+                for src in assets:
+                    src.unlink(missing_ok=True)
+            if plan.get("tokens"):
+                srv.worker.log_usage({"kind": "bulk", "processed": plan["tokens"], "plan": plan["id"]})
+            return self.json(plan)
+        if len(parts) == 1 and method == "GET":
+            try:
+                return self.json(bulk.load_plan(srv.project, parts[0]))
+            except HandbookError as e:
+                return self.fail(404, str(e), "not_found")
+        return self.fail(404, "Not found.", "not_found")
+
     def _read_replies(self, files: list, unit, replace: bool) -> dict:
         """Read the files the page uploaded (as assets): each is copied under the name the owner dropped it
         with (the file name is how a reply finds its unit), read, and the upload removed."""
@@ -1718,10 +1864,13 @@ class Handler(BaseHTTPRequestHandler):
             col, doc_id = parts
             if method == "GET":
                 return self.json({"doc": store.get(col, doc_id)})
+            body = self.body_json()
+            if col in WATCHED and isinstance(body, dict):
+                body = {**body, "on": self.server.team.machine}     # which computer saved it (teamwork.py)
             if method == "PUT":
-                doc = store.set(col, doc_id, self.body_json())
+                doc = store.set(col, doc_id, body)
             elif method == "PATCH":
-                doc = store.update(col, doc_id, self.body_json())
+                doc = store.update(col, doc_id, body)
             elif method == "DELETE":
                 store.delete(col, doc_id)
                 doc = None
@@ -1740,10 +1889,11 @@ class Handler(BaseHTTPRequestHandler):
                 ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 raw = unquote(self.headers.get("X-Filename") or "upload")
                 ext = UPLOAD_TYPES.get(ctype)
-                if not ext and ctype in UPLOAD_GENERIC and Path(raw).suffix.lower() in readers.UPLOAD_MIME:
-                    ext = Path(raw).suffix.lower()          # a HEIC or Markdown file a browser sent with no type
+                if not ext and ctype in UPLOAD_GENERIC and (Path(raw).suffix.lower() in readers.UPLOAD_MIME
+                                                            or Path(raw).suffix.lower() == ".zip"):
+                    ext = Path(raw).suffix.lower()          # a HEIC, Markdown or zip file a browser sent with no type
                 if not ext:
-                    return self.fail(400, "Send a PDF, Word, Excel, text, picture or email file.", "unsupported_type")
+                    return self.fail(400, "Send a PDF, Word, Excel, text, picture, email or zip file.", "unsupported_type")
                 try:
                     data = self.body(MAX_UPLOAD)
                 except HandbookError:

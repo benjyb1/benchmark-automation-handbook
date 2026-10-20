@@ -15,6 +15,7 @@ from .checks import _Documents
 from .fetch import weak_why
 from . import control, corrections, costs, edition, rowwatch
 from .folder import Project, applies, effective_question, read_json
+from .team import cell_rev, rule_rev
 from .custom_charts import read_charts
 from .deck import checked_decks
 from .report_draft import drafting
@@ -23,7 +24,7 @@ from .scoresheet import row_totals
 CONTRACT = "handbook-bundle/1"
 EVIDENCE_KEYS = ("doc", "page", "section", "quote", "quote_en", "language")
 SECOND_READ_KEYS = ("value", "agrees", "run")
-OWNER_KEYS = ("value", "agreed", "why", "claude", "kept", "correction")
+OWNER_KEYS = ("value", "agreed", "why", "claude", "kept", "correction", "by", "at")
 
 STATE_WORDS = {"answered": "Answered", "no_evidence": "No evidence",
                "not_applicable": "Not applicable", "not_run": "Not run"}
@@ -82,7 +83,13 @@ def _cell(answer: dict | None, check: dict | None, documents: dict, sources=None
         if isinstance(answer.get("feedback"), dict):   # what the feedback round decided about it
             cell["feedback"] = {k: answer["feedback"].get(k) for k in ("text", "kept", "reason")}
         if answer.get("checked"):
-            cell["checked"] = True
+            # Who checked it is a hidden person id, never a name: the local page puts the name to it, and
+            # a published page shows only that a person checked it (team.py).
+            chk = answer["checked"] if isinstance(answer["checked"], dict) else {}
+            cell["checked"] = {k: chk.get(k) for k in ("by", "at", "how")} if chk.get("by") else True
+        if isinstance(answer.get("rescored"), dict):   # a run read something else for an answer a person checked
+            cell["rescored"] = {k: answer["rescored"].get(k) for k in ("value", "run")}
+        cell["rev"] = cell_rev(answer)                 # what the page saw, sent back with a save
         if sources is not None and "quote_not_found" in ((check or {}).get("flags") or []):
             for item in cell["evidence"]:
                 doc = item.get("doc")
@@ -153,13 +160,17 @@ def make_bundle(project: Project, now: datetime) -> dict:
         "scoresheet": project.read("scoresheet") or None,
         "units": project.read("units").get("units") or [],
         "rules": project.read("rules").get("rules") or [],
+        # What the page saw of each rule, sent back with a decision (a colleague may have decided it since).
+        "rule_revs": {r.get("id"): rule_rev(r) for r in project.read("rules").get("rules") or []
+                      if isinstance(r, dict) and r.get("id")},
         "where_to_look": project.read("where_to_look"),
         "cells": cells,
         "totals": totals,
         "documents": {d: {**{k: v for k, v in meta.items() if k not in ("file", "sha1")},
                           "weak": _weak(meta)} for d, meta in documents.items()},
         "found": found,
-        "runs": project.runs(),
+        "runs": [{k: v for k, v in r.items() if k != "by_name"} if isinstance(r, dict) else r
+                 for r in project.runs()],                    # who started it: a hidden id only (team.py)
         "estimate": project.read("estimate") or None,
         # Tokens: what was used and the model for a rough range before work runs (costs.py, views' HB.cost).
         "cost": costs.summary(project),
@@ -243,6 +254,16 @@ def _join(values) -> str:
     return ", ".join(str(v) for v in values or [])
 
 
+def _checked_by(checked) -> list:
+    """The "Checked by" and "Checked on" cells. Who is a hidden person id ("person:p-..."), which the
+    local page's download turns into the person's name; anywhere else it reads "A person"."""
+    if not checked:
+        return [None, None]
+    if isinstance(checked, dict) and checked.get("by"):
+        return [f"person:{checked['by']}", (checked.get("at") or "")[:10] or None]
+    return ["A person", (checked.get("at") or "")[:10] or None] if isinstance(checked, dict) else ["A person", None]
+
+
 def _sheet(sheet_id: str, name: str, columns: list[str], rows: list[list]) -> dict:
     return {"id": sheet_id, "name": name, "columns": columns, "rows": rows}
 
@@ -271,7 +292,8 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
                             c.get("value"), c.get("points"), _join(c.get("rules")),
                             _yes_no(c.get("judgement")),
                             _join(FLAG_WORDS.get(f, f) for f in c.get("flags") or []),
-                            (c.get("second_read") or {}).get("value"), _yes_no(c.get("out_of_date"))])
+                            (c.get("second_read") or {}).get("value"), _yes_no(c.get("out_of_date")),
+                            *_checked_by(c.get("checked"))])
             note = (notes.get(qid) or {}).get("note") or None
             if c["state"] == "not_run" and not note:
                 continue
@@ -306,7 +328,7 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
     sheets = [
         _sheet("answers", "Answers", [f"{word} id", word, *labels, "Question", "Short name", "Section",
                                       "State", "Value", "Points", "Rules", "Judgement", "Flags",
-                                      "Second read", "Out of date"], answers),
+                                      "Second read", "Out of date", "Checked by", "Checked on"], answers),
         _sheet("evidence", "Evidence", [f"{word} id", word, "Question", "State", "Value", "Points",
                                         "Document", "Title", "Page", "Section or article", "Quote", "Quote in English",
                                         "Language", "URL", "Scorer's note"], evidence),

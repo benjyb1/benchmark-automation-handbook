@@ -860,6 +860,9 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
   }
 
   async function save(body) {
+    // What the page showed, so a colleague's newer change is not overwritten unseen (team.py).
+    const shown = HB.data && typeof HB.data.cell === "function" ? HB.data.cell(body.row, body.qid) : null;
+    if (shown && shown.rev && !body.keep) body = { ...body, seen: shown.rev };
     const doc = await HB.edits.save("corrections", body);
     fixes.docs.set(doc.id, doc);
     fixesChanged();
@@ -932,6 +935,11 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     return " because " + (OPENERS.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s);
   }
 
+  // "Your", or a colleague's name in a shared project ("Toby's"): who sent this round.
+  function whose(r) {
+    return HB.team && typeof HB.team.whose === "function" ? HB.team.whose(r && r.by) : "Your";
+  }
+
   // What the owner sent in one round, as short lines.
   function sentLines(ctx, q, r) {
     const docs = ctx.bundle.documents || {};
@@ -939,16 +947,16 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const lines = [];
     if (r.value != null) {
       const lv = levelFor(q, r.value);
-      lines.push("Your answer: " + valueWord(q, r.value) + (lv && isNum(lv.points) ? " (" + pointsWords(lv.points, top) + ")" : "") + ".");
+      lines.push(whose(r) + " answer: " + valueWord(q, r.value) + (lv && isNum(lv.points) ? " (" + pointsWords(lv.points, top) + ")" : "") + ".");
     }
     const ev = r.evidence || {};
     if (ev.quote) {
       const doc = (r.found && r.found.doc) || ev.doc;
       const page = (r.found && r.found.page) || ev.page;
       const where = doc && docs[doc] ? (docs[doc].title || doc) : ev.file || hostName(ev.link) || ev.link || null;
-      lines.push("Your evidence: ‘" + ev.quote + "’" + (where ? " (" + where + (isNum(page) ? ", page " + page : "") + ")" : "") + ".");
+      lines.push(whose(r) + " evidence: ‘" + ev.quote + "’" + (where ? " (" + where + (isNum(page) ? ", page " + page : "") + ")" : "") + ".");
     }
-    if (r.reason) lines.push("Your reason: " + sentence(r.reason));
+    if (r.reason) lines.push(whose(r) + " reason: " + sentence(r.reason));
     return lines;
   }
 
@@ -983,7 +991,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
         return;
       }
       sec.hidden = false;
-      const parts = [heading("Your correction")];
+      const parts = [heading(whose(last) + " correction")];
       const lastDisagreed = live.slice().reverse().find((r) => r.state === "disagreed");
       const acts = [];
       if (last.state === "waiting" && last.keep) {
@@ -1556,6 +1564,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const kicker = unit ? String(unit.name || unit.id) : String(row);
 
     const content = [navBar(ctx, row, qid), answerPart(ctx, qv, cell, unitWord)];
+    // Checked by a person, who corrected it, what a later run read (views/team.js).
+    if (cell && HB.team && typeof HB.team.cellPart === "function") content.push(HB.team.cellPart(ctx, row, qid, qv, cell));
     const quotes = cell ? evidenceParts(ctx, row, cell) : null;
     // Why the grid marked it comes straight under the answer: that is what the owner clicked to find out.
     if (cell) content.push(flagsPart(ctx, unit, qv, cell, quotes));

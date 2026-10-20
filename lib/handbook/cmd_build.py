@@ -25,7 +25,7 @@ def main(argv) -> int:
         print(json.dumps(info, ensure_ascii=False))
         return 0
 
-    bundle = json.loads((project.path / "viewer" / "bundle.json").read_text(encoding="utf-8"))
+    bundle = json.loads((project.viewer / "bundle.json").read_text(encoding="utf-8"))
     words = bundle["project"].get("unit_word_plural") or "rows"
     states = [c["state"] for cells in bundle["cells"].values() for c in cells.values()]
     scored = sum(s in ("answered", "no_evidence") for s in states)

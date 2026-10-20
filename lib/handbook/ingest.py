@@ -292,7 +292,10 @@ def merge_owner(question: dict, current: dict, claude: dict, why: str | None = N
                                               or "Claude's re-read gave a different answer."),
                   "kept": bool(owner.get("kept")) and not agreed})
     evidence = current.get("evidence") or (claude.get("evidence") if agreed else []) or []
-    return owner_cell(question, claude, owner["value"], evidence, owner)
+    cell = owner_cell(question, claude, owner["value"], evidence, owner)
+    if isinstance(current.get("checked"), dict):
+        cell["checked"] = current["checked"]          # a person checked it; a run never takes that away
+    return cell
 
 
 def ingest_answers(project: Project, row: str, run: str, data, captures=None) -> list[str]:
@@ -318,6 +321,15 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
         elif isinstance(old, dict) and isinstance(old.get("feedback"), dict) and old["feedback"].get("kept") is False:
             # An answer changed after a party's reply stays; what the scorer read is kept beside it.
             new[qid] = {**old, "feedback": {**old["feedback"], "rescored": {"value": cell.get("value"), "run": run}}}
+        elif isinstance(old, dict) and isinstance(old.get("checked"), dict) and old.get("state") not in (None, "not_run") \
+                and not old.get("out_of_date"):
+            # A person checked this answer: a run never overwrites it. What the scorer read now is kept
+            # beside it ("Claude now says 3"), for someone to look at.
+            if answer_kinds.same_answer(questions[qid], cell.get("value"), old.get("value")):
+                new[qid] = {k: v for k, v in old.items() if k != "rescored"}
+            else:
+                new[qid] = {**old, "rescored": {"value": cell.get("value"), "points": cell.get("points"),
+                                                "run": run, "note": cell.get("note") or None}}
     problems = check_answers({"row": row, "cells": new}, project.read("questions"))
     if problems:
         raise _problem_list(f"Nothing was stored for {row}: the stored cells would have", problems)

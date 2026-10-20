@@ -186,7 +186,7 @@ def build(project: Project, now: datetime, out=None) -> dict:
     Nothing is written when the bundle breaks its contract (HandbookError lists the problems).
     `out`, when given, is a folder outside the project that also receives a copy of `viewer/`
     (the info then has "out": its absolute path)."""
-    viewer = project.path / "viewer"
+    viewer = project.viewer
     if out is not None:
         out = Path(out).expanduser().resolve()
         if out == project.path.resolve() or project.path.resolve() in out.parents:
@@ -209,7 +209,8 @@ def build(project: Project, now: datetime, out=None) -> dict:
     names = sorted(data_files)
     hashes = {n: sha1(data_files[n]) for n in names}
     published = project.read("published").get("hashes") or {}
-    info = {"page": "viewer/page.html", "files": {n: f"viewer/{n}" for n in names},
+    info = {"page": project.shown_path(viewer / "page.html"),
+            "files": {n: project.shown_path(viewer / n) for n in names},
             "changed": [n for n in names if published.get(n) != hashes[n]],
             "removed": sorted(set(published) - set(hashes)),
             "hashes": hashes, "first_publish": not published}

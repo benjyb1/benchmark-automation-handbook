@@ -9,7 +9,8 @@ document's own fields, so everything the owner saved can be read, copied or expo
 A collection's `version` changes whenever a document in it is written or removed; the page polls it
 (`onSnapshot`) and the server watches it to apply what the owner saved.
 
-Version 1 is for one person on one computer: no locking between machines.
+In a project shared by a team, each person's tool reads everyone's documents (the sync service brings
+them in) but applies only its own person's (`by`); team.py and teamwork.py say how clashes are caught.
 """
 from __future__ import annotations
 import hashlib
@@ -20,7 +21,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .folder import HandbookError, read_json, write_json
+from .folder import HandbookError, handbook_home, read_json, write_json
 
 STORE_DIR = "page-data"
 COLLECTION_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}\Z")
@@ -137,7 +138,7 @@ class Store:
 
 def home() -> Path:
     """Where `hb serve` keeps its config: $HANDBOOK_HOME, else ~/.handbook."""
-    return Path(os.environ.get("HANDBOOK_HOME") or Path.home() / ".handbook").expanduser()
+    return handbook_home()
 
 
 class Config:

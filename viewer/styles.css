@@ -1957,6 +1957,19 @@ textarea.input {
   padding-block: 0 var(--s7);
 }
 
+/* The Grid tab uses the whole window, not the centred column: a benchmark with
+   many questions needs the width (the strips box scrolls sideways past that). */
+.hb:has(.hb-view[data-view="grid"]) {
+  max-width: none;
+}
+
+@media print {
+  .hbc-fab,
+  .hbc-panel {
+    display: none !important;   /* the corner chat's button and panel */
+  }
+}
+
 /* The top bar: the name and facts, the tabs and the theme switch on one row on
    wide screens (the tabs drop to a row of their own under 60rem); on a phone,
    the name over one small line of facts beside the theme switch, then the tabs.

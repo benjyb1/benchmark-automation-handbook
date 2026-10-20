@@ -441,7 +441,7 @@
 
   const sample = (input, options) => ask(input, options, false);
   sample.json = (input, options) => ask(input, options, true);
-  sample.limits = async () => ({ maxPromptBytes: 262144, tools: { maxCount: 40 } });
+  sample.limits = async () => ({ maxPromptBytes: 262144, tools: { maxCount: 48 } });
 
   /* ---- window.claude ----------------------------------------------------------- */
 
@@ -549,7 +549,9 @@
     recent.addEventListener("click", openRecent);
     const dl = h("a", { class: "btn btn--small", id: "hbl-copy", href: "/api/copy", title: "One file of this page, read-only, to email or upload" }, "Download a copy");
     dl.addEventListener("click", downloadCopy);
-    box.replaceChildren(h("div", { class: "hbl-top" }, bits, recent, dl));
+    // Clashes, a colleague's job, the Team (or Share) button: views/team.js.
+    const team = HB.team && typeof HB.team.top === "function" ? HB.team.top(h, state) : [];
+    box.replaceChildren(h("div", { class: "hbl-top" }, bits, team, recent, dl));
   }
 
   async function downloadCopy(ev) {

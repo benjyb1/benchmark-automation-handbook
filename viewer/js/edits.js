@@ -213,12 +213,19 @@
     if (!api.ready) throw new Error(NOT_READY());
     const own_words = typeof text === "string" ? text.trim() : "";
     if (!option && !own_words) throw new Error("Choose an option or write the rule in your own words.");
-    return write("decisions", { rule: String(rule), option: option || null, text: own_words || null });
+    return write("decisions", { rule: String(rule), option: option || null, text: own_words || null, ...seenRule(rule) });
+  }
+
+  // What the page showed of the rule, so a colleague's newer decision is not overwritten unseen (team.py).
+  function seenRule(rule) {
+    const b = HB.data && HB.data.bundle();
+    const rev = b && b.rule_revs ? b.rule_revs[String(rule)] : null;
+    return rev ? { seen: rev } : {};
   }
 
   async function skip(rule) {
     if (!api.ready) throw new Error(NOT_READY());
-    return write("decisions", { rule: String(rule), option: null, text: null, skip: true });
+    return write("decisions", { rule: String(rule), option: null, text: null, skip: true, ...seenRule(rule) });
   }
 
   /* Other collections (the run bar's `control` requests) use the same save, and can be
