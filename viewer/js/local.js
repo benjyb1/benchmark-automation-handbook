@@ -245,19 +245,40 @@
         '<p class="hb-hint">Your name is saved on this computer and shown beside the changes you make.</p></div>' +
         '<div class="hb-dialog__body"><div class="field"><label class="field__label" for="hbl-name">Your name</label>' +
         '<input class="input" id="hbl-name" type="text" autocomplete="name" required maxlength="80"></div>' +
+        '<label class="hbl-name__tick"><input type="checkbox" id="hbl-mail-tick"> Email me about big updates to the tool (a few times a year)</label>' +
+        '<div class="field" id="hbl-mail-box" hidden><label class="field__label" for="hbl-mail">Your email address</label>' +
+        '<input class="input" id="hbl-mail" type="email" autocomplete="email" maxlength="200">' +
+        '<p class="hb-hint">Only the address and which version you have (free or Full) go to the benchmark tool\'s website. You can stop them at the bottom of the page.</p></div>' +
         '<p class="hbl-name__msg" role="status"></p></div>' +
         '<div class="hb-dialog__foot"><button class="btn btn--primary" id="hbl-name-save" type="submit">Save</button></div></form>';
       d.setAttribute("aria-labelledby", "hbl-name-title");
       (document.querySelector(".hb") || document.body).append(d);
-      const input = d.querySelector("input");
+      const input = d.querySelector("#hbl-name");
       const msg = d.querySelector(".hbl-name__msg");
+      const tick = d.querySelector("#hbl-mail-tick");
+      const mailBox = d.querySelector("#hbl-mail-box");
+      const mail = d.querySelector("#hbl-mail");
+      tick.addEventListener("change", () => { mailBox.hidden = !tick.checked; if (tick.checked) mail.focus(); });
       d.addEventListener("cancel", (ev) => ev.preventDefault());
       d.querySelector("form").addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const name = input.value.trim();
         if (!name) { msg.textContent = "Write your name first."; return; }
+        const address = tick.checked ? mail.value.trim() : "";
+        if (tick.checked && !address) { msg.textContent = "Write your email address, or untick the box."; return; }
         try {
           me = await api("POST", "user", { name });
+          if (address) {
+            try {
+              await api("POST", "update/email", { email: address });
+            } catch (e) {
+              tick.checked = false;
+              mailBox.hidden = true;
+              msg.textContent = "Your name is saved, but the email part didn't work: " + (e.message || "the website did not answer") +
+                " You can try again from the bottom of the page. Click Save to carry on.";
+              return;
+            }
+          }
           d.close();
           d.remove();
           asking = null;
@@ -594,7 +615,171 @@
     { kicker: "On this computer" });
   }
 
+  /* ---- Versions: the update banner, the footer and the restart (updater.py) ----- */
+
+  const upBox = document.createElement("div");
+  upBox.className = "hbl-update";
+  upBox.id = "hbl-update";
+  upBox.setAttribute("role", "status");
+  const footEl = document.createElement("footer");
+  footEl.className = "hbl-foot";
+  footEl.id = "hbl-foot";
+  let restarting = false;
+  let footAsk = false;
+  let upMsg = null;
+  const RUNNING = ["starting", "downloading", "waiting", "swapping", "restarting"];
+
+  function later(key, days) {
+    try {
+      if (days) localStorage.setItem(key, String(Date.now() + days * 86400000));
+      return Number(localStorage.getItem(key) || 0) > Date.now();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function updateAction(action) {
+    upMsg = null;
+    try {
+      const s = await HB.local.post("update", { action });
+      if (state) state.update = s;
+    } catch (e) {
+      upMsg = e.message || "The update could not start.";
+    }
+    paintUpdate();
+    paintFoot();
+  }
+
+  function waitForRestart() {
+    if (restarting) return;
+    restarting = true;
+    const again = async () => {
+      try {
+        const alive = await fetch("/hb-alive", { cache: "no-store" });
+        if (alive.ok) {
+          const s = await api("GET", "state");
+          if (!s.update || s.update.phase !== "restarting") { window.location.reload(); return; }
+        }
+      } catch (e) { /* still restarting */ }
+      setTimeout(again, 1500);
+    };
+    setTimeout(again, 2500);
+  }
+
+  function paintUpdate() {
+    const h = HB.h;
+    const u = state && state.update;
+    if (!h || !u) { upBox.replaceChildren(); return; }
+    const parts = [];
+    const phase = u.phase;
+    if (phase && RUNNING.indexOf(phase) >= 0) {
+      if (phase === "restarting") waitForRestart();
+      const cancel = (phase === "downloading" || phase === "waiting" || phase === "starting")
+        ? h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => updateAction("cancel") }, "Stop the update") : null;
+      parts.push(h("div", { class: "hbl-update__box", "data-tone": "accent" },
+        h("p", null, h("b", null, u.how === "back" ? "Going back to the previous version. " : "Updating the benchmark tool. "),
+          u.words || ""), cancel));
+    } else if (phase === "failed" || upMsg) {
+      parts.push(HB.notice("warning", [upMsg || u.error || "The update stopped. Nothing changed."]));
+    } else if (u.available && !u.quiet && !later("hb-update-later:" + u.latest)) {
+      const notes = (u.notes || []).length ? h("ul", { class: "hbl-update__notes" }, u.notes.map((n) => h("li", null, n))) : null;
+      parts.push(h("div", { class: "hbl-update__box" },
+        h("p", null, h("b", null, "Version " + u.latest + " of the benchmark tool is out"), " (you have " + u.current + ")." +
+          (notes ? " What's new:" : "")),
+        notes,
+        h("p", { class: "hbl-update__small" }, "Updating waits until nothing is running, then restarts this page. Your projects are not changed, and you can go back to this version afterwards."),
+        h("div", { class: "hbl-update__acts" },
+          h("button", { type: "button", class: "btn btn--primary btn--small", onclick: () => updateAction("install") }, "Update"),
+          h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { later("hb-update-later:" + u.latest, 3); paintUpdate(); } }, "Not now"))));
+    }
+    if (u.key_note && !later("hb-key-later", 7)) {
+      parts.push(h("div", { class: "hbl-update__box", "data-tone": "warning" },
+        h("p", null, u.key_note),
+        h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { later("hb-key-later", 7); paintUpdate(); } }, "Remind me next week")));
+    }
+    upBox.replaceChildren(...parts);
+    const banner = document.getElementById("hb-banner");
+    if (!upBox.isConnected && banner && banner.parentNode) banner.parentNode.insertBefore(upBox, banner);
+  }
+
+  function paintFoot() {
+    const h = HB.h;
+    const u = state && state.update;
+    if (!h || !u) return;
+    const ed = u.edition === "full" ? "Full version" : "free version";
+    const bits = [h("span", null, "Benchmark tool " + (u.current && u.current !== "0" ? "version " + u.current : "(no version number)") + ", " + ed + ".")];
+    const busy = u.phase && RUNNING.indexOf(u.phase) >= 0;
+    if (!u.development && !busy) {
+      bits.push(" ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => updateAction("check") }, "Check for updates"));
+      if (u.previous) {
+        const blocked = (u.back_blocked || []).filter((b) => b.backup);
+        const stuck = (u.back_blocked || []).length > blocked.length;
+        if (footAsk && stuck) {
+          bits.push(" ", h("span", null, "Version " + u.previous + " cannot read " + u.back_blocked.map((b) => b.name).join(", ") +
+            ": this version upgraded its files, and there is no copy from before that to put back. "),
+            h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { footAsk = false; paintFoot(); } }, "OK"));
+        } else if (footAsk) {
+          const when = (b) => (b.at ? new Date(b.at).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "the upgrade");
+          const restore = blocked.length ? " Version " + u.previous + " cannot read this version's project files, so " +
+            blocked.map((b) => b.name + " goes back to how it was on " + when(b)).join("; ") + ". How it is now is kept in a copy, not lost." : "";
+          bits.push(" ", h("span", null, (HB.local.newer(u.previous, u.current) ? "Return to version " : "Go back to version ") + u.previous + "? The page restarts on it once nothing is running." + restore + " "),
+            h("button", { type: "button", class: "btn btn--small", onclick: () => { footAsk = false; updateAction(blocked.length ? "back_restore" : "back"); } }, blocked.length ? "Go back and restore" : "Go back"), " ",
+            h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { footAsk = false; paintFoot(); } }, "Cancel"));
+        } else {
+          const later = HB.local.newer(u.previous, u.current);
+          bits.push(" · ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => { footAsk = true; paintFoot(); } },
+            later ? "Return to version " + u.previous : "Go back to the previous version (" + u.previous + ")"));
+        }
+      }
+    }
+    if (u.checked && !u.development) {
+      const when = new Date(u.checked);
+      bits.push(h("span", { class: "hbl-foot__small" }, " Last checked " + when.toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) +
+        (u.problem === "offline" ? " (GitHub could not be reached)." : ".")));
+    }
+    footEl.replaceChildren(h("p", null, bits), mailLine(u), u.development ? null : h("p", { class: "hbl-foot__small" }, u.privacy || ""));
+    const main = document.getElementById("main");
+    if (!footEl.isConnected && main && main.parentNode) main.parentNode.insertBefore(footEl, main.nextSibling);
+  }
+
+  let mailOpen = false;
+  let mailSaid = "";
+
+  async function saveMail(body) {
+    mailSaid = "";
+    try {
+      await HB.local.post("update/email", body);
+      mailOpen = false;
+      mailSaid = body.stop ? "You won't get emails about updates." : "Saved: you'll get an email about big updates.";
+      await pollState();
+    } catch (e) {
+      mailSaid = e.message || "That didn't work. Try again later.";
+      paintFoot();
+    }
+  }
+
+  function mailLine(u) {
+    const h = HB.h;
+    if (u.development) return null;
+    const said = mailSaid ? h("span", { class: "hbl-foot__small", role: "status" }, " " + mailSaid) : null;
+    if (u.email) {
+      return h("p", null, "Emails about big updates go to " + u.email + ". ",
+        h("button", { type: "button", class: "hbl-foot__link", onclick: () => saveMail({ stop: true }) }, "Stop them"), said);
+    }
+    if (!mailOpen) {
+      return h("p", null, h("button", { type: "button", class: "hbl-foot__link", onclick: () => { mailOpen = true; mailSaid = ""; paintFoot(); } }, "Email me about big updates"), said);
+    }
+    const box = h("input", { class: "input hbl-foot__mail", type: "email", autocomplete: "email", "aria-label": "Your email address", placeholder: "you@example.org" });
+    setTimeout(() => box.focus(), 0);
+    return h("div", { class: "hbl-foot__form" },
+      box, " ",
+      h("button", { type: "button", class: "btn btn--small", onclick: () => saveMail({ email: box.value }) }, "Save"), " ",
+      h("button", { type: "button", class: "btn btn--quiet btn--small", onclick: () => { mailOpen = false; mailSaid = ""; paintFoot(); } }, "Cancel"),
+      h("p", { class: "hbl-foot__small" }, u.email_privacy || ""), said);
+  }
+
   async function pollState() {
+    if (restarting) return;
     try {
       const s = await api("GET", "state");
       const before = state;
@@ -614,7 +799,10 @@
       const shown = paintRunLine();
       if (HB.runBar && typeof HB.runBar.redraw === "function" && shown) HB.runBar.redraw();
       paintTop();
+      paintUpdate();
+      if (!mailOpen) paintFoot();
     } catch (e) {
+      if (restarting) return;
       if (e && e.code === "revoked") flagText = "This page's link has expired. Run hb serve again and use the new link.";
       else flagText = e && e.message ? e.message : null;
       paintTop();
@@ -629,6 +817,12 @@
     flag: (text) => { flagText = text; paintTop(); },
     state: () => state,
     refresh: pollState,
+    /** Whether version a (such as "1.10.0") is newer than b. */
+    newer: (a, b) => {
+      const pa = String(a || "0").split(".").map(Number), pb = String(b || "0").split(".").map(Number);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0); }
+      return false;
+    },
     /** GET /api/<path> with the page's token (the Set-up material list, the chat's read_material). */
     get: (path) => fetch("/api/" + path, { headers: { "X-HB-Token": TOKEN }, cache: "no-store" }),
     /** POST /api/<path> with a JSON body (the Set-up chat's saves); Promise of the parsed reply. */
@@ -660,6 +854,22 @@
 .hbl-recent__detail { max-height: 12rem; overflow: auto; white-space: pre-wrap; font-size: var(--fs-12); }
 .hbl-name__msg:empty { display: none; }
 @media (width < 40rem) { .hbl-top { justify-content: flex-start; } }
+.hbl-update:empty { display: none; }
+.hbl-update { display: grid; gap: var(--s2); margin: var(--s3) auto 0; max-width: var(--measure-wide, 72rem); padding: 0 var(--s4, 1rem); }
+.hbl-update__box { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--rule); border-left: 4px solid var(--accent); border-radius: 0.5rem; background: var(--surface); font-size: var(--fs-14); }
+.hbl-update__box[data-tone="warning"] { border-left-color: var(--warning, #b26a00); }
+.hbl-update__box p { margin: 0; }
+.hbl-update__notes { margin: 0; padding-left: 1.2rem; }
+.hbl-update__small { color: var(--ink-2); font-size: var(--fs-12); }
+.hbl-update__acts { display: flex; gap: var(--s2); flex-wrap: wrap; }
+.hbl-foot { margin: var(--s6, 3rem) auto var(--s4, 1rem); max-width: var(--measure-wide, 72rem); padding: var(--s3) var(--s4, 1rem); border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--fs-12); }
+.hbl-foot p { margin: 0 0 var(--s1); }
+.hbl-foot__link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+.hbl-foot__small { color: var(--ink-2); }
+.hbl-foot__form { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0 0 var(--s1); }
+.hbl-foot__form p { flex-basis: 100%; margin: 0; }
+.hbl-foot__mail { max-width: 18rem; }
+.hbl-name__tick { display: flex; gap: var(--s2); align-items: center; margin-top: var(--s3); font-size: var(--fs-14); }
 `;
 
   function start() {

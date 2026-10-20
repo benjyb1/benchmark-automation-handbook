@@ -61,9 +61,12 @@ def python_checks() -> list[dict]:
 def edition_checks() -> list[dict]:
     """Which edition is installed. For the Full edition, whether a download key is saved for updates (and that
     only its owner can read it); the key itself is never shown."""
+    from . import updates
+    v = updates.version()
+    said = f"version {v}" if v != "0" else "a version from before versions were numbered"
     if edition.is_free():
-        return [check("Edition", OK, "The free version of the benchmark tool.")]
-    found = [check("Edition", OK, "The Full version of the benchmark tool.")]
+        return [check("Edition", OK, f"The free version of the benchmark tool, {said}.")]
+    found = [check("Edition", OK, f"The Full version of the benchmark tool, {said}.")]
     path = edition.key_file()
     try:
         saved = path.is_file() and path.stat().st_size > 0

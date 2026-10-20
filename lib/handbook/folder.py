@@ -305,6 +305,8 @@ def init_project(root, name: str, slug: str) -> Project:
     })
     for key in ("questions", "units", "rules", "where_to_look", "needs"):
         project.write(key, DEFAULTS[key])
+    from . import upgrade
+    upgrade.stamp_new(project.path)
     return project
 
 

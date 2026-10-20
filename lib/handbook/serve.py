@@ -51,6 +51,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from collections import deque
 from datetime import datetime, timezone
@@ -59,12 +60,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import chatwork, costs, edition, readers
+from . import chatwork, costs, edition, readers, updates
 from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home
 from .page import VIEWER_SRC, json_for_script
 from .sampler import Sampler, SampleError
+from .updater import Updater, back_blockers, respawn, restart_when_idle
 
 HB = Path(__file__).resolve().parents[1] / "hb.py"
 LOCAL_JS = VIEWER_SRC / "js" / "local.js"
@@ -1256,10 +1258,15 @@ class LocalServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, project: Project, port: int = 0, config: Config | None = None, claude: str = "claude"):
+    def __init__(self, project: Project, port: int = 0, config: Config | None = None, claude: str = "claude",
+                 token: str | None = None):
         super().__init__(("127.0.0.1", port), Handler)
         self.project = project
-        self.token = secrets.token_urlsafe(24)
+        self.token = token or secrets.token_urlsafe(24)       # a restart after an update keeps the pass
+        self.marker = None                 # set by cmd_serve: ~/.handbook/running/<key>.json
+        self.restarting = False
+        self.updater = Updater(self)
+        self._update_seen = (0.0, None)
         self.alive_key = None              # set by cmd_serve: a hash of the project's path
         self.config = config or Config()
         self.store = Store(project.path)
@@ -1299,6 +1306,50 @@ class LocalServer(ThreadingHTTPServer):
     def shutdown_all(self) -> None:
         self.stop_work()
         self.shutdown()
+
+    # -- updates (updater.py) ------------------------------------------------------------------
+
+    @property
+    def project_path(self) -> Path:
+        return self.project.path
+
+    def chatting(self) -> bool:
+        return any(not call.finished for call in list(self.sampler.calls.values()))
+
+    def busy(self) -> str | None:
+        """What this page is doing that an update must wait for, in a few words, or None."""
+        w = self.worker
+        if w.job:
+            return w.job.get("title") or "a job"
+        if w.queue:
+            return "a queued job"
+        if self.chatting():
+            return "a Claude reply"
+        return None
+
+    def restart(self) -> None:
+        """Start the (updated) tool again for this project on the same port and pass, then stop this one."""
+        if self.restarting:
+            return
+        self.restarting = True
+        self.stop_work()
+        respawn(self, self.project.path, self.marker)
+
+    def update_state(self) -> dict:
+        """What the page shows about versions: updates.status without asking GitHub (the background check in
+        cmd_serve does that once a day), read at most every 20 seconds, plus the update under way."""
+        at, cached = self._update_seen
+        if cached is None or time.time() - at > 20:
+            try:
+                cached = updates.status(check=False)
+                cached["back_blocked"] = back_blockers([str(self.project.path)]) if cached.get("previous") else []
+            except Exception as e:  # noqa: BLE001  (a broken cache file must not break the page)
+                cached = {"current": updates.version(), "problem": str(e)}
+            self._update_seen = (time.time(), cached)
+        return {**cached, **self.updater.public()}
+
+    def forget_update_state(self) -> None:
+        self._update_seen = (0.0, None)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1454,7 +1505,8 @@ class Handler(BaseHTTPRequestHandler):
             p = srv.project.read("project")
             team_state = srv.team.state()
             return self.json({**srv.worker.state(), "edition": edition.edition(), "user": team_state["me"],
-                              "team": team_state, "project": {"name": p.get("name"), "path": str(srv.project.path)}})
+                              "team": team_state, "chatting": srv.chatting(), "update": srv.update_state(),
+                              "project": {"name": p.get("name"), "path": str(srv.project.path)}})
         if parts[0] == "team":
             if parts[1:] == ["copy"] and method == "GET":
                 from . import team as team_files
@@ -1499,11 +1551,47 @@ class Handler(BaseHTTPRequestHandler):
             return self._sample(method, parts[1:], query)
         if parts[0] == "chat":
             return self._chat(method, parts[1:], query)
+        if parts[0] == "update":
+            return self._update(method, parts[1:])
         if path == "copy" and method == "GET":
             slug = re.sub(r"[^a-z0-9-]+", "-", str(srv.project.read("project").get("slug") or "benchmark").lower())
             name = f"{slug}-copy-{datetime.now().strftime('%Y-%m-%d')}.html"
             return self._send(200, copy_html(srv.project).encode("utf-8"), "text/html; charset=utf-8",
                               {"Content-Disposition": f'attachment; filename="{name}"'})
+        return self.fail(404, "No such call.", "not_found")
+
+    def _update(self, method: str, parts: list[str]) -> None:
+        """GET update: versions and the update under way. POST update {"action": "check"|"install"|"back"|
+        "back_restore"|"cancel"} (back_restore: go back and put projects the previous version cannot read back as
+        they were before the upgrade): check asks GitHub now; install and back start the update (it waits for quiet, then swaps and
+        restarts the page). GET/POST update/email {"email"} or {"stop": true}: the opt-in update emails.
+        POST update/restart: another page updated the tool; restart once idle."""
+        srv = self.server
+        if parts == [] and method == "GET":
+            return self.json(srv.update_state())
+        if parts == ["email"]:
+            if method == "POST":
+                b = self.body_json() or {}
+                updates.set_email(None if b.get("stop") else str(b.get("email") or ""))
+                srv.forget_update_state()
+            return self.json(updates.emails())
+        if parts == ["restart"] and method == "POST":
+            restart_when_idle(srv)
+            return self.json({"ok": True})
+        if parts == [] and method == "POST":
+            action = str((self.body_json() or {}).get("action") or "")
+            if action == "check":
+                updates.status(check=True, force=True)
+                srv.forget_update_state()
+                return self.json(srv.update_state())
+            if action in ("install", "back", "back_restore"):
+                srv.updater.start("back" if action == "back_restore" else action, restore=action == "back_restore")
+                srv.forget_update_state()
+                return self.json(srv.update_state())
+            if action == "cancel":
+                srv.updater.cancel()
+                return self.json(srv.update_state())
+            return self.fail(400, "Say check, install, back or cancel.")
         return self.fail(404, "No such call.", "not_found")
 
     def _chat(self, method: str, parts: list[str], query: dict) -> None:

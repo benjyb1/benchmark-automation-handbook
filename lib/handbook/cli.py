@@ -48,6 +48,9 @@ def open_project(path: str | None = None, must_exist: bool = True) -> Project:
     if must_exist and not project.exists():
         raise HandbookError(f"No project found at {project.path}: there is no project.json. "
                             "Pass --project, set HANDBOOK_PROJECT, or run init first.")
+    if project.exists():
+        from . import upgrade
+        upgrade.ensure(project)          # an older project's files are upgraded once, after a backup
     return project
 
 
