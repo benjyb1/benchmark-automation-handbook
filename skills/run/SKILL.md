@@ -99,7 +99,7 @@ Take the rows from `todo --json` in the order from "Start or resume" step 5. A r
 
 1. Run control check. Apply pending viewer edits too; if one decides a rule, see "Reruns".
 2. **Kit.** `python3 "<lib>/hb.py" kit --project "<project>" --row ROW --run RUN`, adding `--questions Q1,Q2` (the row's `questions` from `todo`) when only some of the row's questions are still to score. The last line printed is the kit path, KIT.
-3. **Score.** `python3 "<lib>/hb.py" score --kit KIT`: a fresh scorer in a clean headless session, as `scorer.md` says. It prints the scorer's one-line reply, the tokens it processed and the receipt's path. Then:
+3. **Score.** `python3 "<lib>/hb.py" score --kit KIT`: a row small enough is read in one go (one Claude call with the row's pages and questions in it, about a fifth of the tokens), anything else by a fresh scorer in a clean headless session, as `scorer.md` says; questions the one reading left out go to that scorer too. It prints the one-line reply, the tokens processed and the receipt's path. Then:
    `python3 "<lib>/hb.py" run usage --project "<project>" --run RUN --row ROW --step score --receipt KIT/receipt.json`
    If `score` says the claude command line is not installed, start the scorer with the host's sub-agent tool instead (`scorer.md`, "If hb score cannot run") and record its figure with `--tokens N`.
 4. **Ingest.** `python3 "<lib>/hb.py" ingest-answers --project "<project>" --row ROW --run RUN --file KIT/answers.json`

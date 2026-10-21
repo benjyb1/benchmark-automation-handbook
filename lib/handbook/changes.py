@@ -33,11 +33,12 @@ OPS = {
     "merge_rows": "into: a row id, rows: [row ids merged into it (their documents join it; they are removed)]",
     "add_question": "question: {id, short, wording, section, answer: {kind: levels, levels: [{value, points, meaning}]}, rule, no_evidence_value, applies_to}",
     "remove_questions": "ids: [question ids]",
-    "change_question": "id, fields: {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence}",
+    "change_question": "id, fields: {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence, reading}",
     "remove_rules": "ids: [rule ids]",
     "set_part": "part: scoresheet | where_to_look | needs | rules | basics, content (as the set-up formats say)",
 }
-QUESTION_FIELDS = ("wording", "short", "rule", "section", "levels", "no_evidence_value", "applies_to", "evidence")
+QUESTION_FIELDS = ("wording", "short", "rule", "section", "levels", "no_evidence_value", "applies_to", "evidence",
+                   "reading")
 STALE_FIELDS = ("wording", "rule", "levels", "applies_to")
 
 

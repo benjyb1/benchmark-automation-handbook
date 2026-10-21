@@ -138,6 +138,10 @@ recommendation.
   with their scores (`["elephantstandards.com"]`, `["data.eggtrack.com"]`). Finders cannot save
   from them and the where-to-look plan may not point at them. Never list such a page as a place to
   look, even with a note to ignore the score: the finder saves the whole page.
+- `scoring` (optional): leave it out. `"careful"` makes every row go to the full scorer, which searches
+  and re-reads, at several times the tokens: only when the owner asks for it, for a benchmark built on
+  fine judgement where a point matters (Pecking Order gate rows, 21 Oct 2026: 0.7 points off the published
+  score against 1.0 to 1.7 when read in one go).
 - `provided[].role`: `questions | units | methodology | last_results | source_list |
   held_document | last_report | other`.
 - Leave `stage` alone; the trial and run commands set it.
@@ -196,6 +200,11 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
   may then answer not applicable, with the evidence, and the cell drops out of the row's maximum.
   When a label does tell (a retailer never reports ingredient eggs), use `applies_to` instead: look
   for columns of last edition's results that are always empty for some kind of row.
+- `reading` (optional, `"lookup"`): the answer is read straight off a record, list or table (how a member
+  voted on a roll call, whether a register shows a results file, a date in a table), with no weighing of
+  wording. A row whose questions are all lookups is scored by a cheaper model: on LCV votes and CTIS
+  checks it gave the same answers for about a fiftieth of the price (21 Oct 2026). Leave it out when
+  the answer needs reading a policy or a law and judging how far it goes; when unsure, leave it out.
 - `applies_to`: null for every row, or `{label: [values]}` ("only for France" becomes
   `{"country": ["France"]}`). `variants`: the first match replaces `wording` and/or `rule`.
 - `evidence`: your plain description of what would show the answer; step 5 works from it.

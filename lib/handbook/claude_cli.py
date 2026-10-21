@@ -11,6 +11,12 @@ import re
 MODEL = "claude-opus-5-5"
 # Finders search and save; they never score, so they run on the cheaper model (host/claude.md).
 FINDER_MODEL = "claude-sonnet-5-5"
+# One read (oneread.py): a kit whose questions are all lookups (a value read off a record, list or table)
+# goes to Haiku 5.5, which matched Opus 5.5 on LCV votes and CTIS checks (21 Oct 2026) at about a fiftieth
+# of the price; anything else is read by MODEL at this effort (Pecking Order: high 1.0 and 1.7 points off
+# WAP's published overall, default 2.0, low 3.0).
+LOOKUP_MODEL = "claude-haiku-5-5"
+ONE_READ_EFFORT = "high"
 MIN_VERSION = (2, 1, 280)
 
 

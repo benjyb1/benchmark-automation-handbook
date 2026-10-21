@@ -4,10 +4,13 @@
 only a second reader's `second/` folder, and writes:
 
     brief.md                what to do
+    reading.md              the same, for reading the row in one go (oneread.py), which `hb score` does
+                            when the row is small enough; the full scorer above is the fallback
     questions.json          the row's questions as the row sees them, with levels, coding rule and
                             the ids of the rulings that apply; the rulings themselves (decided, or
                             the recommended reading) once each, with the questions they cover
-    docs/<doc>/meta.json    title, publisher, date, language only (never the address)
+    docs/<doc>/meta.json    title, publisher, date, language only (never the address); "shared" when
+                            SHARED_ROWS or more rows found it (one read trims its long pages)
     docs/<doc>/p001.txt     one file per page, so a search hit names its page
     docs/<doc>/p001.jpg     the picture of a page, next to its text, for a page that is a photograph, a
                             scan or mostly picture; at most MAX_PICTURES in a kit and MAX_PICTURE_BYTES
@@ -31,6 +34,7 @@ a last-year address cannot get through in any form.
 from __future__ import annotations
 import json
 import shutil
+from collections import Counter
 from pathlib import Path
 
 from . import answers
@@ -44,6 +48,9 @@ IMAGE_FILES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".tiff", ".tif
 SELF_CHECK = "check_quotes.py"          # the kit's copy of quotecheck.py
 QUOTECHECK = Path(__file__).with_name("quotecheck.py")
 UNDECIDED = "not decided: use this reading"
+# A document found for this many rows or more is shared (a roll-call vote lists every member): one read
+# (oneread.py) sends a long page of it cut to what concerns the row.
+SHARED_ROWS = 3
 
 
 def unit(project: Project, row: str) -> dict:
@@ -104,6 +111,7 @@ def kit_questions(project: Project, row: str, questions=None) -> tuple[list[dict
                     **({"figure": {k: (q.get("answer") or {}).get(k) for k in ("unit", "min", "max", "decimals")}}
                        if answers.is_number(q) else {}),
                     **({"may_not_apply": True} if q.get("may_not_apply") is True else {}),
+                    **({"reading": "lookup"} if q.get("reading") == "lookup" else {}),
                     "no_evidence_value": q.get("no_evidence_value"),
                     "rule": q.get("rule"), "evidence": q.get("evidence"),
                     "rules": [r["id"] for r in applying]})
@@ -150,12 +158,16 @@ def _write_docs(project: Project, row: str, docs_dir: Path) -> tuple[dict, dict]
     counts = {"kept": 0, "not_kept": 0, "pictures": 0, "pictures_left_out": 0, "empty_pages": 0}
     captures, index = {}, []
     found = list(dict.fromkeys(project.found(row).get("documents") or []))
+    rows_with = Counter(d for u in project.read("units").get("units", []) if u.get("id")
+                        for d in set(project.found(u["id"]).get("documents") or []))
     plan, counts["pictures_left_out"] = _picture_plan(project, [d for d in found if d in metas])
     for doc in found:
         meta = metas.get(doc)
         if meta is None:
             raise HandbookError(f"Document {doc} is listed for {row} in found/ but has no meta.json.")
         out = {k: meta.get(k) for k in META_KEYS}
+        if rows_with[doc] >= SHARED_ROWS:
+            out["shared"] = True
         if not out.get("date") and meta.get("fetched"):
             # An undated page shows when it was saved: it may have changed since the cut-off (ACES re-test,
             # 15 Oct 2026: pages saved in 2026 judged a camp as at its 2025 audit with no warning).
@@ -393,6 +405,75 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
     return "\n".join(lines) + "\n"
 
 
+READING = "reading.md"          # the brief for one read (oneread.py): the same rules, no tools
+
+
+def careful(project: Project) -> bool:
+    """project.json scoring "careful": every row goes to the full scorer, so its kit has no reading.md."""
+    return project.read("project").get("scoring") == "careful"
+
+
+def reading_text(project: Project, row: dict, n_questions: int, counts: dict, figures: bool = False,
+                 may_not_apply: bool = False) -> str:
+    """The brief for reading the row in one go (oneread.py): what brief_text asks of a scorer, less the
+    searching, the files and the quote check, which plain code does. The questions and pages follow it in
+    the same message."""
+    unit_word = project.read("project").get("unit_word") or "unit"
+    bench = project.read("project").get("name") or "the benchmark"
+    cutoff = row.get("cutoff") or project.read("project").get("cutoff")
+    labels = ", ".join(f"{k} {v}" for k, v in (row.get("labels") or {}).items())
+    lines = [
+        f"# Scoring: {row.get('name') or row['id']}", "",
+        f"You are scoring one {unit_word}: {row.get('name') or row['id']} ({labels}). Below are the {n_questions} "
+        "question(s), with their levels and coding rule and, under rulings, the readings that apply, each given once "
+        "with the questions it covers; then every document, page by page. Answer every question from these "
+        "documents alone: never outside knowledge.",
+        *(["A document that many rows share (a vote record, a long list) is cut to its opening and the passages "
+           "that name this row or match a question; [...] marks what was left out."] if counts.get("shared") else []),
+        *([f"{counts['empty_pages']} page(s) are empty because the page could not be read (a scan or a picture). If the "
+           "answer may rest on one, answer from what you can read and mark the cell unsure (why \"document\")."]
+          if counts.get("empty_pages") else []),
+        *(["Some pages were read from a picture by a text reader, so a letter or figure can be wrong there."]
+          if counts.get("pictures") else []),
+        *([f"Answer as things stood on the cut-off date, {cutoff}: a law, policy or figure that came in after it does "
+           "not count, even when a later document shows it. A page that says it was updated after the cut-off may "
+           "describe later changes: mark it unsure (why \"document\") when that matters."] if cutoff else []),
+        "Follow each question's coding rule and the rulings it names. A ruling marked \"decided\" is settled. A ruling "
+        f"marked \"{UNDECIDED}\" is still open with the owner: apply that reading.",
+        "",
+        "Each answer has a state:",
+        "- \"answered\": value is one of the question's level values, with at least one piece of evidence."
+        + (" A question with \"figure\" also takes a figure: a plain number in the figure's unit, as the document gives "
+           "it (73 for 73%), or one of its level values when those fit instead." if figures else ""),
+        "- \"no_evidence\": nothing in the documents supports an answer. Value null, evidence empty.",
+        *(["- \"not_applicable\": only for a question with \"may_not_apply\", when the documents show it does not apply "
+           "to this row. Value null, with the evidence that shows it."] if may_not_apply else []),
+        "Evidence: doc is the document id; page is the page number; quote is copied exactly from that page, character "
+        "for character, at least five words, in the order the page has them (for a table or columns too). Never "
+        "describe a table or add words of your own; a quote is never a web address, a title or an error message. "
+        "language is the page's language code (\"en\", \"da\"); quote_en is your English translation, or the same words "
+        "when the page is English. section: the nearest numbered section, article, regulation or paragraph above the "
+        "quote, written short (\"s. 4(2)(a)\", \"art. 35(1)\"), taken from the pages; leave it out when the document "
+        "has no numbering.",
+        "A document's title can be wrong (some sites label a working page \"Not Found\"): judge it by its page text. "
+        f"Never answer from what a document says about this benchmark's own ratings of it (\"{bench}\"): answer from "
+        "what the documents show it does.",
+        "note: one plain sentence on why this value fits.",
+        "unsure: null, or, when the answer is a best guess because the rule is unclear or a document you would expect "
+        "is not here, {\"why\": \"rule\", \"note\": \"...\"} or {\"why\": \"document\", \"note\": \"...\"}. When a question "
+        "turns on a document that is not here (another law, regulations, a form), answer from what you have and add "
+        "\"missing\": its name, with its year and country when you know them; give the same name wherever it is "
+        "missing. Never give a confidence score or a percentage.",
+        "",
+        "Reply with only the answers file, in exactly this shape (the ids, documents and words here are made up; use "
+        "the ids from the questions):",
+        "",
+        _example(row["id"]),
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def write_kit(project: Project, row: str, run: str, questions=None, second: bool = False,
               look=None) -> Path:
     """Clear and write the kit for `row` (see the module docstring) and return its folder.
@@ -437,6 +518,13 @@ def write_kit(project: Project, row: str, run: str, questions=None, second: bool
                                     encoding="utf-8")
     if not second:
         write_json(kit / "limits.json", kit_limits(project, row, [q["id"] for q in qs]))
+    if not second and not careful(project):
+        counts["shared"] = sum(1 for d in (kit / "docs").glob("*/meta.json")
+                               if (json.loads(d.read_text(encoding="utf-8")) or {}).get("shared"))
+        (kit / READING).write_text(reading_text(project, the_unit, len(qs), counts,
+                                                figures=any("figure" in q for q in qs),
+                                                may_not_apply=any(q.get("may_not_apply") for q in qs)),
+                                   encoding="utf-8")
     return kit
 
 
@@ -448,7 +536,7 @@ def kit_limits(project: Project, row: str, qids: list[str]) -> dict:
     from .cmd_score import DEFAULT_MAX_TURNS
     from .costs import estimate_rows
     from .rowwatch import similar_budget
-    point = estimate_rows(project, [row], qids)["point"]
+    point = estimate_rows(project, [row], qids, one_read=False)["point"]   # the budget is for the full scorer
     similar = similar_budget(project, row, len(qids))
     budget = similar if similar is not None else round(point * BUDGET_FACTOR)
     return {"budget": max(MIN_BUDGET, budget), "max_turns": DEFAULT_MAX_TURNS, "estimate": point,

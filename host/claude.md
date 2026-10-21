@@ -103,7 +103,7 @@ A file the owner attaches in chat is filed the same way: `add-document` with the
 
 ## Sub-agents
 
-Scorers are not sub-agents of this session: `python3 "<lib>/hb.py" score --kit KIT` starts each one as its own headless `claude -p` session in safe mode (no MCP servers, plugins, skills, hooks or CLAUDE.md; scorer tools only) and saves its receipt. A sub-agent of this session would carry the session's whole preamble, your connectors included, into every turn: 73,000 tokens a turn when this was measured, against 31,000 for the clean session.
+Scorers are not sub-agents of this session: `python3 "<lib>/hb.py" score --kit KIT` reads a small enough row in one tool-free `claude -p` call, and otherwise starts the scorer as its own headless `claude -p` session in safe mode (no MCP servers, plugins, skills, hooks or CLAUDE.md; scorer tools only) and saves its receipt. A sub-agent of this session would carry the session's whole preamble, your connectors included, into every turn: 73,000 tokens a turn when this was measured, against 31,000 for the clean session.
 
 Start the others with the Agent tool. Its prompt must stand alone, because the sub-agent sees nothing of this conversation.
 

@@ -1,5 +1,12 @@
-"""hb score --kit KIT [--model M] [--effort E] [--max-turns N] [--budget TOKENS]: run one scorer on a kit
-in a clean, headless Claude session and save its receipt.
+"""hb score --kit KIT [--mode auto|one-read|full] [--model M] [--effort E] [--max-turns N] [--budget TOKENS]:
+score a kit and save its receipt.
+
+By default (`auto`) a kit small enough is read in one go (oneread.py): one Claude call with no tools and
+the row's pages in the message, about a fifth to a tenth of the tokens (21 Oct 2026). A bigger kit, a reply
+that is not an answers file, and any question the reading left out go to the full scorer below, and the
+receipt adds both up. `--mode full` always runs the full scorer; `--mode one-read` never falls back.
+
+The full scorer:
 
 The session is watched as it runs (stream-json) and stopped once it has processed more than its token
 budget, by default the kit's limits.json (hb kit: about 2.5 times the cost model's figure for the row),
@@ -28,6 +35,7 @@ import sys
 import threading
 from pathlib import Path
 
+from . import oneread
 from .claude_cli import MODEL
 from .cli import command_parser
 from .folder import HandbookError, read_json, write_json
@@ -194,6 +202,70 @@ def run_scorer(kit: Path, model=None, effort=None, max_turns=None, timeout_s: in
     return result
 
 
+MODES = ("auto", "one-read", "full")
+
+
+def _add(a: dict, b: dict) -> dict:
+    return {k: int(a.get(k) or 0) + int(b.get(k) or 0) for k in USAGE_KEYS}
+
+
+def _full_for(kit: Path, qids: list[str], model, effort, max_turns, budget) -> dict:
+    """The full scorer on only `qids` of the kit, its answers merged into the ones already in answers.json.
+    questions.json is cut to those questions for the run and put back after."""
+    qfile, afile = kit / "questions.json", kit / "answers.json"
+    whole = qfile.read_text(encoding="utf-8")
+    kept = read_json(afile, {}) or {}
+    data = json.loads(whole)
+    data["questions"] = [q for q in data.get("questions") or [] if str(q.get("id")) in qids]
+    data["rulings"] = [r for r in data.get("rulings") or [] if set(qids) & set(r.get("questions") or [])]
+    qfile.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    afile.unlink(missing_ok=True)
+    try:
+        result = run_scorer(kit, model, effort, max_turns, budget=budget)
+    finally:
+        qfile.write_text(whole, encoding="utf-8")
+        new = read_json(afile, {}) or {}
+        cells = {**(kept.get("cells") or {}),
+                 **{q: c for q, c in (new.get("cells") or {}).items() if str(q) in qids}}
+        write_json(afile, {"row": kept.get("row") or new.get("row"), "cells": cells})
+    result["left"] = left_questions(kit)
+    return result
+
+
+def score(kit: Path, mode: str = "auto", model=None, effort=None, max_turns=None, budget=None) -> dict:
+    """Score the kit (see the module docstring) and save KIT/receipt.json; returns the receipt."""
+    if mode not in MODES:
+        raise HandbookError(f"--mode is one of {', '.join(MODES)}, not {mode!r}.")
+    if not (kit / "brief.md").is_file():
+        raise HandbookError(f"{kit} is not a kit: there is no brief.md in it. Build it with hb kit first.")
+    if mode == "full" or (mode == "auto" and not oneread.fits(kit)):
+        return run_scorer(kit, model, effort, max_turns, budget=budget)
+    try:
+        result = oneread.run(kit, model, effort)
+    except HandbookError as e:
+        if mode == "one-read":
+            raise
+        result = run_scorer(kit, model, effort, max_turns, budget=budget)
+        result["one_read"] = f"fell back to the full scorer: {e}"
+        return result
+    left = left_questions(kit)
+    if left and mode == "auto":
+        full = _full_for(kit, left, model, effort, max_turns, budget)
+        result.update({"usage": _add(result["usage"], full.get("usage") or {}),
+                       "num_turns": result["num_turns"] + int(full.get("num_turns") or 0),
+                       "mode": "one read, then the full scorer", "stopped": full.get("stopped"),
+                       "budget": full.get("budget"), "max_turns": full.get("max_turns"),
+                       "result": result["result"] + f" The full scorer took the {len(left)} left: "
+                                 + " ".join(str(full.get("result") or "").split())})
+        left = full.get("left") or []
+    result.update({"kit": str(kit), "left": left})
+    result.setdefault("stopped", None)
+    result.setdefault("budget", None)
+    result.setdefault("max_turns", None)
+    write_json(kit / RECEIPT, result)
+    return result
+
+
 STOP_WORDS = {"budget": "its token budget", "turns": "its turn limit", "time": "the time limit"}
 
 
@@ -212,13 +284,18 @@ def describe(result: dict) -> str:
     usage = result.get("usage") or {}
     fresh = (usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
     read, out = usage.get("cache_read_input_tokens") or 0, usage.get("output_tokens") or 0
+    calls = "call" if result.get("mode") == "one read" else "turn"
+    n = result.get("num_turns") or 0
     return (f"{fresh + read + out:,} tokens processed ({read:,} cache reads, {fresh:,} fresh input, {out:,} output) "
-            f"over {result.get('num_turns') or 0} turns.")
+            f"over {n} {calls}{'s' if n != 1 else ''}.")
 
 
 def main(argv) -> int:
-    parser = command_parser("score", "Run one blind scorer on a kit in a clean headless session.", project=False)
+    parser = command_parser("score", "Score a kit blind: in one reading when it is small enough, else the full scorer.",
+                            project=False)
     parser.add_argument("--kit", required=True, help="the kit folder hb kit printed")
+    parser.add_argument("--mode", default="auto", choices=MODES,
+                        help="auto (default): one reading when the kit fits, else the full scorer; one-read; full")
     parser.add_argument("--model", default=None, help=f"a model id, for example claude-sonnet-5-5 (default: {MODEL}, at its default effort)")
     parser.add_argument("--effort", default=None, help="an effort level, for example low")
     parser.add_argument("--max-turns", type=int, default=None,
@@ -227,7 +304,7 @@ def main(argv) -> int:
                         help="stop the scorer once it has processed this many tokens (default: the kit's limits.json)")
     args = parser.parse_args(argv)
     kit = Path(args.kit).expanduser()
-    result = run_scorer(kit, args.model, args.effort, args.max_turns, budget=args.budget)
+    result = score(kit, args.mode, args.model, args.effort, args.max_turns, budget=args.budget)
     reply = " ".join(str(result.get("result") or "").split())
     print(f"Scorer for {kit.name}: {reply or '(no reply)'}")
     print(describe(result))

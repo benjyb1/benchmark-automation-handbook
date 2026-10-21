@@ -25,7 +25,7 @@ from .shapes import ROLES, check_folder
 from .stakes import rule_stakes
 
 BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels", "group_labels", "group_by",
-          "results_sites", "accent")
+          "results_sites", "accent", "scoring")
 WHOLE = {"questions": "questions", "units": "units", "scoresheet": "scoresheet",
          "where_to_look": "where_to_look", "needs": "needs"}
 PARTS = ("basics", "provided", "rules", "last_results", "feedback") + tuple(WHOLE)    # "feedback": the Full edition only

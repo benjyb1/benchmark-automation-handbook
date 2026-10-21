@@ -10,7 +10,15 @@ Everything is tokens processed (fresh input, cache reads and output added up), t
 scorers' receipts give. No money, and no share of a plan: Anthropic does not publish a plan's
 allowance in tokens, so the page compares with work the owner has already run instead.
 
-Scoring a row, by default: tokens = A x questions^Q_EXP x characters^C_EXP, where characters is the
+Scoring a row in one read (oneread.py, the default from 21 Oct 2026 for a row small enough): tokens =
+ONE_BASE + characters / ONE_CHARS_PER_TOKEN + ONE_PER_QUESTION x questions, since the message is the pages
+and the questions and the reply runs to a few hundred tokens an answer. Measured 21 Oct 2026: RTI
+Liberia 99,000 (formula 104,000), Kenya 196,000 (180,000), Sierra Leone 176,000 (168,000); Pecking Order
+dk-kfc 76,000 (74,000); a CTIS trial 14,000 (12,000). Rows that share long documents (LCV vote records)
+come in at a third of it, which the project's own receipts then correct. A one-read receipt is told
+apart by having no cache reads (one_read_receipt).
+
+Scoring a row with the full scorer (a row too big to read in one go): tokens = A x questions^Q_EXP x characters^C_EXP, where characters is the
 length of the text of the row's kept documents. Fitted 19 Oct 2026 on 192 rows scored in the format
 tests (25 benchmarks, receipts from `hb score`): the two together explain about 70% of the spread;
 each roughly doubles the cost when it is five times bigger. A was scaled down on 20 Oct 2026: the 36
@@ -44,11 +52,29 @@ SETUP_BIG = (2_000_000, 6_000_000)
 BIG_MATERIAL = 200_000
 CHAT_TURN = (30_000, 100_000)        # one corner chat reply, measured on the Feedback tab at 28k to 62k
 STEPS = ("find", "second_find", "score", "second")
+ONE_BASE, ONE_CHARS_PER_TOKEN, ONE_PER_QUESTION = 1500, 3.6, 1000
+ONE_QUESTION_TOKENS = 350            # a question as the message holds it, for whether a row fits
 
 
-def score_tokens(questions: int, chars: int | None, factor: float = 1.0) -> float:
-    """The middle figure for scoring `questions` questions on a row whose documents hold `chars` characters."""
+def fits_one_read(questions: int, chars: int) -> bool:
+    """Whether a row this size is read in one go (oneread.LIMIT) rather than by the full scorer."""
+    from .oneread import CHARS_PER_TOKEN, LIMIT
+    return chars / CHARS_PER_TOKEN + ONE_QUESTION_TOKENS * max(questions, 1) <= LIMIT
+
+
+def one_read_receipt(receipt: dict) -> bool:
+    """A receipt from one read: no cache reads (it turns caching off) and at most a few calls."""
+    return (receipt.get("cache_read") or 0) == 0 and 0 < (receipt.get("turns") or 0) <= 3
+
+
+def score_tokens(questions: int, chars: int | None, factor: float = 1.0, one_read: bool | None = None) -> float:
+    """The middle figure for scoring `questions` questions on a row whose documents hold `chars` characters:
+    in one read when the row fits (or `one_read` says so), else with the full scorer."""
     c = DEFAULT_CHARS if chars is None else max(chars, MIN_CHARS)
+    if one_read is None:
+        one_read = fits_one_read(questions, c)
+    if one_read:
+        return factor * (ONE_BASE + c / ONE_CHARS_PER_TOKEN + ONE_PER_QUESTION * max(questions, 1))
     return A * factor * max(questions, 1) ** Q_EXP * c ** C_EXP
 
 
@@ -107,7 +133,7 @@ def measured_rows(project: Project, chars: dict[str, int] | None = None) -> list
             q = _run_questions(project, run, units[row])
             out.append({"run": run.get("id"), "kind": run.get("kind"), "row": row, "questions": q,
                         "chars": chars.get(row), "tokens": tokens,
-                        "ratio": tokens / score_tokens(q, chars.get(row))})
+                        "ratio": tokens / score_tokens(q, chars.get(row), one_read=one_read_receipt(r))})
     return out
 
 
@@ -138,11 +164,14 @@ def calibration(project: Project, chars: dict[str, int] | None = None) -> dict:
 
 
 def estimate_rows(project: Project, rows: list[str], questions: list[str] | None = None,
-                  model: dict | None = None, chars: dict[str, int] | None = None) -> dict:
+                  model: dict | None = None, chars: dict[str, int] | None = None, one_read: bool | None = None) -> dict:
     """A rough range for scoring `rows` again on `questions` (None: every question that applies to
-    each row). A row whose documents are not known yet counts as this project's middle row, or the fit's."""
+    each row). A row whose documents are not known yet counts as this project's middle row, or the fit's.
+    `one_read` False prices the full scorer whatever the row's size (hb kit's budget is for it alone)."""
     chars = row_chars(project) if chars is None else chars
     model = calibration(project, chars) if model is None else model
+    if one_read is None and project.read("project").get("scoring") == "careful":
+        one_read = False                     # careful scoring: always the full scorer
     units = _units(project)
     known = [c for c in chars.values() if c]
     middle = int(median(known)) if known else DEFAULT_CHARS
@@ -156,7 +185,7 @@ def estimate_rows(project: Project, rows: list[str], questions: list[str] | None
             continue
         n += 1
         cells += len(qs)
-        point += score_tokens(len(qs), chars[row] if row in chars else middle, model["factor"])
+        point += score_tokens(len(qs), chars[row] if row in chars else middle, model["factor"], one_read)
     return {"rows": n, "cells": cells, "point": round(point), "low": round(point * model["low"]),
             "high": round(point * model["high"]), "basis": model["basis"], "measured": model["rows"]}
 

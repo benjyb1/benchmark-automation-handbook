@@ -23,6 +23,13 @@ ANSWER_KINDS = ("yes_no", "levels", "number")
 ROUNDINGS = ("none", "half_up_int", "half_up_1dp", "half_up_2dp")
 OVERALL_METHODS = ("sum_points", "weighted_mean_of_section_percents")
 RULE_KINDS = ("scoring", "scope", "evidence", "instruction")
+# A question's `reading`: "lookup" when its answer is read straight off a record, list or table (oneread.py
+# gives a kit of lookups to the cheaper model); "judgement" (the default when it is left out) otherwise.
+READINGS = ("lookup", "judgement")
+# project.json `scoring`: "standard" (or left out) reads a row in one go when it is small enough
+# (oneread.py); "careful" always uses the full scorer, a conversation that searches and re-reads, at
+# several times the tokens (Pecking Order gate rows 21 Oct 2026: 0.7 points off WAP against 1.0 to 1.7).
+SCORING = ("standard", "careful")
 RULE_STATUSES = ("open", "decided", "skipped")
 RAISED_BY = ("setup", "trial", "run", "owner")
 VIA = ("chat", "viewer")
@@ -268,6 +275,8 @@ def check_project(d) -> list[str]:
             out.append(f"project: results_sites {_show(site)} must be a web host, such as elephantstandards.com, "
                        "or a host and path, such as aldf.org/us-state-rankings")
     out.enum(d, "stage", STAGES, w)
+    if d.get("scoring") not in (None,) + SCORING:
+        out.append(f"project: scoring must be \"standard\" or \"careful\", not {_show(d.get('scoring'))}")
     checklist = d.get("checklist")
     if out.obj(checklist, "project: checklist"):
         for key in checklist:
@@ -383,6 +392,8 @@ def check_questions(d, scoresheet=None) -> list[str]:
         out.text(q, "rule", w, required=False, nullable=True, empty_ok=True)
         if "may_not_apply" in q and not isinstance(q.get("may_not_apply"), bool):
             out.append(f"{w}: may_not_apply must be true or false")
+        if "reading" in q and q.get("reading") not in READINGS:
+            out.append(f"{w}: reading must be \"lookup\" or \"judgement\", not {_show(q.get('reading'))}")
         out.label_filter(q.get("applies_to"), w, "applies_to")
         for j, variant in enumerate(out.list_of(q, "variants", w, required=False)):
             wv = f"{w}: variant {j + 1}"
