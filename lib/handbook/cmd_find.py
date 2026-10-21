@@ -15,6 +15,11 @@ file tools are refused under the owner's folders, as for a scorer (cmd_score.OFF
 The trade-off: the finder cannot see when a fetch fails and try again, as one with a shell can. Fetch
 itself tries the archive and a browser view; what still fails is recorded as not found, so the second
 search, the Grid's "missing" list and the owner can pick it up.
+
+The finder's own web tool is not the tool's fetch: it sends its own agent from this Mac, which some robot
+filters refuse (abnamro.com answered it 503 on every page, 20 Oct 2026, and a browser 200), it is not
+allowed on some sites (web.archive.org) and it stops at a smaller file size. So an address the finder could
+not open for one of those reasons is listed with `refused`, and `hb fetch` tries it as a browser would.
 """
 from __future__ import annotations
 import json
@@ -62,6 +67,13 @@ never proof of anything), and the documents already saved, which you do not need
    {plural}, or news and write-ups of them. They would reach the scorer.
 7. Prefer an address that is the document itself (a PDF, or the page with the full text) to one
    that needs a script or a login to show it.
+8. Your fetch tool is sometimes refused where a browser is not: an HTTP error such as 403, 429 or
+   503 from the organisation's site, a site your tool is not allowed to open (web.archive.org), or
+   a file too large for it. Do not give up on that site, and do not swap in a copy elsewhere for
+   it: keep searching for its documents' addresses (search results, links on pages you could open,
+   other language versions) and list each one with `refused` saying what your tool said. This tool
+   then fetches it itself, as a browser, and tries the web archive for a copy from before the
+   cut-off. Never list an address you have not seen in a search result or on a page.
 
 ## What to write
 
@@ -71,7 +83,8 @@ Write `finds.json` in this folder, and nothing else:
 {{"save": [{{"url": "https://...", "how": "plan" | "search" | "last_year",
              "date": "YYYY-MM-DD or null (only when the document says the date it speaks as at)",
              "weak": "one line saying why it is not in the organisation's own words, or null",
-             "what": "a few words: what the document is"}}],
+             "what": "a few words: what the document is",
+             "refused": "only when your fetch tool could not open it: what it said, e.g. HTTP 503"}}],
   "missing": [{{"what": "the document you expected and could not find", "looked": "where you looked"}}]}}
 ```
 
@@ -141,8 +154,9 @@ def brief_for(context: dict, unit_word: str, plural: str) -> str:
                   "not the full text. List only better copies of what is missing or too thin (another official site, a "
                   "PDF, an archived copy from before the cut-off), and record in `missing` what you still cannot find. "
                   "Do not list again what saved well. Never give an address you have not opened with your fetch tool "
-                  "in this session." if again else
-                  "Never give an address you have not opened with your fetch tool in this session.")
+                  "in this session, unless your tool was refused there (rule 8): then say so in `refused`." if again else
+                  "Never give an address you have not opened with your fetch tool in this session, unless your tool was "
+                  "refused there (rule 8): then say so in `refused`.")
     return BRIEF.format(who=who, plural=plural, missing_note=note.strip(), round_note=round_note, cap=CAP)
 
 
@@ -176,11 +190,14 @@ def save_finds(project, finds: dict, row: str | None, group: tuple[str, str] | N
         how = item.get("how") if item.get("how") in ("plan", "search", "last_year") else "search"
         args = ["fetch", url, *target, "--how", how]
         if item.get("date"):
-            args += ["--date", str(item["date"])]
+            args += ["--date", str(item["date"]), "--dated-by", "finder"]
         if item.get("weak"):
             args += ["--weak", str(item["weak"])]
         code, out = hb(project, *args)
-        (saved if code == 0 else failed).append({"url": url, "what": item.get("what"), "said": (out.splitlines() or [""])[-1][:300]})
+        entry = {"url": url, "what": item.get("what"), "said": (out.splitlines() or [""])[-1][:300]}
+        if item.get("refused"):
+            entry["refused"] = str(item["refused"])[:200]   # the finder's tool could not open it; ours tried
+        (saved if code == 0 else failed).append(entry)
     return {"saved": saved, "failed": failed, "missing": list(finds.get("missing") or [])}
 
 

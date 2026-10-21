@@ -2135,6 +2135,8 @@ class Handler(BaseHTTPRequestHandler):
                                   "contentType": ctype})
             if method == "GET":
                 items = []
+                from .material import name_plain_files
+                name_plain_files(folder)         # a file put in the folder by hand shows as an upload too
                 for p in sorted(folder.glob("*--*")) if folder.is_dir() else []:
                     st = p.stat()
                     items.append({"id": p.name.split("--")[0], "url": f"inbox/uploads/{p.name}",

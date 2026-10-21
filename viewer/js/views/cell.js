@@ -71,6 +71,7 @@
     document_changed: "Document changed since scored",
     group_differs: "Differs across countries",
     after_cutoff: "After cut-off",
+    todays_version: "Only today's copy",
     reads_disagree: "Second read differs",
     weak_source: "Not from the company",
     owner_changed: "Changed by the owner",
@@ -82,6 +83,7 @@
     document_changed: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M3.6 10.4 8.4 1.6" })],
     group_differs: () => [svg("path", { d: "M2.2 4.6h7.6M2.2 7.4h7.6M7.6 1.8 4.4 10.2" })],
     after_cutoff: () => [svg("rect", { x: 1.8, y: 2.4, width: 8.4, height: 7.8, rx: 1 }), svg("path", { class: "is-fill", d: "M1.8 3.4a1 1 0 0 1 1-1h6.4a1 1 0 0 1 1 1V5H1.8z" })],
+    todays_version: () => [svg("rect", { x: 1.8, y: 2.4, width: 8.4, height: 7.8, rx: 1 }), svg("path", { d: "M1.8 5h8.4" }), svg("circle", { class: "is-fill", cx: 6, cy: 7.6, r: 1 })],
     reads_disagree: () => [svg("circle", { cx: 6, cy: 6, r: 4.4 }), svg("path", { class: "is-fill", d: "M6 1.6a4.4 4.4 0 0 1 0 8.8z" })],
     weak_source: () => [svg("path", { d: "M3 10V7.4" }), svg("path", { d: "M6 10V5M9 10V2.6", opacity: "0.4" })],
     owner_changed: () => [svg("path", { d: "M3.6 8.4 8.8 3.2" }), svg("path", { class: "is-fill", d: "M2.4 9.6l.7-2.3 1.6 1.6z" })],
@@ -1226,6 +1228,16 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
         : "A document this answer cites is dated";
       return [what + " after the cut-off" + (cut ? " (" + dateText(cut) + ")" : "") + ", so it may not count for this edition." +
         " Check the date on the source; if it is too late, this answer should not rest on it."];
+    }
+    if (kind === "todays_version") {
+      const cut = typeof p.cutoff === "string" ? p.cutoff.slice(0, 10) : null;
+      const today = cited.filter((d) => docs[d].todays_version && typeof docs[d].todays_version === "object");
+      const one = today.length === 1 ? docs[today[0]] : null;
+      const what = one ? (one.title ? "‘" + one.title + "’" : "The page") + " was saved as it was on " + dateText(one.todays_version.fetched)
+        : "A web page this answer cites was saved as it is today";
+      const why = one && one.todays_version.why ? " (" + one.todays_version.why + ")" : "";
+      return [what + ", not as it stood at the cut-off" + (cut ? " (" + dateText(cut) + ")" : "") +
+        ", because no older copy could be got" + why + ". The page may have changed since: check it, or send a copy from before the cut-off."];
     }
     if (kind === "owner_changed") {
       const o = cell.owner || {};

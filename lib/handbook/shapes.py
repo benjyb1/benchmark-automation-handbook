@@ -28,13 +28,13 @@ RAISED_BY = ("setup", "trial", "run", "owner")
 VIA = ("chat", "viewer")
 NEED_STATUSES = ("needed", "supplied", "waived")
 HOW = ("plan", "search", "last_year", "provided")
-DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "archive capture")
+DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture")
 HOST_TYPES = ("issuer", "repository", "third_party", "test_server", "none")
 TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr")
 CELL_STATES = ("answered", "no_evidence", "not_applicable", "not_run")
 UNSURE_WHY = ("rule", "document")
 FLAGS = ("quote_not_found", "after_cutoff", "reads_disagree", "group_differs", "judgement",
-         "weak_source", "document_changed", "owner_changed")
+         "weak_source", "document_changed", "owner_changed", "todays_version")
 RUN_KINDS = ("trial", "full", "rerun")
 USAGE_STEPS = ("find", "second_find", "score", "second")
 RECEIPT_KEYS = ("fresh", "cache_read", "output", "turns")
@@ -677,6 +677,10 @@ def check_meta(d) -> list[str]:
         out.append(f"{w}: provided_by_owner must be true exactly when how is \"provided\"")
     if d.get("how") in ("plan", "search", "last_year") and not _text(d.get("url")):
         out.append(f"{w}: a document found by {d['how']} needs its url")
+    today = d.get("todays_version")   # absent or null; {"fetched", "why"}: the live page, kept after a past cut-off
+    if today is not None and not (isinstance(today, dict) and _text(today.get("why"))
+                                  and isinstance(today.get("fetched"), str) and is_date(today["fetched"])):
+        out.append(f"{w}: todays_version must be null or {{\"fetched\": date, \"why\": text}}, found {_show(today)}")
     weak = d.get("weak")              # absent or null: no mark; false: cleared; {"why"}: weak
     if weak is not None and weak is not False and not (isinstance(weak, dict) and _text(weak.get("why"))):
         out.append(f"{w}: weak must be null, false or {{\"why\": text}}, found {_show(weak)}")

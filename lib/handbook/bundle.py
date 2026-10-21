@@ -31,7 +31,8 @@ STATE_WORDS = {"answered": "Answered", "no_evidence": "No evidence",
 FLAG_WORDS = {"quote_not_found": "Quote not on saved page", "after_cutoff": "Dated after the cut-off",
               "reads_disagree": "Second read differs", "group_differs": "Differs across countries",
               "judgement": "Rests on an undecided rule", "weak_source": "Not from the company",
-              "document_changed": "Document changed since scored", "owner_changed": "Changed by the owner"}
+              "document_changed": "Document changed since scored", "owner_changed": "Changed by the owner",
+              "todays_version": "Only today's copy of the page"}
 REASON_WORDS = {"missing_document": "Missing document", "different_document": "Different document",
                 "document_date": "Document date", "rule_reading": "Rule reading",
                 "open_rule": "Undecided rule", "unexplained": "Not yet explained"}
@@ -313,7 +314,9 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
                   m.get("language"), m.get("host_type"),
                   "Weak: " + m["weak"]["why"] if m.get("weak") else "Own words",
                   _yes_no(m.get("kept")), m.get("pages"),
-                  m.get("fetched"), _join(cited_by.get(d))] for d, m in docs.items()]
+                  m.get("fetched"), _join(cited_by.get(d)),
+                  m["todays_version"]["why"] if isinstance(m.get("todays_version"), dict) else None]
+                 for d, m in docs.items()]
 
     rules = []
     for r in b["rules"]:
@@ -335,7 +338,7 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
         _sheet("documents", "Documents", ["Document", "Title", "Publisher", "Date", "Date from", "URL",
                                           "Archive URL", "How found", "Provided by owner", "Language",
                                           "Host type", "Source strength", "Saved copy kept", "Pages",
-                                          "Fetched", words],
+                                          "Fetched", words, "Kept as today's page because"],
                documents),
         _sheet("rules", "Rules", ["Rule", "Kind", "Questions", words, "Question asked", "Options",
                                   "Recommended", "Why", "Cells affected", "Points at stake", "Status",

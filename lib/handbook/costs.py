@@ -13,7 +13,10 @@ allowance in tokens, so the page compares with work the owner has already run in
 Scoring a row, by default: tokens = A x questions^Q_EXP x characters^C_EXP, where characters is the
 length of the text of the row's kept documents. Fitted 19 Oct 2026 on 192 rows scored in the format
 tests (25 benchmarks, receipts from `hb score`): the two together explain about 70% of the spread;
-each roughly doubles the cost when it is five times bigger. Half the rows came within 0.8 and 1.3
+each roughly doubles the cost when it is five times bigger. A was scaled down on 20 Oct 2026: the 36
+rows scored since the 19 Oct scorer safeguards (13 benchmarks) came in at 0.39 to 1.02 times the old
+figure, 0.57 in the middle (BankTrack's five banks, 4 questions each: 0.22M to 0.69M against 0.36M
+to 1.42M), and a kit's budget of 2.5 times the old figure gave 3.5M for one bank. Half the rows came within 0.8 and 1.3
 times the fitted figure, so with no history the range is wider (DEFAULT_SPREAD, about one standard
 deviation either side) to allow for a benchmark that runs dearer or cheaper than most. Once this
 project has scored rows with a receipt, the figure is scaled to them (`calibration`). Finding
@@ -27,7 +30,7 @@ from statistics import median
 from .folder import Project, read_json
 from .runs import cache_read_share
 
-A, Q_EXP, C_EXP = 1190, 0.43, 0.44
+A, Q_EXP, C_EXP = 680, 0.43, 0.44           # A was 1190 until 20 Oct 2026 (see above)
 MIN_CHARS = 2000                     # a row with almost nothing to read still has the scorer's own reading
 DEFAULT_CHARS = 130_000              # the median row in the fit, for a row with no documents yet
 DEFAULT_SPREAD = (0.65, 1.55)        # no history: about one standard deviation either side

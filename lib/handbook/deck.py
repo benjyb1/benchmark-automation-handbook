@@ -82,6 +82,7 @@ PATTERNS = {
         "quote_not_found": ("Quotes that don't match the saved page word for word", "grid"),
         "group_differs": ("Same chain, same document, different answers by country", "grid"),
         "after_cutoff": ("Evidence dated after the cut-off", "grid"),
+        "todays_version": ("Web pages saved as they are today, not as they stood at the cut-off", "grid"),
         "reads_disagree": ("A second read came out differently", "grid"),
         "document_changed": ("Saved documents that changed after the answer was scored", "grid"),
     },
@@ -106,6 +107,8 @@ HELP = {
                                  "you have the version that was live, send it and I'll score again."),
     "group_differs": ("check", "Can you open a few and say whether the difference is real?"),
     "after_cutoff": ("send", "Do you have a version from before the cut-off? Upload it or paste a link."),
+    "todays_version": ("send", "Do you have these pages as they stood at the cut-off? Upload a saved copy or "
+                               "paste a link to one, and I'll score from that."),
     "reads_disagree": ("check", "Can you open these and say which reading is right?"),
     "document_changed": ("check", "Nothing to send: I'll score these again from the new copy. Say if "
                                   "you would rather I kept the answers from the old one."),

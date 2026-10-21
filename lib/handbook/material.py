@@ -20,8 +20,38 @@ KINDS = dict(readers.OWNER_LABELS)
 ROWS_PER_SHEET = 5000
 
 
+def name_plain_files(folder: Path) -> list[Path]:
+    """Give every file put straight into the uploads folder (in Finder, or by a script) the
+    `<upload id>--<name>` name an upload from the page gets, so it is read like one. Hidden files and
+    one changed in the last few seconds (still being copied) are left alone. Returns the new paths.
+    BankTrack (20 Oct 2026): plain names were refused as "no files to draft from"."""
+    import re
+    import secrets
+    import time
+    out = []
+    if not folder.is_dir():
+        return out
+    for p in sorted(folder.iterdir()):
+        if not p.is_file() or p.name.startswith(".") or "--" in p.name:
+            continue
+        try:
+            if time.time() - p.stat().st_mtime < 3:
+                continue
+        except OSError:
+            continue
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", p.stem).strip("-.")[:60] or "upload"
+        target = folder / f"{secrets.token_hex(16)}--{stem}{p.suffix.lower()}"
+        try:
+            p.rename(target)
+        except OSError:
+            continue
+        out.append(target)
+    return out
+
+
 def files(project: Project) -> list[Path]:
     folder = project.path.joinpath(*FOLDER)
+    name_plain_files(folder)
     return sorted(p for p in folder.glob("*--*") if p.is_file()) if folder.is_dir() else []
 
 

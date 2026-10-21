@@ -22,7 +22,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import urllib.parse
+from pathlib import Path
 from typing import Optional
 
 from . import fetch
@@ -156,12 +159,19 @@ def archive_captures(url: str, before: Optional[str] = None, limit: int = 3) -> 
     before `before` (YYYY-MM-DD, else today), latest first. The CDX index is asked, not the
     availability API: for the Pecking Order's KFC France pages the latter listed nothing while
     the index held captures."""
+    global LAST_ARCHIVE_STATE
+    if archive_resting():
+        LAST_ARCHIVE_STATE = "busy"
+        return []
     to = (before or "").replace("-", "")[:8]
     query = ARCHIVE_CDX.format(url=urllib.parse.quote(url, safe=""), limit=limit) + (f"&to={to}" if to else "")
     probe = fetch.fetch_bytes(query, retries=2)          # the index answers empty now and then
-    if not probe.ok or not probe.content.strip():
+    if probe.status_code != 429 and (not probe.ok or not probe.content.strip()):
         probe = fetch.fetch_bytes(query, retries=1)
-    global LAST_ARCHIVE_STATE
+    if probe.status_code == 429:                         # still too busy after fetch's waits
+        LAST_ARCHIVE_STATE = "busy"
+        _rest_archive()
+        return []
     if not probe.ok:
         LAST_ARCHIVE_STATE = "unreachable"
         return []
@@ -176,9 +186,29 @@ def archive_captures(url: str, before: Optional[str] = None, limit: int = 3) -> 
 
 
 # What the last archive_captures call met: "found", "none" (the index answered with no capture before
-# the date), or "unreachable" (the index did not answer). ChickenTrack (15 Oct 2026): an archive that
-# refused connections was reported as having no copy.
+# the date), "busy" (it kept answering 429, too many requests) or "unreachable" (it did not answer).
+# ChickenTrack (15 Oct 2026): an archive that refused connections was reported as having no copy.
 LAST_ARCHIVE_STATE = "none"
+
+# After the archive has stayed busy through fetch's waits, every `hb fetch` (each its own process) leaves
+# it alone for ARCHIVE_REST_S, instead of waiting a minute per document again (BankTrack, 20 Oct 2026).
+ARCHIVE_REST_S = 600
+ARCHIVE_REST_FILE = Path(tempfile.gettempdir()) / "handbook-web-archive-busy"
+
+
+def _rest_archive() -> None:
+    try:
+        ARCHIVE_REST_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def archive_resting() -> bool:
+    """Whether the archive said it was too busy within the last ARCHIVE_REST_S seconds."""
+    try:
+        return time.time() - float(ARCHIVE_REST_FILE.read_text(encoding="utf-8").strip() or 0) < ARCHIVE_REST_S
+    except (OSError, ValueError):
+        return False
 
 
 def archive_why_not(url: str, before: Optional[str]) -> str:
@@ -186,6 +216,8 @@ def archive_why_not(url: str, before: Optional[str]) -> str:
     after the cut-off (with the earliest)."""
     if LAST_ARCHIVE_STATE == "unreachable":
         return "the web archive did not answer (try again later)"
+    if LAST_ARCHIVE_STATE == "busy":
+        return "the web archive was too busy to answer (it said 429, too many requests; try again later)"
     if before:
         later = archive_captures(url, None, limit=1)
         if later:
@@ -332,6 +364,47 @@ def is_shell(text: str) -> bool:
         r"page (?:you (?:were|are) looking for )?(?:was |has |could not be |cannot be )?(?:not found|moved|"
         r"doesn't exist|does not exist|found)|site can.t be reached|"
         r"^\W*(?:fatal error|parse error|internal server error|service unavailable|bad gateway)\b", text or "", re.I))
+
+
+# Within this many days of the cut-off, today's page is close enough: no archive copy is looked for and it
+# is not marked as today's version.
+TODAY_GRACE_DAYS = 31
+
+
+def wants_dated_copy(before: Optional[str]) -> bool:
+    """Whether the cut-off is far enough past that today's page may not be the one that stood then."""
+    import datetime as _dt
+    try:
+        return (_dt.date.today() - _dt.date.fromisoformat(before)).days > TODAY_GRACE_DAYS
+    except (TypeError, ValueError):
+        return False
+
+
+def near_copy(url: str, before: Optional[str]) -> Optional[fetch.FetchResult]:
+    """The archive's capture of a page from before a past cut-off, when one is nearer the cut-off than
+    today is and is not a shell, robot check or error page: the page as it stood then. None otherwise
+    (`archive_why_not` then says why). Its `url` is the archive address."""
+    import datetime as _dt
+    if not wants_dated_copy(before):
+        return None
+    cut = _dt.date.fromisoformat(before)
+    for stamp in [x for x in archive_captures(url, before, limit=4) if _near(x, before)][:2]:
+        got = _dt.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+        if (cut - got) >= (_dt.date.today() - cut):
+            continue                     # today's page is nearer the cut-off than this capture
+        raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+        if raw.status_code == 429:           # the index answered but the capture stayed busy
+            global LAST_ARCHIVE_STATE
+            LAST_ARCHIVE_STATE = "busy"
+            _rest_archive()
+            return None
+        if not raw.ok:
+            continue
+        if fetch.kind_of(raw.content, raw.content_type) == "html" and (
+                is_shell(fetch.extract_text_html(raw.content)) or is_challenge(raw.content)):
+            continue
+        return fetch.FetchResult(ARCHIVE_PAGE.format(stamp=stamp, url=url), 200, raw.content, raw.content_type)
+    return None
 
 
 def archive_copy(url: str, before: Optional[str] = None) -> Optional[fetch.FetchResult]:

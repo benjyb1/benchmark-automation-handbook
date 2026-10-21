@@ -415,6 +415,8 @@
                                       longer the text the answer was scored from)
      group_differs    a not-equals    "Differs across countries"
      after_cutoff     a calendar      "After the cut-off"
+     todays_version   an empty calendar "Only today's copy" (a web page kept as it is today, with no
+                                      archive copy from before a cut-off long past)
      reads_disagree   a half disc     "Reads disagree"
      weak_source      one bar of three "Not from the company" (every document cited is weak)
    "judgement" (the answer rests on Claude's reading of an open rule) is not
@@ -432,12 +434,13 @@
 (function (HB) {
   "use strict";
 
-  const FACTUAL = ["quote_not_found", "document_changed", "group_differs", "after_cutoff", "reads_disagree", "weak_source", "owner_changed"];
+  const FACTUAL = ["quote_not_found", "document_changed", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed"];
   const WORDS = {
     quote_not_found: "Quote not on saved page",
     document_changed: "Document changed since scored",
     group_differs: "Differs across countries",
     after_cutoff: "After the cut-off",
+    todays_version: "Only today's copy",
     reads_disagree: "Second read differs",
     weak_source: "Not from the company",
     owner_changed: "Changed by the owner",
@@ -453,6 +456,8 @@
     group_differs: () => [HB.svg("path", Object.assign({ d: "M2.9 4.9h6.2M2.9 7.3h6.2M7.4 2.7 4.6 9.5" }, LINE))],
     after_cutoff: () => [HB.svg("rect", Object.assign({ x: 3, y: 3.2, width: 6, height: 5.8, rx: 0.9 }, LINE)),
       HB.svg("path", { d: "M3 3.2h6v2H3z", fill: "currentColor" })],
+    todays_version: () => [HB.svg("rect", Object.assign({ x: 3, y: 3.2, width: 6, height: 5.8, rx: 0.9 }, LINE)),
+      HB.svg("path", Object.assign({ d: "M3 5.2h6" }, LINE)), HB.svg("circle", { cx: 6, cy: 7.1, r: 0.9, fill: "currentColor" })],
     reads_disagree: () => [HB.svg("circle", Object.assign({ cx: 6, cy: 6, r: 3.4 }, LINE)),
       HB.svg("path", { d: "M6 2.6a3.4 3.4 0 0 1 0 6.8z", fill: "currentColor" })],
     weak_source: () => [HB.svg("path", Object.assign({ d: "M3.4 9V6.6" }, LINE, { "stroke-width": "1.8" })),

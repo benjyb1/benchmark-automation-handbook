@@ -36,6 +36,14 @@ TIMEOUT_S = 30.0
 MAX_BYTES = 60_000_000
 TOO_LARGE = "File is larger than 60 MB and was not saved"       # said when a response passes MAX_BYTES
 RETRY_WAIT_S = 2.0
+# A site that says it is busy (429) is waited on longer each time, or as long as it asks (Retry-After) up to
+# BUSY_WAIT_MAX_S: the web archive answered 429 to every request of the BankTrack test (20 Oct 2026), so
+# the copy from before the cut-off never came and today's pages were kept.
+BUSY_WAITS_S = (5.0, 15.0, 30.0)
+BUSY_WAIT_MAX_S = 60.0
+# Statuses a site's robot filter gives an agent that is not a browser. abnamro.com (Akamai, 20 Oct 2026)
+# answered 503 to every page for the tool's own agent, curl's and Claude's web tool, and 200 to a browser's.
+REFUSED_AS_ROBOT = (403, 503)
 EXTENSIONS = readers.EXTENSIONS          # the extension each kind is saved with (a picture keeps its own)
 # Where the Mac keeps its trusted certificates: the tool's own Python may not know them all
 # (7-Eleven's site, 14 Oct 2026: refused by the tool, fetched by curl).
@@ -52,6 +60,7 @@ class FetchResult:
     content_type: str                 # lower case, without parameters
     failure: Optional[str] = None     # None on success; else "http-404" or "request-error: X"
     final_url: Optional[str] = None   # where the request ended up after redirects, when known
+    retry_after: Optional[float] = None  # seconds a busy site (429, 503) asked us to wait, when it said
 
     @property
     def ok(self) -> bool:
@@ -101,7 +110,8 @@ def _get_once(url: str, timeout: float, context=None, agent: str = USER_AGENT) -
                 except (OSError, EOFError):
                     pass
     except urllib.error.HTTPError as exc:
-        return FetchResult(url, exc.code, b"", "", failure=f"http-{exc.code}")
+        return FetchResult(url, exc.code, b"", "", failure=f"http-{exc.code}",
+                           retry_after=_retry_after(getattr(exc, "headers", None)))
     except Exception as exc:  # noqa: BLE001  (URLError, socket timeout, bad scheme)
         if _cert_failure(exc):
             if context is None and os.path.isfile(SYSTEM_CERTS):
@@ -111,6 +121,15 @@ def _get_once(url: str, timeout: float, context=None, agent: str = USER_AGENT) -
         return FetchResult(url, 0, b"", "", failure=f"request-error: {type(exc).__name__}")
     return FetchResult(url, status, content, ctype, failure=None if status == 200 else f"http-{status}",
                        final_url=final_url)
+
+
+def _retry_after(headers) -> Optional[float]:
+    """Seconds from a Retry-After header given in seconds (a date form is ignored), else None."""
+    try:
+        value = (headers.get("Retry-After") or "").strip() if headers is not None else ""
+        return float(value) if value else None
+    except (AttributeError, ValueError):
+        return None
 
 
 def _curl(url: str, timeout: float) -> Optional[FetchResult]:
@@ -147,20 +166,32 @@ def _curl(url: str, timeout: float) -> Optional[FetchResult]:
 
 def fetch_bytes(url: str, timeout: float = TIMEOUT_S, retries: int = 1) -> FetchResult:
     """Polite GET: a real User-Agent, a 30-second timeout and one retry when the site did not
-    answer, said it was busy (429) or failed (5xx). Anything else (404, 403) is final."""
+    answer or failed (5xx). A 403 or 503 is tried again as a browser, then with the Mac's curl, since
+    robot filters answer either. A site busy with us (429) is waited on, longer each time (BUSY_WAITS_S,
+    or its Retry-After), up to len(BUSY_WAITS_S) times whatever `retries` says. Anything else (404) is final."""
     url = url.strip().replace(" ", "%20")            # an address copied with spaces (ALI, 14 Oct 2026)
+    agent = USER_AGENT
     result = _get_once(url, timeout)
-    if result.status_code == 403:
-        result = _get_once(url, timeout, agent=BROWSER_AGENT)
-    if result.status_code == 403:
+    if result.status_code in REFUSED_AS_ROBOT:
+        tried = _get_once(url, timeout, agent=BROWSER_AGENT)
+        if tried.ok or tried.status_code not in REFUSED_AS_ROBOT:
+            agent = BROWSER_AGENT
+        result = tried
+    if result.status_code in REFUSED_AS_ROBOT:
         # Some sites refuse Python's own connection whatever it calls itself (carrefour.com, OWA test,
         # 15 Oct 2026) but serve the Mac's curl.
         result = _curl(url, timeout) or result
-    for _ in range(retries):
-        if result.ok or not (result.status_code in (0, 429) or result.status_code >= 500):
+    tries, busy = 0, 0
+    while not result.ok:
+        if result.status_code == 429 and busy < len(BUSY_WAITS_S):
+            time.sleep(min(result.retry_after or BUSY_WAITS_S[busy], BUSY_WAIT_MAX_S))
+            busy += 1
+        elif (result.status_code == 0 or result.status_code >= 500) and tries < retries:
+            time.sleep(RETRY_WAIT_S)
+            tries += 1
+        else:
             break
-        time.sleep(RETRY_WAIT_S)
-        result = _get_once(url, timeout)
+        result = _get_once(url, timeout, agent=agent) if agent != USER_AGENT else _get_once(url, timeout)
     return result
 
 
@@ -173,6 +204,8 @@ def describe_failure(result: FetchResult) -> str:
         return "the site sent the address to its home page, so the page is no longer there"
     if result.failure == "http-202":
         return "the site answered 202 (it often means a check for robots, with no page sent)"
+    if result.failure == "http-429":
+        return "the site answered 429 (too many requests) each time, even after waiting"
     if result.failure and result.failure.startswith("http-"):
         return f"the site answered {result.failure[5:]}"
     if result.failure:
@@ -433,17 +466,19 @@ def store_document(project, meta: dict, data: bytes, extension: str) -> Path:
     return folder
 
 
-def set_as_at(project, doc_id: str, when: str) -> None:
-    """Record the date a document speaks as at, given by whoever filed it (`date_basis` "owner"):
-    it outranks the PDF's own date, which is often when the file was saved, not what it states
-    (ALDF's compendium: saved 2026-01-24, the law as at 1 September 2025)."""
+def set_as_at(project, doc_id: str, when: str, basis: str = "owner") -> None:
+    """Record the date a document speaks as at, given by whoever filed it (`date_basis` "owner", or
+    "finder" when a finder read it off the document): it outranks the PDF's own date, which is often
+    when the file was saved, not what it states (ALDF's compendium: saved 2026-01-24, the law as at
+    1 September 2025). A finder's date is kept apart from the owner's: BBVA's 2020 statement came back
+    from one dated 2023-12-01 (BankTrack, 20 Oct 2026)."""
     from .folder import read_json
     from .shapes import is_date
     if not is_date(when):
         raise HandbookError(f"--date must be a date like 2025-09-01, not {when!r}.")
     path = project.doc_dir(doc_id) / "meta.json"
     meta = read_json(path)
-    meta["date"], meta["date_basis"] = when, "owner"
+    meta["date"], meta["date_basis"] = when, basis
     write_json(path, meta)
 
 

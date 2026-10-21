@@ -2,16 +2,17 @@
    Handbook viewer: views/grid.js, the Grid tab (the landing tab once scoring has
    started). Registers HB.views.grid.
 
-   The top of the tab is kept short so the data starts high on the screen:
-     a visually hidden h2; one toolbar row (group by as a segmented control when
-     there are at most four labels, else a select; one compact select per label
-     to filter; Strips | Table; a "Key" button whose panel explains every mark);
-     one counts line (assessments, answered, no evidence, flagged, then one count
-     per factual flag kind with its glyph, and the switch "Show the N answers
-     resting on open rules"). While any cell is still to be scored (a run is on),
-     the counts line starts "Scoring: X of Y" over a
-     thin progress bar, and unscored cells show as empty outlined boxes. Nothing
-     in the bundle says which row is being scored now, so no row is marked.
+   The top of the tab is one quiet line, so the data starts high on the screen:
+     how many rows are in view ("142 countries", or "12 of 142 countries" with
+     the filters in use named and a Clear button), how many answers, how many to
+     check (factual flags), then View and "Add documents or instructions". View
+     opens a panel holding the rest: group by (a segmented control when there are
+     at most four labels, else a select), one select per label under "Show only",
+     Strips | Table, the switch that outlines the answers resting on open rules,
+     and "What the marks mean" (the key, each mark carrying its count in view).
+     Scoring progress is the run bar's to show, so the Grid does not repeat it;
+     unscored cells show as empty outlined boxes. Nothing in the bundle says
+     which row is being scored now, so no row is marked.
 
    Wide screens (40rem and up), two views (HB.state.gridView, kept per viewer):
      Strips  every row as a thin strip of marks, one per question (bar height =
@@ -63,6 +64,7 @@
     document_changed: "a saved document changed after this {unit} was scored; it will be scored again from the new copy",
     group_differs: "another {unit} in the same group cited the same document and got a different answer",
     after_cutoff: "a document cited is dated after the cut-off",
+    todays_version: "a web page cited was saved as it is today, with no copy from before the cut-off",
     reads_disagree: "a second, independent read gave a different answer",
     weak_source: "every document cited is a weak source, such as a copy on another site",
     owner_changed: "the owner corrected this answer; open it to see whether Claude agreed",
@@ -71,15 +73,15 @@
 
   const STYLE = `
 .hb-view[data-view="grid"] { gap: var(--s2); }
-.hbg-progress { margin-top: -2px; }
 .hbg-more { margin: 0 0 var(--s1); }
-.hbg-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.hbg-bar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
+.hbg-key.hbg-view { position: static; }   /* the panel hangs from the bar's right edge, wherever View wraps to */
 .hbg-bar__grow { flex: 1 1 0; min-width: 0; }
 .hbg-seg > .btn { min-height: 1.875rem; padding-inline: 0.625rem; font-size: var(--fs-12); }
 .hbg-sel { width: auto; min-height: 2rem; max-width: 13rem; padding: 0.1875rem 1.75rem 0.1875rem var(--s2); font-size: var(--fs-14); }
 .hbg-group .hbg-sel { max-width: 15rem; }
 .hbg-sel.is-set { border-color: var(--accent); background-color: var(--accent-soft); }
-.hbg-filters { display: contents; }
+.hbg-filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .hbg-group, .hbg-group__seg { display: inline-flex; align-items: center; gap: var(--s2); }
 .hbg-only-phone, .hbg-key__list .hbg-k-phone { display: none; }
 .hbg-key { position: relative; }
@@ -97,16 +99,21 @@
 .hbg-counts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); color: var(--ink-2); font-size: var(--fs-14); font-variant-numeric: tabular-nums; }
 .hbg-counts b { color: var(--ink); font-weight: 650; }
 .hbg-counts__part + .hbg-counts__part::before { content: "\\00b7"; margin-right: var(--s3); color: var(--rule-strong); }
-.hbg-counts__kinds { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--s1) var(--s3); padding-left: var(--s3); border-left: 1px solid var(--rule); font-size: var(--fs-12); }
-.hbg-kind { display: inline-flex; align-items: center; gap: 0.3rem; }
-.hbg-kind .flag-glyph { width: 0.875rem; height: 0.875rem; color: var(--critical); }
 .hbg-counts__part { display: inline-flex; align-items: center; gap: 0.3em; }
-.hbg-cnt-mk { display: inline-block; flex: none; --mk-w: 14px; width: 14px; height: 14px; margin-right: 0.05rem; }
-.hbg-cell.hbg-cnt-cell { width: 1.25rem; height: 0.875rem; border: 1px solid var(--rule); }
-.hbg-live { color: var(--ink); font-weight: 600; }
-.hbg-progress { height: 3px; border-radius: 2px; background: var(--rule); overflow: hidden; }
-.hbg-progress > span { display: block; height: 100%; background: var(--accent); }
-.hbg-switch { display: inline-flex; align-items: center; gap: var(--s2); margin-left: auto; color: var(--ink); font-size: var(--fs-14); cursor: pointer; }
+.hbg-clear { min-height: 0; padding: 0 0.375rem; }
+.hbg-view__panel { width: min(46rem, calc(100vw - 2 * var(--gutter))); max-height: min(75vh, 40rem); overflow: auto; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: var(--s3) var(--s4); align-items: start; font-size: var(--fs-14); }
+.hbg-view__arrange { display: grid; gap: var(--s3); }
+.hbg-view__row { display: grid; justify-items: start; gap: var(--s1); }
+.hbg-view .hbg-filters { flex-direction: column; align-items: stretch; width: 100%; }
+.hbg-view .hbg-filters .hbg-sel { width: 100%; max-width: none; }
+.hbg-view .hbg-filters .btn { align-self: start; }
+.hbg-key__more > summary { color: var(--ink-2); cursor: pointer; }
+.hbg-key__more > .hbg-key__list { margin-top: var(--s2); }
+.hbg-view__row .hbg-group { flex-wrap: wrap; }
+.hbg-view__label { color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; }
+.hbg-view__key { display: grid; gap: var(--s2); padding-left: var(--s4); border-left: 1px solid var(--rule); font-size: var(--fs-12); }
+.hbg-key__n { flex: none; margin-left: auto; padding-left: var(--s2); color: var(--ink); font-variant-numeric: tabular-nums; }
+.hbg-switch { display: inline-flex; align-items: center; gap: var(--s2); color: var(--ink); font-size: var(--fs-14); cursor: pointer; }
 .hbg-switch input { appearance: none; position: relative; flex: none; width: 2rem; height: 1.125rem; margin: 0; border: 1px solid var(--rule-strong); border-radius: 999px; background: var(--surface); cursor: pointer; }
 .hbg-switch input::after { content: ""; position: absolute; top: 2px; left: 2px; width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--ink-2); transition: transform var(--dur-fast) var(--ease); }
 .hbg-switch input:checked { border-color: var(--accent); background: var(--accent); }
@@ -242,14 +249,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   .hbg-only-phone { display: inline-flex; }
   .hbg-only-wide, .hbg-key__list .hbg-k-wide { display: none; }
   .hbg-key__list .hbg-k-phone { display: flex; }
-  .hbg-filters { display: none; }
-  .hbg-filters.is-open { display: flex; flex-wrap: wrap; gap: var(--s2); flex-basis: 100%; min-width: 0; max-width: 100%; }
-  .hbg-filters.is-open .hbg-sel { flex: 1 1 9rem; width: 0; min-width: 0; max-width: 100%; }   /* a long option never widens the page */
+  .hbg-filters .hbg-sel { min-width: 0; }   /* a long option never widens the page */
   .hbg-counts { font-size: var(--fs-12); }
-  .hbg-counts__kinds { padding-left: 0; border-left: 0; }
-  .hbg-counts__part + .hbg-counts__part::before { content: none; }
-  .hbg-switch { margin-left: 0; font-size: var(--fs-12); }
-  .hbg-key { margin-left: auto; }
+  .hbg-switch { font-size: var(--fs-12); }
+  .hbg-view__panel { grid-template-columns: minmax(0, 1fr); }
+  .hbg-view__key { padding-left: 0; border-left: 0; }
 }
 @media (width >= 40rem) {
   .hbg-phone { display: none; }
@@ -272,7 +276,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   :is(.hbg-mk, .hbg-cell, .hbg-sq).is-hl { outline-color: Highlight; }
   .hbg-mk::after { background: CanvasText; }
   .hbg-mk.is-flag::before { border-right-color: CanvasText; }
-  .hbg-cell__flags, .hbg-kind .flag-glyph { color: CanvasText; }
+  .hbg-cell__flags, .hbg-key .flag-glyph { color: CanvasText; }
 }`;
 
   // Every selector above gets ".hb " in front, so the grid's rules outrank the
@@ -921,13 +925,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     };
     const select = h("select", {
       class: "input hbg-sel", "aria-label": "Group by", onchange: (e) => pick(e.target.value),
-    }, opts.map(([v, text]) => h("option", { value: v, selected: v === m.groupBy }, v ? "Group by " + text.toLowerCase() : text)));
+    }, opts.map(([v, text]) => h("option", { value: v, selected: v === m.groupBy }, text)));
     if (m.groupLabels.length <= 4) {
       // Wide screens get the segmented control; a phone the select (one is hidden).
       return h("div", { class: "hbg-group" },
-        h("span", { class: "hbg-group__seg hbg-only-wide" },
-          h("span", { class: "small muted", "aria-hidden": "true" }, "Group by"),
-          segmented("Group by", opts, m.groupBy, pick)),
+        h("span", { class: "hbg-group__seg hbg-only-wide" }, segmented("Group by", opts, m.groupBy, pick)),
         h("span", { class: "hbg-only-phone" }, select));
     }
     return h("div", { class: "hbg-group" }, select);
@@ -954,8 +956,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   }
 
   // The key explains the marks of the layout in view: strips or table on a wide
-  // screen (items with hbg-k-wide), the squares on a phone (hbg-k-phone).
-  function keyPanel(m, view) {
+  // screen (items with hbg-k-wide), the squares on a phone (hbg-k-phone). Each
+  // mark there is any of in view carries its count, so the key is also the counts.
+  function keyList(m, view) {
+    const c = m.counts;
+    const n = (k) => (k ? h("b", { class: "hbg-key__n" }, fmtInt(k)) : null);
     const sample = (cls, style, ...kids) => h("span", { class: cls, style, "aria-hidden": "true" }, kids);
     const box = "width: 1.75rem; height: 1.25rem; border: 1px solid var(--rule); font-size: var(--fs-12);";
     const sq = "flex: none; width: 1.25rem;";
@@ -964,134 +969,129 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const phone = "hbg-k-phone";
     const ramp = (base, style) => h("span", { class: "hbg-key__ramp", "aria-hidden": "true" },
       [0, 1, 2, 3, 4].map((s) => sample(base + " hbg-s" + s, style)));
-    const li = (cls, ...kids) => h("li", { class: cls }, kids);
+    const li = (cls, ...kids) => h("li", { class: cls }, kids.map((k) => (typeof k === "string" ? h("span", { class: "hbg-key__text" }, k) : k)));
     const items = [];
     if (view === "strips") {
       items.push(
-        li(wide, sample("hbg-mk", "--v: 0.6"), "Green fill: the points scored. A full square is top marks; a thin sliver, a low score; empty grey, none"),
-        li(wide, sample("hbg-mk is-ne"), "Hatched: no evidence found"),
-        li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner, top right: something to check on this answer, one of the kinds below. Hover over it to see which; click it and the panel says why at the top"),
-        li(wide, sample("hbg-mk is-wait"), "Not scored yet"),
+        li(wide, sample("hbg-mk", "--v: 0.6"), "Green fill: the points scored. A full square is top marks; a thin sliver, a low score; empty grey, none", n(c.answered)),
+        li(wide, sample("hbg-mk is-ne"), "Hatched: no evidence found", n(c.ne)),
+        li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner, top right: something to check on this answer, one of the kinds below. Hover over it to see which; click it and the panel says why at the top", n(c.flagged)),
+        li(wide, sample("hbg-mk is-wait"), "Not scored yet", n(c.waiting)),
         li(wide, sample("hbg-mk is-na"), "A gap: the question does not apply"),
       );
     } else {
       items.push(
-        li(wide, ramp("hbg-cell", "border: 1px solid var(--rule)"), "Shade: share of the question's top points, none to all"),
-        li(wide, sample("hbg-cell", box, "0", h("span", { class: "hbg-ne" }, "∅")), "No evidence found"),
-        li(wide, sample("hbg-cell is-wait", box), "Not scored yet"),
+        li(wide, ramp("hbg-cell", "border: 1px solid var(--rule)"), "Shade: share of the question's top points, none to all", n(c.answered)),
+        li(wide, sample("hbg-cell", box, "0", h("span", { class: "hbg-ne" }, "∅")), "No evidence found", n(c.ne)),
+        li(wide, sample("hbg-cell is-wait", box), "Not scored yet", n(c.waiting)),
         li(wide, sample("hbg-cell is-muted", box, "n/a"), "Does not apply"),
       );
     }
     items.push(
-      li(phone, ramp("hbg-sq", sq), "Shade: share of the question's top points, none to all"),
-      li(phone, sample("hbg-sq is-ne", sq, "0"), "No evidence found"),
-      li(phone, sample("hbg-sq is-wait", sq), "Not scored yet"),
+      li(phone, ramp("hbg-sq", sq), "Shade: share of the question's top points, none to all", n(c.answered)),
+      li(phone, sample("hbg-sq is-ne", sq, "0"), "No evidence found", n(c.ne)),
+      li(phone, sample("hbg-sq is-wait", sq), "Not scored yet", n(c.waiting)),
       li(phone, sample("hbg-sq is-na", sq), "A gap: the question does not apply"),
       li(null, view === "strips" ? sample("hbg-mk", "--v: 0", h("i", { class: "hbg-mk__stale" })) : sample("hbg-cell is-stale", box),
-        "Dark corner, top left: the question changed since it was scored"),
+        "Dark corner, top left: the question changed since it was scored", n(c.stale)),
     );
     if (view !== "strips") items.push(li(wide, sample("hbg-cell", box, h("span", { class: "hbg-cell__flags" }, HB.flagGlyph("quote_not_found"))),
-      "Red sign on a cell's corner: something to check, one of the kinds below. Hover over the cell to see which; open it to see what to do"));
+      "Red sign on a cell's corner: something to check, one of the kinds below. Hover over the cell to see which; open it to see what to do", n(c.flagged)));
     items.push(li(phone, sample("hbg-sq", sq, HB.flagGlyph("quote_not_found")),
-      "Red sign on a square: something to check, one of the kinds below. Open it to see what to do"));
-    for (const k of HB.flagKinds.factual) {
-      items.push(li(null, view === "strips" ? null : HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", { class: "hbg-key__text" }, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k]));
-    }
+      "Red sign on a square: something to check, one of the kinds below. Open it to see what to do", n(c.flagged)));
+    // The kinds of check with some in view are listed; the others fold away under one line.
+    const kind = (k) => li(null, view === "strips" ? null : HB.flagGlyph(k), FLAG_MEANING[k] ? h("span", { class: "hbg-key__text" }, h("b", null, HB.flagKinds.words[k]), ": " + FLAG_MEANING[k].replace("{unit}", unitWord)) : HB.flagKinds.words[k], n(c.kinds[k]));
+    const others = HB.flagKinds.factual.filter((k) => !c.kinds[k]);
+    for (const k of HB.flagKinds.factual) if (c.kinds[k]) items.push(kind(k));
     items.push(li(null, h("span", { class: "hbg-rm", "aria-hidden": "true" }, "12"),
       "Under a question: how many answers shown rest on Claude's reading of a rule you have not decided yet (hover to see which rules)"));
-    if (m.showRests) items.push(li(null, sample("hbg-cell", box + " outline: 1.5px dashed var(--ink); outline-offset: -2px"), "Rests on an open rule"));
+    if (m.showRests) items.push(li(null, sample("hbg-cell", box + " outline: 1.5px dashed var(--ink); outline-offset: -2px"), "Rests on an open rule", n(c.rests)));
     if (m.hl.size) items.push(li(null, sample("hbg-cell is-hl", box), "Highlighted"));
-    return h("div", { class: "hbg-key__panel" }, h("h3", null, "Key"), h("ul", { class: "hbg-key__list" }, items));
+    return [h("ul", { class: "hbg-key__list" }, items),
+      others.length ? h("details", { class: "hbg-key__more" }, h("summary", null, "Other kinds of check, none in view (" + others.length + ")"),
+        h("ul", { class: "hbg-key__list" }, others.map(kind))) : null];
   }
 
+  /* One quiet line over the grid: how many rows are in view, how many answers, how many to check,
+     then View and the one action. A filter in use is named on the line with Clear, since it hides
+     rows. Everything else (group by, filters, Strips or Table, the outline switch, the key with its
+     counts) sits in the View panel, which stays open across redraws while it is being used. */
   function toolbar(ctx, m, view) {
     const state = ctx.state;
-    const nFilters = Object.keys(m.filters).filter((l) => m.filters[l]).length;
-    const parts = [groupControl(ctx, m)];
-    parts.push(h("button", {
-      type: "button", class: "btn btn--small hbg-only-phone", "aria-expanded": state.gridFiltersOpen ? "true" : "false",
-      onclick: () => {
-        state.gridFiltersOpen = !state.gridFiltersOpen;
-        ctx.render();
-        refocus(".hbg-bar .hbg-only-phone");
-      },
-    }, "Filters" + (nFilters ? " (" + nFilters + ")" : "")));
-    parts.push(h("div", { class: "hbg-filters" + (state.gridFiltersOpen ? " is-open" : "") }, filterSelects(ctx, m),
-      nFilters ? h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => {
-        state.filters = {};
-        ctx.render();
-        refocus(".hbg-group button, .hbg-group select");
-      } }, "Clear filters") : null));
-    parts.push(h("span", { class: "hbg-bar__grow" }));
-    const addMore = HB.bulk ? HB.bulk.button() : null;   // "Add documents or instructions", the local page only (bulk.js)
-    if (addMore) parts.push(addMore);
-    const hlCount = Array.isArray(state.highlight) ? state.highlight.length : 0;
-    if (hlCount) {
-      parts.push(h("button", { type: "button", class: "btn btn--small", onclick: () => ctx.highlight([]) },
-        "Clear highlight (" + fmtInt(hlCount) + (hlCount === 1 ? " cell)" : " cells)")));
-    }
-    parts.push(h("div", { class: "hbg-only-wide" }, segmented("Layout", [["strips", "Strips"], ["table", "Table"]], view, (v) => {
-      state.gridView = v;
-      HB.store.set("grid-view", v);
-      ctx.render();
-      refocus('.hbg-only-wide [data-value="' + v + '"]');
-    })));
-    const key = h("details", { class: "hbg-key" },
-      h("summary", { class: "btn btn--small" }, "Key"), keyPanel(m, view));
-    parts.push(key);
-    return h("div", { class: "hbg-bar" }, parts);
-  }
-
-  /* The counts line doubles as the key: each count wears the mark it counts, as it looks in the
-     view on screen (a small strip mark, or the table's sign), so a hatched square or a corner on
-     the grid can be matched to its words without opening the Key. */
-  function countsLine(ctx, m, view) {
     const c = m.counts;
-    const strips = view === "strips";
-    const mark = (cls) => h("span", { class: (strips ? "hbg-mk " : "hbg-cell hbg-cnt-cell ") + cls + " hbg-cnt-mk", "aria-hidden": "true" });
-    const parts = [];
     const total = m.units.length;
     const part = (...kids) => h("span", { class: "hbg-counts__part" }, kids);
-    if (m.live) {
-      parts.push(h("span", { class: "hbg-counts__part hbg-live" }, "Scoring: ", fmtInt(m.live.done) + " of " + ctx.unitWords(m.live.of)));
-      parts.push(m.shown.length === total ? null : part(h("b", null, fmtInt(m.shown.length)), " of " + ctx.unitWords(total) + " shown"));
-    } else {
-      parts.push(part(h("b", null, fmtInt(m.shown.length)), m.shown.length === total ? " " + ctx.unitWords(total).replace(/^[\d,]+ /, "") : " of " + ctx.unitWords(total)));
+    const parts = [];
+    parts.push(part(h("b", null, fmtInt(m.shown.length)), m.shown.length === total
+      ? " " + ctx.unitWords(total).replace(/^[\d,]+ /, "")
+      : " of " + ctx.unitWords(total)));
+    const set = m.labels.filter((l) => m.filters[l]);
+    if (set.length) {
+      // A value in words names itself ("Kenya", "Already scored"); a bare number needs its label ("law year 2010").
+      const said = (l) => { const v = m.filters[l]; return v === NONE ? labelName(l) + " not recorded" : /\p{L}/u.test(v) ? v : labelName(l) + " " + v; };
+      parts.push(part(set.map(said).join(", "),
+        h("button", { type: "button", class: "btn btn--small btn--quiet hbg-clear", onclick: () => {
+          state.filters = {};
+          ctx.render();
+          refocus(".hbg-view > summary");
+        } }, "Clear")));
     }
     parts.push(part(h("b", null, fmtInt(c.answered)), " answered"));
-    parts.push(part(strips ? mark("is-ne") : null, h("b", null, fmtInt(c.ne)), " no evidence", strips ? null : h("span", { class: "hbg-ne", "aria-hidden": "true" }, " \u2205")));
-    if (c.waiting) parts.push(part(mark("is-wait"), h("b", null, fmtInt(c.waiting)), " not scored yet"));
-    parts.push(part(strips ? mark("is-flag") : null, h("b", null, fmtInt(c.flagged)), strips ? " flagged (red corner)" : " flagged"));
-    if (c.stale) parts.push(part(strips ? h("span", { class: "hbg-mk hbg-cnt-mk", "aria-hidden": "true" }, h("i", { class: "hbg-mk__stale" })) : mark("is-stale"),
-      h("b", null, fmtInt(c.stale)), (c.stale === 1 ? " answer" : " answers") + " scored before its question changed (dark corner)"));
-    const kinds = h("span", { class: "hbg-counts__kinds", "aria-label": "Flags by kind" },
-      // Only the kinds with some in view: a bare glyph and a 0 read as noise (the Key lists them all).
-      // The strips show every kind as the same red corner, so there the kinds are words: their signs
-      // belong to the table and the answer panel.
-      HB.flagKinds.factual.filter((k) => c.kinds[k]).map((k) =>
-        h("span", { class: "hbg-kind" }, strips ? null : HB.flagGlyph(k), HB.flagKinds.words[k], h("b", null, fmtInt(c.kinds[k])))));
-    const line = h("div", { class: "hbg-counts", role: "status" }, h("span", { class: "cluster", style: "gap: 0 var(--s3)" }, parts), kinds);
-    if (c.rests) {
+    if (c.flagged) parts.push(part(h("b", null, fmtInt(c.flagged)), " to check"));
+    const bar = [h("div", { class: "hbg-counts", role: "status" }, parts)];
+    bar.push(h("span", { class: "hbg-bar__grow" }));
+    const hlCount = Array.isArray(state.highlight) ? state.highlight.length : 0;
+    if (hlCount) {
+      bar.push(h("button", { type: "button", class: "btn btn--small", onclick: () => ctx.highlight([]) },
+        "Clear highlight (" + fmtInt(hlCount) + (hlCount === 1 ? " cell)" : " cells)")));
+    }
+    bar.push(viewPanel(ctx, m, view));
+    const addMore = HB.bulk ? HB.bulk.button() : null;   // "Add documents or instructions", the local page only (bulk.js)
+    if (addMore) bar.push(addMore);
+    return h("div", { class: "hbg-bar" }, bar);
+  }
+
+  function viewPanel(ctx, m, view) {
+    const state = ctx.state;
+    const nFilters = m.labels.filter((l) => m.filters[l]).length;
+    const row = (title, ...kids) => h("div", { class: "hbg-view__row" }, h("span", { class: "hbg-view__label" }, title), kids);
+    const arrange = [row("Group by", groupControl(ctx, m))];
+    if (m.labels.length) {
+      arrange.push(row("Show only", h("div", { class: "hbg-filters" }, filterSelects(ctx, m),
+        nFilters ? h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => {
+          state.filters = {};
+          ctx.render();
+          refocus(".hbg-view > summary");
+        } }, "Clear filters") : null)));
+    }
+    arrange.push(h("div", { class: "hbg-view__row hbg-only-wide" }, h("span", { class: "hbg-view__label" }, "Layout"),
+      segmented("Layout", [["strips", "Strips"], ["table", "Table"]], view, (v) => {
+        state.gridView = v;
+        HB.store.set("grid-view", v);
+        ctx.render();
+        refocus('.hbg-view [data-value="' + v + '"]');
+      })));
+    if (m.counts.rests) {
       const id = HB.uid("hbg-rests");
-      line.append(h("label", { class: "hbg-switch", for: id },
+      const r = m.counts.rests;
+      arrange.push(h("label", { class: "hbg-switch", for: id },
         h("input", {
           id, type: "checkbox", role: "switch", checked: m.showRests,
           onchange: (e) => {
-            ctx.state.showRests = e.target.checked;
+            state.showRests = e.target.checked;
             ctx.render();
             refocus(".hbg-switch input");
           },
         }),
-        "Outline the " + fmtInt(c.rests) + (c.rests === 1 ? " answer that rests" : " answers that rest") + " on rules you have not decided"));
+        "Outline the " + fmtInt(r) + (r === 1 ? " answer that rests" : " answers that rest") + " on rules you have not decided"));
     }
-    const out = [line];
-    if (m.live) {
-      const share = m.live.of ? m.live.done / m.live.of : 0;
-      out.push(h("div", { class: "hbg-progress", role: "progressbar", "aria-label": "Scoring progress",
-        "aria-valuemin": "0", "aria-valuemax": String(m.live.of), "aria-valuenow": String(m.live.done) },
-      h("span", { style: { width: (share * 100).toFixed(1) + "%" } })));
-    }
-    return out;
+    const panel = h("div", { class: "hbg-key__panel hbg-view__panel" },
+      h("div", { class: "hbg-view__arrange" }, arrange),
+      h("div", { class: "hbg-view__key" }, h("h3", null, "What the marks mean"), keyList(m, view)));
+    return h("details", {
+      class: "hbg-key hbg-view", open: Boolean(state.gridPanelOpen),
+      ontoggle: (e) => { state.gridPanelOpen = e.target.open; },
+    }, h("summary", { class: "btn btn--small" }, "View"), panel);
   }
 
   /* ---- The tab ----------------------------------------------------------------- */
@@ -1130,7 +1130,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const m = model(ctx);
     const view = state.gridView;
     root.classList.toggle("hbg-rests-on", m.showRests);
-    root.append(toolbar(ctx, m, view), ...countsLine(ctx, m, view));
+    root.append(toolbar(ctx, m, view));
     if (Array.isArray(state.onlyRows)) {
       root.append(h("p", { class: "muted small" }, "Showing only the " + ctx.unitWords(m.shown.length) + " Claude pointed to. ",
         h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => { state.onlyRows = null; ctx.render(); } }, "Show all")));
@@ -1195,6 +1195,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 
   // A key panel closes on Escape or a click outside it.
   document.addEventListener("click", (e) => {
+    // A control inside the panel redraws the tab before this runs, leaving its target detached.
+    if (!e.target || !e.target.isConnected) return;
     for (const d of document.querySelectorAll(".hbg-key[open]")) if (!d.contains(e.target)) d.open = false;
   });
   document.addEventListener("keydown", (e) => {

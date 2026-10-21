@@ -198,13 +198,14 @@
       const rows = Array.isArray(bundle.units) ? bundle.units.length : 0;
       facts.push(h("span", null, HB.data.unitWords(rows)));
     }
-    head.replaceChildren(
+    // DOM replaceChildren writes a null as the word "null": a published page has no next step (20 Oct 2026).
+    head.replaceChildren(...[
       h("h1", { class: "hb-head__title" }, p.name ? String(p.name) : "Benchmark tool",
         p.edition && !String(p.name || "").includes(String(p.edition))      // "EggTrack 2025", not "EggTrack 2025 2025"
           ? [" ", h("span", { class: "hb-head__edition" }, String(p.edition))] : null),
       facts.length ? h("p", { class: "hb-head__facts" }, facts) : null,
       HB.nextStep ? HB.nextStep.node() : null,     // the next step, on the local page only (views/nextstep.js)
-    );
+    ].filter(Boolean));
   }
 
   /* The colour theme: always light (decided 11 Oct 2026), whatever the device prefers.

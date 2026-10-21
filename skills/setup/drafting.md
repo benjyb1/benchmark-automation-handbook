@@ -53,6 +53,14 @@ anything checked by visiting. When the answer cannot be found:
 - **Opinion** (a survey of what people think): no document shows it. The owner supplies their
   survey results, or those questions stay with them: leave them out of the questions and say in
   the score sheet's `plain` that the totals do not include them.
+- **The owner's own records** (their database of cases, a tracker of how each organisation
+  answered them, their own investigations): when the material says a question or category is
+  scored from these, not from what the organisations publish, the tool would only copy the
+  owner's own verdict back. Leave those questions out as for opinion, say in `plain` that the
+  totals do not include them, and name them in your reply; raise no rule or data need for them.
+  BankTrack's 2024 methodology: "Scores for Category 6: Response Tracking were added at the end
+  of the process, based on our online database", while categories 1 to 5 were "based on their
+  publicly available documents". Read the method for sentences like these, per category.
 
 **Their answers about how they do it today.**
 

@@ -79,7 +79,10 @@ def prompt_for(project: Path, python: str) -> str:
         "tracker): never guess one (ChickenTrack's draft invented two and missed the real one). Also: a "
         "published rank is held back as rank:overall (a number); the cut-off you recommend goes into the "
         "basics as the draft cutoff; where you invent a boundary between levels the material does not give, "
-        "raise a rule naming it; and walk two real rows through each ladder you write.",
+        "raise a rule naming it; and walk two real rows through each ladder you write. A question or category the "
+        "material says is scored from the owner's own records or database, not from what the organisations publish, "
+        "is left out, as drafting.md says under \"The owner's own records\" (BankTrack's Category 6, 20 Oct 2026, "
+        "came back as three questions, a rule and a data need).",
         f"Token cap: {CAP:,}. If you get near it, save the drafts you have, validate, build and stop.",
         "Reply in two lines: what you drafted, and how many open questions you left for the owner.",
     ])
@@ -196,7 +199,8 @@ def main(argv) -> int:
     project = open_project(args.project)
     if shutil.which("claude") is None:
         raise HandbookError("The claude command line is not installed, so the set-up cannot be drafted.")
-    if not any(project.path.joinpath("inbox", "uploads").glob("*--*")):
+    from .material import files
+    if not files(project):         # names plain files put in inbox/uploads/ by hand, as uploads are
         raise HandbookError("There are no files to draft from. Add them on the Set-up tab first.")
     project.held_back.mkdir(parents=True, exist_ok=True)
     result = run_streaming(command(project.path, sys.executable, project.held_back), project.path)

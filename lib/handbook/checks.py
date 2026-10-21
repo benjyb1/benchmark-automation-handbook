@@ -4,7 +4,9 @@
 `quote_not_found`, `after_cutoff`, `group_differs`, `judgement`, `reads_disagree` (see Shapes in
 the plan), `weak_source` (every document the cell cites is weak: see `fetch.weak_why`) and
 `document_changed` (the saved copy of a cited document is no longer the capture the answer was
-scored from) and `owner_changed` (the owner corrected the answer; see corrections.py). A quote is matched against the capture its answer names (`evidence[].capture`, put
+scored from), `owner_changed` (the owner corrected the answer; see corrections.py) and
+`todays_version` (a web page cited was kept as it is today, long after the cut-off, with no archive
+copy from before it: see cmd_fetch). A quote is matched against the capture its answer names (`evidence[].capture`, put
 there by `ingest` from the kit), so a document that changed after scoring is not a quote problem;
 the cell is marked out of date instead, and `hb todo` lists it for a rescore.
 `second_reads(project)` lists the cells a second reader should look at, and
@@ -25,6 +27,7 @@ from .folder import HandbookError, ID_RE, Project
 # and this one are the same code. The names stay importable from here.
 from .quotecheck import (MIN_RUN, SHORT_MIN, capture_id, is_grounded, is_grounded_ocr,  # noqa: F401
                          longest_run, normalise, source_join, tokens)
+from .render import TODAY_GRACE_DAYS
 from .shapes import FLAGS, is_date
 
 # A second read is only worth its cost where rows of one group answered the same question
@@ -174,6 +177,21 @@ def _after_cutoff(meta: dict | None, cutoff: str | None) -> bool:
     return date.fromisoformat(when) > date.fromisoformat(cutoff)
 
 
+def _todays_version(meta: dict | None, cutoff: str | None) -> bool:
+    """Whether the document is a web page kept as it was on the day it was fetched, long after the
+    cut-off, with no archive copy from before it (cmd_fetch, `todays_version`). The owner dating it
+    on or before the cut-off clears it; a date the finder gave does not (BankTrack, 20 Oct 2026: a
+    finder dated BBVA's 2020 statement 2023-12-01)."""
+    today = (meta or {}).get("todays_version")
+    if not isinstance(today, dict) or not cutoff or not is_date(today.get("fetched")):
+        return False
+    if (date.fromisoformat(today["fetched"]) - date.fromisoformat(cutoff)).days <= TODAY_GRACE_DAYS:
+        return False
+    when = meta.get("date")
+    return not (meta.get("date_basis") == "owner" and is_date(when)
+                and date.fromisoformat(when) <= date.fromisoformat(cutoff))
+
+
 def _same_value(a, b) -> bool:
     """Equal and of the same type, so 3.0 is not 3 and True is not 1."""
     return a == b and type(a) is type(b)
@@ -212,6 +230,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
             for doc in dict.fromkeys(_cited(c)):
                 if _after_cutoff(docs.meta.get(doc), row_cutoff):
                     mine.add("after_cutoff")
+                elif _todays_version(docs.meta.get(doc), row_cutoff):
+                    mine.add("todays_version")    # no second search for it: the finder cannot reach the archive either
             if _cited(c) and all(is_weak(docs.meta.get(doc)) for doc in _cited(c)):
                 mine.add("weak_source")
             for e in c.get("evidence") or []:

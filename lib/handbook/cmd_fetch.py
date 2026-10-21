@@ -51,6 +51,8 @@ def main(argv) -> int:
                              "or a link the owner provided")
     parser.add_argument("--date", default=None, metavar="YYYY-MM-DD",
                         help="the date it speaks as at, when the document says so, over its file date")
+    parser.add_argument("--dated-by", default="owner", choices=("owner", "finder"),
+                        help="who gave --date: the owner (the default), or a finder reading it off the document")
     parser.add_argument("--weak", default=None, metavar="WHY", type=_why,
                         help="mark it a weak source and say why in one line, for example "
                              "\"A news report, not the organisation's own words\"")
@@ -61,7 +63,7 @@ def main(argv) -> int:
     rows = fetch.resolve_rows(project, args.row, args.group)       # checked before any fetching
     doc = save_url(project, args.url, rows, args.how, args.weak)
     if args.date:
-        fetch.set_as_at(project, doc, args.date)
+        fetch.set_as_at(project, doc, args.date, args.dated_by)
         print(f"Dated {doc} {args.date}: the date it speaks as at.")
     return 0
 
@@ -136,13 +138,32 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
                             "results, so it was not saved.")
     host_type, _, archive_url = classify_host(url)
     content, notes, text_source, not_kept_why = result.content, [], None, None
+    cutoff = project.read("project").get("cutoff")
+    todays_why = None          # set when today's page is kept although the cut-off is long past
     if archived_note:
         archive_url = archive_from_copy
         notes.append(archived_note)
+    elif kind == "html" and not archive_url and render.wants_dated_copy(cutoff) \
+            and not render.is_shell(fetch.extract_text_html(content)):
+        # A web page changes: today's is not the one that stood at a past cut-off. The archive's capture
+        # from nearer the cut-off is kept when there is one (BankTrack, 20 Oct 2026: today's pages were kept
+        # silently while the archive was busy).
+        copy = render.near_copy(url, cutoff)
+        if copy is not None:
+            got_kind = fetch.kind_of(copy.content, copy.content_type, name)
+            if got_kind in ("html", "pdf"):
+                kind, content, archive_url, text_source = got_kind, copy.content, copy.url, "archive"
+                title = (fetch.html_title(content) if kind == "html" else "") or title
+                notes.append(f"The cut-off ({cutoff}) has passed, so the web archive's capture from before it was "
+                             f"kept rather than today's page: {copy.url}")
+        if archive_url is None:
+            todays_why = render.archive_why_not(url, cutoff)
     if kind == "html" and render.is_shell(fetch.extract_text_html(content)):
         # The server sent a script shell: the words the finder saw are not in it. Try the page
         # rendered, then the archive, before giving up on it.
-        got = render.recover(url, project.read("project").get("cutoff"))
+        got = render.recover(url, cutoff)
+        if got["kind"] == "text" and got["text_source"] == "rendered" and render.wants_dated_copy(cutoff):
+            todays_why = "; ".join(got["tried"]) or render.archive_why_not(url, cutoff)
         if got["kind"] is None:
             not_kept_why = got["why"]
             notes.append(f"Not kept: {got['why']} Record it as not found for the row and look for "
@@ -169,6 +190,10 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         meta["date"], meta["date_basis"] = f"{s[:4]}-{s[4:6]}-{s[6:8]}", "archive capture"
     if weak:
         meta["weak"] = {"why": weak}
+    if todays_why and not_kept_why is None:
+        meta["todays_version"] = {"fetched": meta["fetched"][:10], "why": todays_why}
+        notes.append(f"Kept today's page, which may have changed since the cut-off ({cutoff}): {todays_why}. "
+                     "Answers that cite it are marked Only today's copy, to check.")
     if not_kept_why is not None:
         meta["not_kept_why"] = not_kept_why
         folder = project.doc_dir(doc)

@@ -119,9 +119,17 @@ _MONTHS = {m: i for i, m in enumerate(
     ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
 
 
+# Dates a PDF tool writes when it has none: the turn of 2000 (Webflow's copies of Mizuho's reports carry
+# 1999-12-31T23:00:00Z, midnight in Central Europe; BankTrack, 20 Oct 2026) and the Unix epoch. PDF itself
+# dates from 1993, so anything earlier is not a real file date either.
+PLACEHOLDER_DATES = ("1999-12-31", "2000-01-01", "1970-01-01")
+EARLIEST_PDF = "1993-01-01"
+
+
 def pdf_date(info: dict) -> str | None:
     """The PDF's own date as YYYY-MM-DD (creation date, else modified date), or None. Reads the
-    ISO form pdfinfo gives with -isodates and the older "Sat Mar  1 12:00:00 2025" form."""
+    ISO form pdfinfo gives with -isodates and the older "Sat Mar  1 12:00:00 2025" form. A placeholder
+    date (PLACEHOLDER_DATES, or before EARLIEST_PDF) is no date."""
     for key in ("CreationDate", "ModDate"):
         value = info.get(key) or ""
         m = re.match(r"(\d{4})-(\d{2})-(\d{2})", value)
@@ -133,7 +141,7 @@ def pdf_date(info: dict) -> str | None:
             if not month:
                 continue
             day = f"{int(m.group(3)):04d}-{month:02d}-{int(m.group(2)):02d}"
-        if is_date(day):
+        if is_date(day) and day not in PLACEHOLDER_DATES and day >= EARLIEST_PDF:
             return day
     return None
 
@@ -256,6 +264,9 @@ def prepare_document(project, doc: str) -> dict:
     if pdf_date_found and (meta.get("date") is None or meta.get("date_basis") in (None, "pdf metadata",
                                                                                    "http header")):
         meta["date"], meta["date_basis"] = pdf_date_found, "pdf metadata"
+    elif meta.get("date_basis") == "pdf metadata" and (meta.get("date") in PLACEHOLDER_DATES
+                                                       or str(meta.get("date") or "") < EARLIEST_PDF):
+        meta["date"], meta["date_basis"] = None, None       # a placeholder kept by an older tool
     write_json(folder / "meta.json", meta)
     return {"doc": doc, "kind": kind, "pages": len(pages),
             "empty_pages": sum(1 for t in texts if not t.strip()),
