@@ -134,8 +134,9 @@
 /* The strips box is its own scroller (both ways, like the Table view), so a benchmark with many
    questions scrolls sideways inside it. Every child is at least --ov-w wide (the columns at their
    widest), the row names stay pinned on the left, Overall and Tier on the right, and the section
-   names sit in the same column as their marks, so they move together. Row names take spare width
-   (up to 28rem) when the strips leave room, so long names such as trial titles are not cut. */
+   names sit in the same column as their marks, so they move together. The name column is as wide
+   as the longest row or group name (fitNames, at most 28rem), so short names such as producers
+   don't leave a gap before the marks and long names such as trial titles are not cut. */
 .hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-max: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
 .hbg-ov > * { min-width: var(--ov-w); }
 .hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--ov-gap); padding-inline: var(--ov-pad); }
@@ -151,7 +152,7 @@
 .hbg-ov__gh > .hbg-ov__pin-r { justify-content: flex-end; }
 .hbg-ov__secs, .hbg-ov__mk { display: flex; gap: var(--sec-gap); }
 .hbg-ov__sec { display: grid; gap: 2px; min-width: 0; }
-.hbg-ov__secname { width: 0; min-width: 100%; overflow: hidden; color: var(--ink); line-height: 1.2; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }   /* two lines before it is cut */
+.hbg-ov__secname { width: 0; min-width: 100%; color: var(--ink); line-height: 1.2; hyphens: auto; overflow-wrap: anywhere; }   /* wraps as far as it needs: never cut (22 Oct 2026) */
 .hbg-ov__qs, .hbg-ov__mks { display: flex; gap: var(--mk-gap); }
 .hbg-ov__q { display: grid; justify-items: center; width: var(--mk-w); font-size: 0.6875rem; font-weight: 500; }
 .hbg-ov__q .hbg-qid { padding: 0; }
@@ -197,7 +198,7 @@
 .hbg-table thead tr:first-child th { border-bottom-color: transparent; vertical-align: bottom; }
 .hbg-table thead tr:last-child th { border-bottom-color: var(--rule-strong); }
 .hbg-table .hbg-sec { text-align: left; padding-inline: var(--s2); }
-.hbg-secname { width: 0; min-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbg-secname { width: 0; min-width: 100%; line-height: 1.25; hyphens: auto; overflow-wrap: anywhere; }   /* wraps, never cut (22 Oct 2026) */
 .hbg-table .hbg-start { border-left: 1px solid var(--rule-strong); }
 .hbg-table .hbg-corner { left: 0; z-index: 4; text-align: left; vertical-align: bottom; padding-inline: var(--s2); border-right: 1px solid var(--rule); border-bottom-color: var(--rule-strong); }
 .hbg-table .hbg-rh { position: sticky; left: 0; z-index: 1; min-width: 9rem; max-width: 15rem; padding: var(--s1) var(--s3) var(--s1) var(--s2); border-right: 1px solid var(--rule); color: var(--ink); font-weight: 500; text-align: left; overflow-wrap: anywhere; }
@@ -410,12 +411,26 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     return t && t.waiting && t.waiting.length ? "incomplete, waits for your data" : "partial";
   }
 
-  // The short number of a question inside its section: "1.4" in a section whose
-  // questions all start "1." reads "4".
+  // The short label of a question over its narrow column: "1.4" in a section whose questions
+  // all start "1." reads "4", and "D12" in a section of D1, D2... reads "12". A label still
+  // longer than the column holds (SHORT_MAX) never overlaps its neighbours: the section's
+  // questions are numbered by place instead, and the hover tip and the screen reader keep the
+  // full id (GDB, 22 Oct 2026: ids like G.GOVERNANCE.DPL.e.e1.ACCESS_CORRECTION piled up).
+  const SHORT_MAX = 2;
+  const TABLE_ID_MAX = 8;                 // a table column header shows an id up to this long in full
   function shortIds(sec) {
-    const prefix = sec.qs.length ? String(sec.qs[0].id).replace(/[^.]*$/, "") : "";
-    const all = prefix && sec.qs.every((q) => String(q.id).startsWith(prefix) && String(q.id).length > prefix.length);
-    return sec.qs.map((q) => (all ? String(q.id).slice(prefix.length) : String(q.id)));
+    const ids = sec.qs.map((q) => String(q.id));
+    const strip = (re) => {
+      const m = ids.length ? ids[0].match(re) : null;
+      const prefix = m ? m[0] : "";
+      return prefix && ids.every((id) => id.startsWith(prefix) && id.length > prefix.length)
+        ? ids.map((id) => id.slice(prefix.length)) : null;
+    };
+    const fits = (labels) => labels.every((s) => s.length <= SHORT_MAX);
+    const short = strip(/^.*\./) || ids;
+    if (fits(short)) return short;
+    const letters = strip(/^[A-Za-z]+[_-]?/);
+    return letters && fits(letters) ? letters : ids.map((_, i) => String(i + 1));
   }
 
   /* ---- The model: everything the three layouts draw ------------------------- */
@@ -785,7 +800,27 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       }
       root.append(sec);
     });
+    if (nameFit) root.style.setProperty("--name-max", nameFit);
+    requestAnimationFrame(fitNames);
     return root;
+  }
+
+  // Every row is its own grid, so the name column can't size itself to its content: measure the
+  // widest name once the overview is on screen and keep that as the column's width, so a redraw
+  // starts at the measured width instead of jumping.
+  let nameFit = "";
+  function fitNames() {
+    const live = document.querySelector(".hbg-ov");
+    if (!live) return;
+    const range = document.createRange();
+    let widest = 0;
+    live.querySelectorAll(".hbg-ov__pin-l").forEach((el) => {
+      range.selectNodeContents(el);
+      widest = Math.max(widest, range.getBoundingClientRect().width);
+    });
+    if (!widest) return;
+    nameFit = "min(" + Math.ceil(widest + 4) + "px, 28rem)";
+    live.style.setProperty("--name-max", nameFit);
   }
 
   /* ---- Tables ------------------------------------------------------------------ */
@@ -842,11 +877,15 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const full = g.name && g.id ? g.id + " " + g.name : g.name || g.id;
       secRow.push(h("th", { class: "hbg-sec hbg-start", scope: "colgroup", colspan: String(g.qs.length), title: full },
         h("div", { class: "hbg-secname" }, full)));
+      // An id too long for a column header (GDB's G.GOVERNANCE.DATASHARING.a.EXISTS) shows its short
+      // label, as over the strips; the tip keeps the full id.
+      const long = g.qs.some((q) => String(q.id).length > TABLE_ID_MAX);
+      const labels = long ? shortIds(g) : g.qs.map((q) => String(q.id));
       g.qs.forEach((q, i) => {
         col += 1;
         const end = col > qCount / 2 && qCount > 3;
         qRow.push(h("th", { scope: "col", class: i === 0 ? "hbg-start" : null },
-          h("span", { class: "hbg-qh" }, qidTip(q, q.id, end), restBox(m, q, end))));
+          h("span", { class: "hbg-qh" }, qidTip(q, labels[i], end), restBox(m, q, end))));
       });
     }
     const cols = m.cols;
