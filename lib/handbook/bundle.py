@@ -13,13 +13,14 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents
 from .fetch import weak_why
-from . import control, corrections, costs, edition, rowwatch
+from . import control, corrections, costs, edition, needs, rowwatch
 from .folder import Project, applies, effective_question, read_json
 from .team import cell_rev, rule_rev
 from .custom_charts import read_charts
 from .deck import checked_decks
 from .report_draft import drafting
-from .scoresheet import row_totals
+from .scoresheet import all_totals
+from .shapes import where_without_stale
 
 CONTRACT = "handbook-bundle/1"
 EVIDENCE_KEYS = ("doc", "page", "section", "quote", "quote_en", "language")
@@ -30,12 +31,15 @@ STATE_WORDS = {"answered": "Answered", "no_evidence": "No evidence",
                "not_applicable": "Not applicable", "not_run": "Not run"}
 FLAG_WORDS = {"quote_not_found": "Quote not on saved page", "after_cutoff": "Dated after the cut-off",
               "reads_disagree": "Second read differs", "group_differs": "Differs across countries",
-              "judgement": "Rests on an undecided rule", "weak_source": "Not from the company",
+              "judgement": "Rests on an undecided rule", "weak_source": "Not from its own source",
               "document_changed": "Document changed since scored", "owner_changed": "Changed by the owner",
-              "todays_version": "Only today's copy of the page"}
+              "todays_version": "Only today's copy of the page",
+              "holds_back": "Holds the row below its next level",
+              "needs_document": "Needs a document you can add"}
 REASON_WORDS = {"missing_document": "Missing document", "different_document": "Different document",
                 "document_date": "Document date", "rule_reading": "Rule reading",
-                "open_rule": "Undecided rule", "unexplained": "Not yet explained"}
+                "open_rule": "Undecided rule", "published_blank": "Blank last edition",
+                "unexplained": "Not yet explained"}
 BY_WORDS = {"files": "From the files", "claude": "Claude's reading"}
 
 
@@ -136,18 +140,29 @@ def _results(project: Project) -> dict:
 
 def make_bundle(project: Project, now: datetime) -> dict:
     """The bundle (see the plan's "The bundle" shape). Cells cover every row × applicable
-    question; totals come from `scoresheet.row_totals` (None when the sheet can't compute)."""
+    question; totals come from `scoresheet.all_totals` (None when the sheet can't compute)."""
     proj = project.read("project")
     documents = project.documents()
     sources = _Documents(project)
     cells, totals, found, unchecked = {}, {}, {}, {}
     feedback = edition.optional("feedback")        # None in the free edition: it has no feedback round
+    listed = needs.only_source_needs(project)
+    every_total = all_totals(project)          # once for all rows: figures scored against all the rows, and the rank
+    proposals = {q.get("id") for q in project.read("questions").get("questions") or []
+                 if isinstance(q, dict) and q.get("proposal") is True}
     for unit, qids, answers, checks in _rows(project):
         row = unit.get("id")
         if feedback:
             unchecked[row] = feedback.unchecked_questions(answers, checks, qids)
-        cells[row] = {q: _cell(answers.get(q), checks.get(q), documents, sources) for q in qids}
-        totals[row] = row_totals(project, unit, answers)
+        # An answer that waits for the owner's data shows as waiting for that need (needs.py).
+        held = needs.waiting_in_row(project, row, answers, listed) if listed else {}
+        cells[row] = {q: ({"state": "not_run", "waiting": held[q]} if q in held
+                          else _cell(answers.get(q), checks.get(q), documents, sources)) for q in qids}
+        for q in proposals & set(cells[row]):
+            # The method leaves this rating to the owner's experts: every answer is a proposal for them (CCPI).
+            if cells[row][q].get("state") in ("answered", "no_evidence"):
+                cells[row][q]["proposal"] = True
+        totals[row] = every_total.get(row)
         found[row] = project.found(row)
     out = {
         "contract": CONTRACT,
@@ -164,7 +179,8 @@ def make_bundle(project: Project, now: datetime) -> dict:
         # What the page saw of each rule, sent back with a decision (a colleague may have decided it since).
         "rule_revs": {r.get("id"): rule_rev(r) for r in project.read("rules").get("rules") or []
                       if isinstance(r, dict) and r.get("id")},
-        "where_to_look": project.read("where_to_look"),
+        "where_to_look": where_without_stale(project.read("where_to_look"), [q.get("id") for q in project.read("questions").get("questions") or []
+                                                                             if isinstance(q, dict)]),     # never a question that is gone
         "cells": cells,
         "totals": totals,
         "documents": {d: {**{k: v for k, v in meta.items() if k not in ("file", "sha1")},
@@ -179,6 +195,9 @@ def make_bundle(project: Project, now: datetime) -> dict:
         "watch": rowwatch.watch(project),
         "results": _results(project),
         "applied_edits": list(project.read("edits-applied").get("applied") or []),
+        # Saved edits and decisions that could not be made, with why ({id: why}): the page stops saying they
+        # are being applied, and says what happened (edits.py).
+        "failed_edits": dict(project.read("edits-applied").get("failed") or {}),
         # Every round of the owner's corrections, with what the code found and Claude's verdict.
         "corrections": corrections.public(project),
         # Run control; `applied` stays in so the run bar knows which requests Claude has handled.

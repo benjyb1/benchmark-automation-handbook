@@ -5,7 +5,10 @@
    19 Oct 2026, the first newcomer test: once the set-up was done there was no way
    to start scoring from the page, and nothing said what came next. So one button,
    always in the same place, always naming the next step:
-     set-up not settled   Finish set-up (to the Set-up tab)
+     set-up not settled   Finish set-up (to the Set-up tab), and Try a few first beside it:
+                          a trial exists to test the set-up, so it never waits for every
+                          part to be confirmed (ca-energy, 21 Oct 2026: with 7 of 8 parts
+                          still to confirm, only the chat could start one)
      nothing scored yet   Score a few first (the Score panel)
      a run left open      Carry on scoring
      rows still to score  Score the rest (the Score panel)
@@ -15,7 +18,8 @@
 
    HB.nextStep = {
      node()                 the header's button, or what Claude is doing (null off the local page)
-     openScore(choice)      the Score panel: "few" | "choose" | "all"
+     openScore(choice)      the Score panel: "few" | "choose" | "all"; while set-up parts are
+                            still to confirm it says so, and why a trial is still worth it
      start({kind, rows, questions})  saves one scoring request (the chat's start_scoring too):
                             kind "trial" | "full", rows and questions null for all;
                             Promise of the saved doc
@@ -38,6 +42,7 @@
 .hb-next { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-left: auto; }
 .hb-next__go { min-height: 2.75rem; padding-inline: var(--s5, 1.5rem); font-size: var(--fs-16); }
 .hb-next__hint { color: var(--ink-2); font-size: var(--fs-12); }
+.hb-next__try { min-height: 2.75rem; }
 .hb-score__choices { display: grid; gap: var(--s2); margin: 0; padding: 0; border: 0; }
 .hb-score__choice { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s1) var(--s2); align-items: start;
   padding: var(--s3); border: 1px solid var(--rule); border-radius: var(--radius); cursor: pointer; }
@@ -65,18 +70,23 @@
     return arr(s.queued).find(mine) || null;
   }
 
-  /** Rows with a question still to score (not run, missing or out of date). */
+  /** Rows with a question still to score (not run, missing or out of date), leaving out answers that
+      wait for data only the owner holds: a run would not score them. */
   function rowsLeft() {
     const b = bundle();
     const cells = b.cells || {};
-    return arr(b.units).map((u) => u.id).filter((id) => Object.values(cells[id] || {}).some((c) =>
-      !c || c.state === "not_run" || c.state === "missing" || c.out_of_date));
+    return arr(b.units).map((u) => u.id).filter((id) => Object.values(cells[id] || {}).some((c) => HB.data.leftToScore(c)));
+  }
+
+  /** The set-up parts not confirmed, skipped or marked not needed yet. */
+  function openParts() {
+    const status = (bundle().project && bundle().project.checklist) || {};
+    return MUST_HAVES.filter((k) => !SETTLED.has(status[k] || "missing"));
   }
 
   function step() {
     const b = bundle();
-    const status = (b.project && b.project.checklist) || {};
-    const open = MUST_HAVES.filter((k) => !SETTLED.has(status[k] || "missing"));
+    const open = openParts();
     if (open.length) {
       return { label: "Finish set-up", hint: fmtInt(open.length) + " of " + fmtInt(MUST_HAVES.length) + " set-up parts still to confirm",
         go: () => HB.go("setup") };
@@ -86,6 +96,12 @@
     if (full) return { label: "Carry on scoring", hint: "the run stopped part way", go: () => carryOn(full) };
     const left = rowsLeft();
     const total = arr(b.units).length;
+    // Only answers waiting for data the owner holds are left (needs.py): ask for it, not for the results.
+    const waits = Object.values(b.cells || {}).reduce((n, cells) => n + Object.values(cells || {}).filter((c) => HB.data.isWaiting(c)).length, 0);
+    if (!left.length && total && waits) {
+      return { label: "Add your data", hint: fmtInt(waits) + (waits === 1 ? " answer waits" : " answers wait") + " for data only you hold. Drop the file on the chat.",
+        go: () => HB.go("setup") };
+    }
     if (!left.length && total) return { label: "See the results", go: () => HB.go("results") };
     if (left.length === total && !runs.some((r) => r.kind === "trial")) {
       return { label: "Score a few first", hint: "check the answers before scoring all " + fmtInt(total), go: () => openScore("few") };
@@ -138,7 +154,13 @@
       const go = h("button", { type: "button", class: "btn btn--primary hb-next__go", id: "hb-next-go",
         disabled: !(HB.edits && HB.edits.ready) && s.label !== "Finish set-up" && s.label !== "See the results" }, s.label);
       go.addEventListener("click", s.go);
-      box = h("div", { class: "hb-next", id: "hb-next" }, go, s.hint ? h("span", { class: "hb-next__hint" }, s.hint) : null);
+      // The trial tests the set-up, so it can start before every part is confirmed.
+      let tryIt = null;
+      if (s.label === "Finish set-up" && rowsLeft().length) {
+        tryIt = h("button", { type: "button", class: "btn hb-next__try", id: "hb-next-try", disabled: !(HB.edits && HB.edits.ready) }, "Try a few first");
+        tryIt.addEventListener("click", () => openScore("few"));
+      }
+      box = h("div", { class: "hb-next", id: "hb-next" }, go, tryIt, s.hint ? h("span", { class: "hb-next__hint" }, s.hint) : null);
     }
     return box;
   }
@@ -154,20 +176,20 @@
   }
 
   /** Carry on the open run: only the rows and questions it was started on (20 Oct 2026: a one-country test
-      left open would have carried on into every country). */
+      left open would have carried on into every country), as the kind of run it is (a trial stays a trial). */
   async function carryOn(run) {
     try {
       await HB.edits.save("control", { action: "resume" });
-      await start({ kind: "full", rows: run && run.rows, questions: run && run.questions });
+      await start({ kind: run && run.kind === "trial" ? "trial" : "full", rows: run && run.rows, questions: run && run.questions });
     } catch (err) {
       if (HB.local && HB.local.flag) HB.local.flag(err && err.message ? err.message : "This could not be saved.");
     }
   }
 
-  /** The cost line for scoring these rows (HB.cost; finding documents adds a little more). */
+  /** The cost line for scoring these rows (HB.cost), with finding the documents of rows not looked for yet. */
   function costOf(ids) {
     const est = HB.cost && ids.length ? HB.cost.rows(ids, null) : null;
-    return est ? HB.cost.line(est) + " Finding the documents adds a little more." : "";
+    return est ? HB.cost.line(est) + (HB.cost.findWords ? HB.cost.findWords(est) : "") : "";
   }
 
   function openScore(choice) {
@@ -178,6 +200,7 @@
     const left = rowsLeft();
     const names = new Map(arr(b.units).map((u) => [u.id, u.name || u.id]));
     const tried = arr(b.runs).some((r) => r.kind === "trial" && r.finished);
+    const unsettled = openParts();
 
     const radio = (value, title, text) => {
       const input = h("input", { type: "radio", name: "hb-score-kind", value, id: "hb-score-" + value });
@@ -254,7 +277,11 @@
       h("p", { class: "hb-hint" }, "Claude finds each " + w.one + "'s documents, then scores it from them, one " + w.one +
         " at a time. The Grid fills in as it goes, and you can pause at any point without losing anything.")),
     h("div", { class: "hb-dialog__body stack" },
-      h("fieldset", { class: "hb-score__choices" }, h("legend", { class: "visually-hidden" }, "What to score"), few.node, pick.node, pickBox, all.node),
+      unsettled.length ? HB.notice("warning", "The set-up is not finished yet (" + fmtInt(unsettled.length) + " of " + fmtInt(MUST_HAVES.length)
+        + " parts still to confirm). A trial scores a few " + w.many + " with the set-up as it stands, so you can see whether it works before you confirm it.") : null,
+      // Before the set-up is finished only a trial is offered: it is what tests the set-up.
+      h("fieldset", { class: "hb-score__choices" }, h("legend", { class: "visually-hidden" }, "What to score"), few.node, pick.node, pickBox,
+        unsettled.length ? null : all.node),
       cost),
     status,
     h("div", { class: "hb-dialog__foot" }, cancel, go));

@@ -212,6 +212,18 @@ class Project:
         return read_json(self.path / "found" / f"{_row_id(row)}.json",
                          {"row": row, "documents": [], "expected_not_found": [], "second_search": None})
 
+    def cutoff_for(self, rows=None) -> str | None:
+        """The cut-off that holds for these rows (ids): a row's own `cutoff` in units.json when it has one,
+        else the project's; for several rows, the earliest, so a copy from before it serves them all. The kit
+        and the checks always read a row's own date; the finder and fetch read the project's until sweep
+        round 3 (TI: Chemring's 2020-04-30 lost to the project's 2020-12-31, and the finder saved its FY2020
+        report and 2023 to 2025 pages)."""
+        project = self.read("project").get("cutoff")
+        units = {u.get("id"): u for u in self.read("units").get("units") or [] if isinstance(u, dict)}
+        dates = [(units.get(r) or {}).get("cutoff") or project for r in rows or []]
+        dates = [d for d in dates if isinstance(d, str) and d]
+        return min(dates) if dates else project
+
     def write_found(self, row: str, data: dict) -> None:
         write_json(self.path / "found" / f"{_row_id(row)}.json", data)
 

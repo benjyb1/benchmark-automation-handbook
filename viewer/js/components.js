@@ -604,6 +604,22 @@
     );
   }
 
+  /* problemNotice(text, tone): a change that failed its check, said in the owner's words (HB.plainProblems)
+     with the check's own words folded under Details; text that names no file is plain already and is
+     shown as it is (the chat's change cards, 21 Oct 2026). */
+  function problemNotice(text, tone) {
+    const kind = tone || "critical";
+    const said = HB.plainProblems(text);
+    if (!said.technical) return notice(kind, said.plain || "This could not be saved.");
+    return h(
+      "div",
+      { class: "hb-problem" },
+      notice(kind, "Nothing was changed. The change would have left " + (said.count === 1 ? "this problem" : "these problems")
+        + " in your benchmark. " + said.plain),
+      h("details", { class: "hb-problem__details" }, h("summary", null, "Details"), h("pre", { class: "hb-problem__raw" }, said.technical)),
+    );
+  }
+
   /* ---- Links ----------------------------------------------------------------- */
 
   function webAddress(href) {
@@ -654,6 +670,7 @@
     statusChip,
     working,
     notice,
+    problemNotice,
     countedTable,
     tableCells,
     panel,

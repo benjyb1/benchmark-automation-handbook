@@ -76,7 +76,7 @@ def status(project: Project) -> dict:
         held = {}
 
     states = {"answered": 0, "no_evidence": 0, "not_applicable": 0, "not_run": 0}
-    expected, remaining = 0, 0
+    expected, remaining, doubts = 0, 0, 0
     for unit in units:
         answers = project.answers(unit["id"])
         cells = answers.get("cells", {}) if isinstance(answers, dict) else None
@@ -98,6 +98,8 @@ def status(project: Project) -> dict:
                 state = "not_run"
             states[state] += 1
             unit_left = unit_left or state == "not_run"
+            unsure = cell.get("unsure") if isinstance(cell, dict) else None
+            doubts += isinstance(unsure, dict) and unsure.get("why") == "rule" and not unsure.get("handled")
         remaining += unit_left
     open_rules = sum(r.get("status") == "open" for r in rules)
     needs_open = sum(n.get("status") == "needed" for n in needs)
@@ -109,6 +111,9 @@ def status(project: Project) -> dict:
         "cells_not_applicable": states["not_applicable"], "cells_not_run": states["not_run"],
         "rows_remaining": remaining,
         "rules": len(rules), "open_rules": open_rules,
+        # answers whose scorer doubted a rule, not yet raised as a rule or linked to one (the fashion index,
+        # sweep round 3: eight such answers and "Rules 4, 0 open")
+        "rule_doubts": int(doubts),
         "needs": len(needs), "needs_open": needs_open,
         "runs": len(runs),
     }
@@ -182,7 +187,9 @@ def main(argv) -> int:
           f"Cells scored: {c['cells_scored']} of {c['cells_expected']} "
           f"({c['cells_answered']} answered, {c['cells_no_evidence']} no evidence, "
           f"{c['cells_not_applicable']} not applicable, {c['cells_not_run']} not run). "
-          f"Rules: {c['rules']}, {c['open_rules']} open. "
+          f"Rules: {c['rules']}, {c['open_rules']} open"
+          + (f", and {c['rule_doubts']} answer{'s' if c['rule_doubts'] != 1 else ''} doubt{'' if c['rule_doubts'] != 1 else 's'} "
+             "a rule not yet put to the owner (raise-rule or link-rule)" if c.get("rule_doubts") else "") + ". "
           f"Needs: {c['needs']}, {c['needs_open']} still needed. Runs: {c['runs']}.")
     print(s["next_text"])
     if s["control_text"]:

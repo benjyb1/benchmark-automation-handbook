@@ -17,6 +17,7 @@ No AI is used. Pages it cannot recover are listed and left as they are.
 """
 from __future__ import annotations
 import hashlib
+import re
 
 from . import fetch, render
 from .cli import command_parser, open_project
@@ -86,6 +87,11 @@ def recover_one(project, doc: str, cutoff: str | None, archive: bool = False) ->
                 "file": None})
     if got["archive_url"]:
         new["archive_url"] = got["archive_url"]
+        new.pop("todays_version", None)        # the copy from before the cut-off, not today's page
+        stamp = re.search(r"/web/(\d{8})", got["archive_url"])
+        if stamp and not new.get("date"):
+            s = stamp.group(1)
+            new["date"], new["date_basis"] = f"{s[:4]}-{s[4:6]}-{s[6:8]}", "archive capture"
     fetch.store_document(project, new, got["content"], fetch.EXTENSIONS[got["kind"]])
     read = prepare_document(project, doc)
     how = {"rendered": "the page as a browser shows it", "archive": "the archive's capture",
@@ -123,10 +129,11 @@ def main(argv) -> int:
         for doc in todo:
             print(f"  {doc}  {docs[doc].get('url')}")
         return 0
-    cutoff = project.read("project").get("cutoff")
     fixed = 0
     for doc in todo:
-        ok, said = recover_one(project, doc, cutoff, archive=args.archive)
+        rows = [u.get("id") for u in project.read("units").get("units") or []
+                if doc in (project.found(u.get("id")).get("documents") or [])]
+        ok, said = recover_one(project, doc, project.cutoff_for(rows), archive=args.archive)
         fixed += ok
         print(f"  {doc}  {docs[doc].get('url')}\n    {'Recovered: ' if ok else 'Not recovered: '}{said}")
     if fixed:

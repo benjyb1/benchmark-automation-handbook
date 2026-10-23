@@ -51,16 +51,20 @@ anything checked by visiting. When the answer cannot be found:
   photos, and they are scored like any document.
 - **Paid or members-only data:** the owner uploads the extracts they hold.
 - **Opinion** (a survey of what people think): no document shows it. The owner supplies their
-  survey results, or those questions stay with them: leave them out of the questions and say in
-  the score sheet's `plain` that the totals do not include them.
-- **The owner's own records** (their database of cases, a tracker of how each organisation
-  answered them, their own investigations): when the material says a question or category is
-  scored from these, not from what the organisations publish, the tool would only copy the
-  owner's own verdict back. Leave those questions out as for opinion, say in `plain` that the
-  totals do not include them, and name them in your reply; raise no rule or data need for them.
-  BankTrack's 2024 methodology: "Scores for Category 6: Response Tracking were added at the end
-  of the process, based on our online database", while categories 1 to 5 were "based on their
-  publicly available documents". Read the method for sentences like these, per category.
+  survey results.
+- **The owner's own records** (their lab results, complaints figures, database of cases, a
+  tracker of how each organisation answered them, their own investigations): when the material
+  says a question or category is scored from these, not from what the organisations publish,
+  only the owner's upload can answer it. BankTrack's 2024 methodology: "Scores for Category 6:
+  Response Tracking were added at the end of the process, based on our online database", while
+  categories 1 to 5 were "based on their publicly available documents". Read the method for
+  sentences like these, per category.
+
+When only the owner's upload can answer a question (their survey, their own records, figures the
+organisations send only to them), keep the question with its published answer scale, points and
+weight. Never drop a weighted part of the score sheet. Link it to one data need with
+`only_source: true` (below): no finder searches the web for it, and its answers wait for the
+upload, with the totals marked incomplete until then. Name those questions in your reply.
 
 **Their answers about how they do it today.**
 
@@ -155,7 +159,7 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
 |---|---|---|
 | questions, units | drafted | the owner confirms (viewer or chat); set every item's `status` too |
 | scoresheet, group_labels | drafted | the owner confirms in chat |
-| cutoff | | the owner gives the date (grill, first round) |
+| cutoff | `draft` only when the material states the date | the owner gives the date (grill, first round); never filled with today's date or a date worked out |
 | where_to_look | drafted | the owner agrees the plan and every row is covered |
 | needs | some still `needed` | each need is `supplied` or `waived` (`not_needed` if there are none) |
 | rules | any rule open | every rule decided or skipped (`not_needed` if the grill found none) |
@@ -180,6 +184,10 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
 ```
 
 - `id`: the owner's numbering where there is one. `short`: a few words of your own.
+- `rule`: only the methodology lines that bear on this question. Text several questions share (a scale
+  table, an indicator's guidance) goes on its own lines, word for word the same in each, so a kit gives
+  it once; never paste a block into a question it does not bear on (sweep round 3: InfluenceMap's 20
+  rules were 94% one repeated block, Global Health 50/50's carried other questions' sentences).
 - `answer.kind`: `yes_no` (exactly the levels `"yes"` and `"no"`), `levels` (whole-number
   values) or `number`. A letter grade (A to G) is `levels`, best first with the highest value
   (A is 7, G is 1), the letter at the start of each meaning ("A: ...").
@@ -187,9 +195,14 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
   `{"kind": "number", "unit": "%", "min": 0, "max": 100, "decimals": 1, "levels": [...]}`, where
   `decimals` is how many places they publish and `levels` holds only the answers that are not
   figures, as text with points and a meaning (`{"value": "NR", "points": 0, "meaning": "Commitment,
-  no progress published"}`). A figure adds no points, so a benchmark built from figures usually
-  has `computable: false`. When the owner's scheme turns ranges into points (0 to 49% scores 1),
-  use `levels` with the ranges in their meanings instead.
+  no progress published"}`). A figure adds no points unless the answer has `"points"`: then it
+  counts, worth those points times its place between `min` and `max` (`lower_is_better: true` when
+  lower is better). A 0 to 100 figure with points 100 counts as itself; two figures in one section
+  with points 2 and 1 weigh two thirds and one third (RSF's safety). With `relative: true` its ends
+  are the lowest and highest figures among all the rows (`best` or `worst` fix an end the method
+  fixes), so it counts once every row is scored (CCPI). A figure found nowhere never counts as 0.
+  When the owner's scheme turns ranges into points (0 to 49% scores 1), use `levels` with the
+  ranges in their meanings instead.
 - `no_evidence_value`: the level a cell takes when nothing is found; usually the lowest. Ask if
   the methodology does not say. For a `number` question it is a text level ("ND", "no figure
   found"), never a figure: a worst-case figure for nothing found reads as a real result (Seafood
@@ -205,6 +218,8 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
   wording. A row whose questions are all lookups is scored by a cheaper model: on LCV votes and CTIS
   checks it gave the same answers for about a fiftieth of the price (21 Oct 2026). Leave it out when
   the answer needs reading a policy or a law and judging how far it goes; when unsure, leave it out.
+- `proposal` (optional, true): the method leaves this rating to the owner's experts (a panel, a
+  survey of experts), so every answer shows as a proposal for them to confirm.
 - `applies_to`: null for every row, or `{label: [values]}` ("only for France" becomes
   `{"country": ["France"]}`). `variants`: the first match replaces `wording` and/or `rule`.
 - `evidence`: your plain description of what would show the answer; step 5 works from it.
@@ -221,7 +236,9 @@ Statuses: `missing | draft | confirmed | skipped | not_needed`. The first eight 
 A row may carry its own `cutoff` (`"cutoff": "2025-03-12"`) when rows are assessed at different
 dates (a camp's audit, an assessment's publication); it replaces the project's cut-off for that row.
 Ids are unique, lowercase letters, digits and dashes, and never change once set. Spell accented
-letters plainly (Intermarché is `intermarche`, Kılıç is `kilic`), never by dropping them. Every label key
+letters plainly (Intermarché is `intermarche`, Kılıç is `kilic`), never by dropping them. Write each
+`name` as the organisation writes its own name in the results, capitals and accents as they are (TIM,
+not Tim, even where the prose writes Tim). Every label key
 must be in the project's `labels`. Propose labels from the columns you find; ask about any row
 whose value you cannot see.
 
@@ -240,6 +257,12 @@ whose value you cannot see.
 - `rounding`: `none | half_up_int | half_up_1dp | half_up_2dp` (halves always round up).
 - `overall.method`: `sum_points` (with `percent` true, total over maximum times 100) or
   `weighted_mean_of_section_percents`.
+- `computable: false` on a section: that section is not worked out (its scheme does not fit) and
+  the others still are; the overall then needs every section that carries weight.
+- `bonus: true` on a section: its points go on top of the total without raising the maximum
+  (HRC's flex points). `cap` on a section or on `overall`: the most it can reach (HRC caps the
+  final score at 100).
+- `overall.rank: true`: the rows are ranked on the overall, 1 the best, once their totals are complete.
 - Bands are matched on the rounded score: the highest band whose `min` the score reaches.
 - A band can also need sections met in full: `{"name": "Gold", "min": 80, "requires_full": ["M"]}`
   is Gold only when every applicable question in section M is at its top level (ACES: every
@@ -247,8 +270,9 @@ whose value you cannot see.
   whose top level is "does not do it". Put the mandatory questions in their own section with
   weight 0 when they carry no points of their own.
 - A row's section maximum is worked out per row from the questions that apply to it.
-- If the scheme does not fit, write it in `plain` and set `computable: false`; the viewer then
-  says totals cannot be computed. Tell the owner.
+- If the scheme does not fit, write it in `plain` and set `computable: false` on the sections it
+  does not fit, or on the whole sheet when none fits; the viewer then says totals cannot be
+  computed. Tell the owner.
 - **Rebuilt from last edition's results** (nothing written down): work out each level's points
   from the values each question takes, the sections' weights and rounding from how their figures
   make the overall, and the bands from where they fall (ask for the published thresholds). Say so
@@ -274,6 +298,11 @@ whose value you cannot see.
   `{"option": "a" or null, "text": "the rule as decided", "at": "<timestamp>", "via": "chat"}`.
 - Scorers see the `ask` and either the decision text or, while open or skipped, the recommended
   option's text. Keep last edition's results out of all three, and out of `why`.
+- An option that settles a value says so in `sets`, which deciding it writes: `{"cutoff":
+  "2025-06-30"}` for the cut-off, `{"no_evidence_value": 1}` for what its questions take when
+  nothing is found (a level they have).
+- A rule asking for a cut-off the material does not state recommends no date (`recommended`:
+  null): its options are dates from the material, and the date is the owner's to pick.
 
 ## where_to_look.json and needs.json
 
@@ -290,12 +319,19 @@ whose value you cannot see.
 
 - `for`: `"all"`, `{label: [values]}` or `{"rows": [ids]}`. Prefer group label values, so a
   group's documents are found once. Every row must be covered by some entry.
+- For each question, ask which documents its answer depends on and list each as a place: the main
+  one and every other law, policy or register the criterion names or implies (a transparency law's
+  criteria may rest on the e-government, environmental-information and data-protection laws too).
 - The owner's tips from step 1 go in as places, in their words, with `note` starting "Owner's
   tip" and naming the questions it serves if not all ("Owner's tip, for 3.1 to 3.4: they report
   in the format we ask for, in a table at the end; work backwards"). Places only, never what a
-  place said last year.
+  place said last year. After merging or renumbering questions, bring these mentions up to date:
+  validate flags one that names a question not in questions.json.
 - `last_year`: last year's source list, one entry per row and address. Places to look only.
 - `needs[].status`: `needed | supplied | waived`; `documents` lists the ids that supplied it.
+- `only_source` (optional): `true` when nothing but this upload can answer the questions in `why`.
+  No finder searches for them, and their answers wait while the need is `needed`. Once the
+  owner's file is added for its rows, set `status` to `supplied` and list the file in `documents`.
 
 ## Last edition's results (held back)
 
@@ -310,6 +346,11 @@ Results given only as overall grades or tiers (a rankings page) are still worth 
  "original": null, "notes": ""}
 ```
 
+- With a `bonus` section, `overall` is the standard part (without the bonus) and `final` the
+  published final score (standard plus bonus, after any cap), when the results give it (HRC's MEI).
+- `edition` is the edition's name as published, and `as_at` the date its answers reflect when the
+  material says it (when the data was collected or scored), else null,
+  never the day they were uploaded. Compare uses it to tell a source that changed since from a real difference.
 - Keys per row: question ids, section ids, `overall`, `band:<of>` (a band name). Values are
   numbers, band names for band keys, or null where the owner's file has a gap.
 - A question's value is the POINTS the answer earned (a weighted mark of 1.15, not "tier 1"), or the

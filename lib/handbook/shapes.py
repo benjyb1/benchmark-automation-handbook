@@ -35,19 +35,20 @@ RAISED_BY = ("setup", "trial", "run", "owner")
 VIA = ("chat", "viewer")
 NEED_STATUSES = ("needed", "supplied", "waived")
 HOW = ("plan", "search", "last_year", "provided")
-DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture")
+DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture", "url")
 HOST_TYPES = ("issuer", "repository", "third_party", "test_server", "none")
 TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr")
 CELL_STATES = ("answered", "no_evidence", "not_applicable", "not_run")
 UNSURE_WHY = ("rule", "document")
 FLAGS = ("quote_not_found", "after_cutoff", "reads_disagree", "group_differs", "judgement",
-         "weak_source", "document_changed", "owner_changed", "todays_version")
+         "weak_source", "document_changed", "owner_changed", "todays_version", "holds_back",
+         "needs_document")
 RUN_KINDS = ("trial", "full", "rerun")
 USAGE_STEPS = ("find", "second_find", "score", "second")
 RECEIPT_KEYS = ("fresh", "cache_read", "output", "turns")
 LEVELS = ("question", "section", "total", "band")
 REASONS = ("missing_document", "different_document", "document_date", "rule_reading", "open_rule",
-           "unexplained")
+           "published_blank", "unexplained")
 REASON_BY = ("files", "claude")
 EDIT_TARGETS = ("question", "unit", "confirm")
 CORRECTION_STATUSES = ("to_check", "checked", "superseded", "kept")
@@ -313,6 +314,25 @@ def _level_points(q, value):
     return _MISSING if points is answers.MISSING else points
 
 
+def _check_counting_figure(out, answer: dict, w: str) -> None:
+    """A figure that counts in the totals (answers.py): `points` above 0; then `relative`,
+    `lower_is_better` true or false, `best` and `worst` numbers; an absolute one needs its range."""
+    for key in ("relative", "lower_is_better"):
+        out.boolean(answer, key, w, required=False)
+    for key in ("best", "worst"):
+        if answer.get(key) is not None and not _is_num(answer.get(key)):
+            out.append(f"{w}: {key} must be a number or null, found {_show(answer.get(key))}")
+    if "points" not in answer:
+        if any(answer.get(k) not in (None, False) for k in ("relative", "lower_is_better", "best", "worst")):
+            out.append(f"{w}: relative, lower_is_better, best and worst need points (what the figure is worth at best)")
+        return
+    if not (_is_num(answer.get("points")) and answer["points"] > 0):
+        out.append(f"{w}: points must be a number above 0 (what the figure is worth at best), found {_show(answer.get('points'))}")
+    elif answer.get("relative") is not True and not (_is_num(answer.get("min")) and _is_num(answer.get("max"))
+                                                     and answer["max"] > answer["min"]):
+        out.append(f"{w}: a figure that counts needs min and max (its range), with max above min, unless it is relative")
+
+
 def check_questions(d, scoresheet=None) -> list[str]:
     out = _Out()
     if not out.obj(d, "questions.json"):
@@ -352,6 +372,7 @@ def check_questions(d, scoresheet=None) -> list[str]:
                 if d is not None and not (_is_int(d) and d >= 0):
                     out.append(f"{w}: answer decimals must be a whole number from 0, or null")
                 out.text(answer, "unit", f"{w}: answer", required=False, nullable=True, empty_ok=True)
+                _check_counting_figure(out, answer, f"{w}: answer")
             for j, lv in enumerate(levels):
                 wl = f"{w}: level {j + 1}"
                 if not out.obj(lv, wl):
@@ -392,6 +413,7 @@ def check_questions(d, scoresheet=None) -> list[str]:
         out.text(q, "rule", w, required=False, nullable=True, empty_ok=True)
         if "may_not_apply" in q and not isinstance(q.get("may_not_apply"), bool):
             out.append(f"{w}: may_not_apply must be true or false")
+        out.boolean(q, "proposal", w, required=False)       # the owner's experts rate it: every answer is a proposal
         if "reading" in q and q.get("reading") not in READINGS:
             out.append(f"{w}: reading must be \"lookup\" or \"judgement\", not {_show(q.get('reading'))}")
         out.label_filter(q.get("applies_to"), w, "applies_to")
@@ -473,6 +495,10 @@ def check_scoresheet(d, questions=None) -> list[str]:
         out.text(s, "name", ws)
         out.boolean(s, "percent", ws)
         out.enum(s, "rounding", ROUNDINGS, ws)
+        out.boolean(s, "computable", ws, required=False)      # false: this section is not worked out
+        out.boolean(s, "bonus", ws, required=False)           # its points go on top of the total
+        if s.get("cap") is not None and not (_is_num(s.get("cap")) and s["cap"] >= 0):
+            out.append(f"{ws}: cap must be a number of 0 or more, found {_show(s.get('cap'))}")
     overall = d.get("overall", _MISSING)
     if overall is _MISSING:
         if computable:
@@ -482,6 +508,9 @@ def check_scoresheet(d, questions=None) -> list[str]:
         out.enum(overall, "method", OVERALL_METHODS, wo)
         out.enum(overall, "rounding", ROUNDINGS, wo)
         out.boolean(overall, "use_rounded_sections", wo, required=False)
+        out.boolean(overall, "rank", wo, required=False)
+        if overall.get("cap") is not None and not (_is_num(overall.get("cap")) and overall["cap"] >= 0):
+            out.append(f"{wo}: cap must be a number of 0 or more, found {_show(overall.get('cap'))}")
         if overall.get("method") == "weighted_mean_of_section_percents":
             weights = overall.get("weights")
             if out.obj(weights, f"{wo}: weights"):
@@ -527,11 +556,34 @@ def check_scoresheet(d, questions=None) -> list[str]:
 
 # --- rules.json -------------------------------------------------------------------------------
 
+RULE_SETS = ("cutoff", "no_evidence_value")
+
+
+def _check_sets(out, sets, w: str, questions: list) -> None:
+    """What choosing a rule option writes (edits.py): the cut-off date, or its questions' no-evidence value."""
+    if sets is None:
+        return
+    if not isinstance(sets, dict):
+        out.append(f"{w}: sets must be an object, found {_show(sets)}")
+        return
+    for key in sets:
+        if key not in RULE_SETS:
+            out.append(f"{w}: sets {_show(key)} is not something a decision can set ({', '.join(RULE_SETS)})")
+    if "cutoff" in sets and not is_date(sets["cutoff"]):
+        out.append(f"{w}: sets cutoff must be a date (YYYY-MM-DD), found {_show(sets['cutoff'])}")
+    if "no_evidence_value" in sets:
+        for q in questions:
+            if isinstance(q, dict) and not answers.accepts(q, sets["no_evidence_value"]):
+                out.append(f"{w}: sets no_evidence_value {_show(sets['no_evidence_value'])} is not an answer "
+                           f"question {_show(q.get('id'))} accepts ({answers.describe(q)})")
+
+
 def check_rules(d, questions, units) -> list[str]:
     out = _Out()
     if not out.obj(d, "rules.json"):
         return out
     qids, uids = _ids(questions, "questions"), _ids(units, "units")
+    qmap = {q["id"]: q for q in _items(questions, "questions") if isinstance(q, dict) and isinstance(q.get("id"), str)}
     rules = out.list_of(d, "rules", "rules.json")
     out.unique_ids(rules, "rule")
     for i, r in enumerate(rules):
@@ -559,6 +611,7 @@ def check_rules(d, questions, units) -> list[str]:
                 if opt.get("id") in option_ids:
                     out.append(f"{wo}: id {_show(opt.get('id'))} is used twice")
                 option_ids.append(opt.get("id"))
+                _check_sets(out, opt.get("sets"), wo, [qmap.get(q) for q in qlist if isinstance(q, str)])
         rec = r.get("recommended")
         if rec is not None and rec not in option_ids:
             out.append(f"{w}: recommended option {_show(rec)} is not one of its options "
@@ -630,6 +683,112 @@ def check_where_to_look(d) -> list[str]:
     return out
 
 
+# A place names the questions it serves in its own words ("Owner's tip, for 3.1 to 3.4", "for questions 5
+# and 6"). After a draft merges or renumbers questions such a mention can name one that no longer exists
+# (TranspariMED CTIS re-draft, 22 Oct 2026): validate flags it, and drop_stale_question_refs takes it out
+# before the finder or the page sees it. Only numbers shaped like the project's own ids count, so the
+# published numbering a note may quote ("Transport questions 3 to 9" beside ids such as Q5.1) is left alone.
+_QID = r"[A-Za-z]{0,3}\d+(?:\.\d+)*[a-z]?"
+_QJOIN = r"(?:\s*,\s*(?:and\s+|or\s+)?|\s+and\s+|\s+or\s+|\s*&\s*|\s+to\s+|\s*[-–]\s*)"
+_QCITE = re.compile(r"(?P<lead>(?:\bfor\s+)?\bquestions?\s+|(?<=tip, )for\s+)(?P<ids>" + _QID + r"(?:" + _QJOIN + _QID + r")*)\b",
+                    re.IGNORECASE)
+
+
+def _id_shape(qid: str) -> str:
+    return re.sub(r"\d+", "9", re.sub(r"[A-Za-z]+", "A", str(qid)))
+
+
+def _cited(ids_text: str) -> list[tuple[str, str]]:
+    """The questions a mention names, as (first, last): one question is (id, id), a range its two ends."""
+    tokens = re.split(r"(" + _QJOIN + r")", ids_text)
+    out, i = [], 0
+    while i < len(tokens):
+        first = last = tokens[i]
+        if i + 2 < len(tokens) and re.fullmatch(r"\s+to\s+|\s*[-–]\s*", tokens[i + 1], re.IGNORECASE):
+            last, i = tokens[i + 2], i + 2
+        out.append((first, last))
+        i += 2
+    return out
+
+
+def _unknown(qid: str, qids, shapes) -> bool:
+    return qid not in qids and _id_shape(qid) in shapes
+
+
+def stale_question_refs(text, qids) -> list[str]:
+    """The question ids `text` names that are not in `qids` (in order, once each)."""
+    qids = {str(q) for q in qids}
+    shapes = {_id_shape(q) for q in qids}
+    out = []
+    for m in _QCITE.finditer(str(text or "")):
+        for pair in _cited(m.group("ids")):
+            for q in pair:
+                if _unknown(q, qids, shapes) and q not in out:
+                    out.append(q)
+    return out
+
+
+def drop_stale_question_refs(text, qids):
+    """`text` with the questions not in `qids` taken out of its mentions: the rest stay, and a mention
+    left with none goes, words around it tidied ("Owner's tip, for 3.1 to 3.4: ..." -> "Owner's tip: ...")."""
+    if not isinstance(text, str) or not stale_question_refs(text, qids):
+        return text
+    qids = {str(q) for q in qids}
+    shapes = {_id_shape(q) for q in qids}
+
+    def fix(m):
+        items = _cited(m.group("ids"))
+        keep = [(a, b) for a, b in items if not (_unknown(a, qids, shapes) or _unknown(b, qids, shapes))]
+        if len(keep) == len(items):
+            return m.group(0)
+        if not keep:
+            return ""
+        words = [a if a == b else f"{a} to {b}" for a, b in keep]
+        listed = words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+        lead = m.group("lead")
+        word = re.search(r"questions?", lead, re.IGNORECASE)
+        if word:
+            plural = len(keep) > 1 or keep[0][0] != keep[0][1]
+            noun = "question" + ("s" if plural else "")
+            lead = lead[:word.start()] + (noun.capitalize() if word.group(0)[0].isupper() else noun) + lead[word.end():]
+        return lead + listed
+
+    out = _QCITE.sub(fix, text)
+    out = re.sub(r"\(\s*\)", "", out)
+    out = re.sub(r"\s+([,.;:)])", r"\1", out)
+    out = re.sub(r",\s*([,.;:)])", r"\1", out)
+    out = re.sub(r"^[\s,;:]+|[\s,;]+$", "", out)
+    return re.sub(r"\s{2,}", " ", out)
+
+
+def stale_where_refs(where, qids) -> list[tuple[int, int, list[str]]]:
+    """(plan entry, place, [ids]) for each place in where_to_look.json whose words name a question not in `qids`."""
+    out = []
+    for i, entry in enumerate(_list(where.get("plan")) if isinstance(where, dict) else []):
+        for j, place in enumerate(_list(entry.get("places")) if isinstance(entry, dict) else []):
+            if isinstance(place, dict):
+                ids = []
+                for key in ("what", "note"):
+                    ids += [q for q in stale_question_refs(place.get(key), qids) if q not in ids]
+                if ids:
+                    out.append((i, j, ids))
+    return out
+
+
+def where_without_stale(where, qids):
+    """A copy of where_to_look.json with every mention of a question not in `qids` taken out."""
+    if not isinstance(where, dict) or not stale_where_refs(where, qids):
+        return where
+    out = json.loads(json.dumps(where))
+    for entry in _list(out.get("plan")):
+        for place in _list(entry.get("places")) if isinstance(entry, dict) else []:
+            if isinstance(place, dict):
+                for key in ("what", "note"):
+                    if isinstance(place.get(key), str):
+                        place[key] = drop_stale_question_refs(place[key], qids)
+    return out
+
+
 def check_needs(d) -> list[str]:
     out = _Out()
     if not out.obj(d, "needs.json"):
@@ -645,6 +804,7 @@ def check_needs(d) -> list[str]:
         out.str_list(n, "rows", w, nullable=True)
         out.enum(n, "status", NEED_STATUSES, w)
         out.str_list(n, "documents", w)
+        out.boolean(n, "only_source", w, required=False)    # only the owner holds its questions' evidence (needs.py)
     return out
 
 
@@ -711,6 +871,8 @@ def check_pages(d) -> list[str]:
                 out.append(f"{w}: text must be text")
             if "ocr" in page and not isinstance(page["ocr"], bool):
                 out.append(f"{w}: ocr must be true or false, found {_show(page['ocr'])}")
+            if "poor" in page and not isinstance(page["poor"], bool):
+                out.append(f"{w}: poor must be true or false, found {_show(page['poor'])}")
             if "images" in page and not (isinstance(page["images"], list) and all(_text(x) for x in page["images"])):
                 out.append(f"{w}: images must be a list of file names, found {_show(page['images'])}")
     return out
@@ -733,6 +895,8 @@ def check_found(d) -> list[str]:
             out.str_list(item, "questions", wi, required=False)     # what a scorer needed it for (ingest.record_missing)
             out.text(item, "by", wi, required=False)
     out.stamp(d, "second_search", w)
+    out.str_list(d, "shared", w, required=False)          # filed here by a search for another row of its group
+    out.str_list(d, "searched_for", w, required=False)    # the questions its own search named (all when absent)
     return out
 
 
@@ -977,6 +1141,8 @@ def check_held_back(d, history: bool = False) -> list[str]:
         out.append(f"{w}: tolerance must be a number of 0 or more, or null, found {_show(tol)}")
     out.text(d, "original", w, required=False, nullable=True)
     out.text(d, "notes", w, required=False, nullable=True, empty_ok=True)
+    if d.get("as_at") is not None and not is_date(d.get("as_at")):     # the date the answers reflect, or null
+        out.append(f"{w}: as_at must be a date (YYYY-MM-DD) or null, found {_show(d.get('as_at'))}")
     return out
 
 
@@ -992,6 +1158,7 @@ def check_rebuild(d) -> list[str]:
         if out.obj(m, f"{w}: mismatch {i + 1}"):
             for key in ("row", "key"):
                 out.text(m, key, f"{w}: mismatch {i + 1}")
+    out.str_list(d, "only_total", w, required=False)       # rows whose results give only a total
     out.stamp(d, "at", w)
     return out
 
@@ -1431,6 +1598,11 @@ def check_folder(project: Project) -> list[str]:
                         if label not in labels:
                             probs.append(f"where_to_look.json: plan {i + 1} filters on label "
                                          f"{_show(label)}, which is not in the project's labels")
+            if files["questions"] is not None:
+                for i, j, ids in stale_where_refs(wtl, qids):
+                    names = " and ".join(_show(q) for q in ids)
+                    probs.append(f"where_to_look.json: plan {i + 1}, place {j + 1} names question{'s' if len(ids) > 1 else ''} "
+                                 f"{names}, not in questions.json; name the questions it serves now, or take the mention out")
             for i, item in enumerate(_list(wtl.get("last_year"))):
                 if isinstance(item, dict) and not _member(item.get("row"), uids):
                     probs.append(f"where_to_look.json: last_year {i + 1} names row "

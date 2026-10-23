@@ -477,6 +477,7 @@
   let state = null;
   let reloadWanted = false;
   let jobKey = null;
+  let lineShown = false;        // whether the run bar holds the job's line (redrawn only when that changes)
   let flagText = null;
   const lineEl = document.createElement("div");
   lineEl.className = "hbl-run";
@@ -806,8 +807,12 @@
       } else if (jobChanged && typeof HB.render === "function") {
         HB.render();
       }
+      // The line is one element the run bar holds, filled in place: the bar is redrawn only when the line comes
+      // or goes (21 Oct 2026, ca-energy: rebuilt every 2 seconds during a job, clicks on More and Choose what
+      // to run took seconds or were lost).
       const shown = paintRunLine();
-      if (HB.runBar && typeof HB.runBar.redraw === "function" && shown) HB.runBar.redraw();
+      if (HB.runBar && typeof HB.runBar.redraw === "function" && shown !== lineShown) HB.runBar.redraw();
+      lineShown = shown;
       paintTop();
       paintUpdate();
       if (!mailOpen) paintFoot();

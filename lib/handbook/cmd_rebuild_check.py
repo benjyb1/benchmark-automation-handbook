@@ -21,10 +21,16 @@ def main(argv) -> int:
         return 1 if result["mismatches"] else 0
     checked, matched, mismatches = result["checked"], result["matched"], result["mismatches"]
     print(f"Rebuilt last edition's results: {matched} of {checked} rows match.")
+    only = result.get("only_total") or []
+    if only:
+        print(f"{len(only)} row{'s give' if len(only) != 1 else ' gives'} only a total, so there is nothing finer "
+              f"to rebuild: {', '.join(only[:10])}{' and more' if len(only) > 10 else ''}.")
     if mismatches:
         print(f"Mismatches ({len(mismatches)}):")
         for m in mismatches:
             print(f"  {m['row']}, {m['key']}: ours {m['ours']}, published {m['theirs']}")
     elif not checked:
         print("No row had anything the score sheet could rebuild.")
+    if result.get("note"):
+        print(result["note"])
     return 1 if mismatches else 0

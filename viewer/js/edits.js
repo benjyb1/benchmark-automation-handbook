@@ -9,8 +9,15 @@
    HB.edits = {
      ready                 false until both capabilities answered
      pending()             number of saved edits and decisions whose id is not in
-                           bundle.applied_edits (Claude has not applied them yet)
+                           bundle.applied_edits (Claude has not applied them yet), leaving
+                           out those it could not make (bundle.failed_edits) and an answer
+                           older than the rule's decision in force (a later one stands)
      pendingCounts()       the same split by kind: {edits, decisions}
+     failures()            the saved changes Claude could not make: [{id, kind, words, why,
+                           dismissed}], words the owner's, why the server's own
+     toastNode()           what the corner toast says (app.js): moving words while changes
+                           wait, then any change that could not be made, in plain words with
+                           the server's words under Details and an OK; null for nothing
      pendingDecision(rule) the latest saved decision for a rule id that is not applied
                            yet, as {id, rule, option, text, by, at}, or null
      canWrite()            true, false or null (null: the page was not told)
@@ -105,11 +112,94 @@
     return new Set(b && Array.isArray(b.applied_edits) ? b.applied_edits : []);
   }
 
-  function waiting(name) {
-    const done = appliedIds();
+  // {id: why} for saved changes Claude could not make (edits.py keeps them aside until they are made).
+  function failedIds() {
+    const b = HB.data && HB.data.bundle();
+    const f = b && b.failed_edits;
+    return f && typeof f === "object" && !Array.isArray(f) ? f : {};
+  }
+
+  // An answer older than the rule's decision in force: the later one stands, so it waits for nothing
+  // (ca-energy, 21 Oct 2026: an early answer the rule could not take kept "Applying your change..." up
+  // for the whole visit, and the chat said it was still waiting).
+  function overtaken(doc) {
+    const b = HB.data && HB.data.bundle();
+    const rule = b && Array.isArray(b.rules) ? b.rules.find((r) => r && r.id === doc.rule) : null;
+    const now = rule && rule.status === "decided" && rule.decision ? Date.parse(rule.decision.at) : NaN;
+    const then = Date.parse(doc.at);
+    return Number.isFinite(now) && Number.isFinite(then) && now > then;
+  }
+
+  function known(name) {
     const all = new Map(remote[name]);
     own[name].forEach((doc, id) => { if (!all.has(id)) all.set(id, doc); });
-    return Array.from(all.values()).filter((d) => !done.has(d.id));
+    return Array.from(all.values());
+  }
+
+  function waiting(name) {
+    const done = appliedIds();
+    const failed = failedIds();
+    return known(name).filter((d) => !done.has(d.id) && !Object.prototype.hasOwnProperty.call(failed, d.id)
+      && !(name === "decisions" && overtaken(d)));
+  }
+
+  /* ---- Changes Claude could not make ---------------------------------------------- */
+
+  const DISMISSED = "edits-dismissed";
+
+  function failureWords(name, d) {
+    if (name === "decisions") {
+      return "Your answer to rule " + d.rule + " could not be used, so the rule is as it was. Answer it again on the Rules tab.";
+    }
+    const b = (HB.data && HB.data.bundle()) || {};
+    const p = b.project || {};
+    if (d.target === "confirm") {
+      const noun = d.target_id === "units" ? (p.unit_word_plural || "rows") : "questions";
+      return "Confirming the " + noun + " could not be recorded. Confirm them again on the Set-up tab.";
+    }
+    const unit = d.target === "unit" && HB.data ? HB.data.unit(d.target_id) : null;
+    const what = d.target === "unit" ? (unit && unit.name ? String(unit.name) : (p.unit_word || "row") + " " + d.target_id)
+      : "question " + d.target_id;
+    return "Your change to the " + (FIELD_WORDS[d.field] || String(d.field || "").replace(/_/g, " ")) + " of " + what
+      + " could not be made, so it is as it was. Make it again with its Edit button on the Set-up tab.";
+  }
+
+  function failures() {
+    const failed = failedIds();
+    const done = appliedIds();
+    const seen = new Set((HB.store && HB.store.get(DISMISSED, [])) || []);
+    const out = [];
+    for (const name of ["edits", "decisions"]) {
+      for (const d of known(name)) {
+        if (!Object.prototype.hasOwnProperty.call(failed, d.id) || done.has(d.id) || (name === "decisions" && overtaken(d))) continue;
+        out.push({ id: d.id, kind: name, words: failureWords(name, d), why: String(failed[d.id] || ""), dismissed: seen.has(d.id) });
+      }
+    }
+    return out;
+  }
+
+  function dismiss(ids) {
+    if (!HB.store) return;
+    const had = HB.store.get(DISMISSED, []) || [];
+    HB.store.set(DISMISSED, Array.from(new Set(had.concat(ids))).slice(-200));
+    if (typeof HB.refreshBanner === "function") HB.refreshBanner();
+  }
+
+  function toastNode() {
+    const n = pending();
+    if (n > 0) {
+      return HB.working(HB.when("Applying your " + (n === 1 ? "change" : fmtInt(n) + " changes"),
+        fmtInt(n) + (n === 1 ? " change waits" : " changes wait") + " for Claude, which applies them the next time it works on this project"));
+    }
+    const open = failures().filter((f) => !f.dismissed);
+    if (!open.length) return null;
+    const ok = h("button", { type: "button", class: "btn btn--small", id: "hb-applying-ok" }, "OK");
+    ok.addEventListener("click", () => dismiss(open.map((f) => f.id)));
+    return h("div", { class: "hb-applying__failed", "data-tone": "warning", role: "status" },
+      open.slice(0, 3).map((f) => h("p", null, f.words)),
+      open.length > 3 ? h("p", null, fmtInt(open.length - 3) + " more changes could not be made either.") : null,
+      h("details", null, h("summary", null, "Details"), h("pre", { class: "hb-applying__why" }, open.map((f) => f.why).join("\n"))),
+      ok);
   }
 
   function pending() {
@@ -521,6 +611,8 @@
     pending,
     pendingCounts,
     pendingDecision,
+    failures,
+    toastNode,
     canWrite: () => writeRight,
     decide,
     skip,

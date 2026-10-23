@@ -446,8 +446,12 @@
   async function proposeChange(input, api) {
     if (!local()) throw new Error(ONLY_HERE);
     api.canSave();
-    const op = input.change && typeof input.change === "object" ? input.change : null;
-    if (!op || !op.op) throw new Error("change is {op, ...}: add_rows, remove_rows, rename_row, merge_rows, add_question, remove_questions, change_question, remove_rules or set_part (call run_command [\"change\", \"--list\"] for the fields).");
+    // One change, or a list of them applied together, all or nothing (a question in a new section with the score
+    // sheet that weighs it and the data it needs: one at a time, each was refused, 21 Oct 2026).
+    const list = Array.isArray(input.change) ? input.change : null;
+    const op = list || (input.change && typeof input.change === "object" ? input.change : null);
+    const ops = list || (op ? [op] : []);
+    if (!ops.length || !ops.every((o) => o && typeof o === "object" && o.op)) throw new Error("change is {op, ...}, or a list of them applied together: add_rows, remove_rows, rename_row, merge_rows, add_question, remove_questions, change_question, remove_rules or set_part (call run_command [\"change\", \"--list\"] for the fields).");
     api.progress("Working out what this does to the answers");
     const dry = await HB.local.post("chat/change", { op, apply: false });
     if (!dry.ok) throw new Error(arr(dry.problems).join(" ") || "That change does not fit the project.");
@@ -467,9 +471,9 @@
       const one = like ? HB.cost.rows(redo.rows, [like]) : null;
       if (one) est = Object.assign({}, one, { point: one.point * fresh.length, low: one.low * fresh.length, high: one.high * fresh.length });
     }
-    const title = String(input.title || dry.said || op.op);
+    const title = String(input.title || dry.said || ops.map((o) => o.op).join(", "));
     const line = title.replace(/\.$/, "") + ": " + (bits.join(", ") || "no answer changes") + ". One click undoes it." +
-      (n(redo.rows) ? " Scoring the affected answers again: " + (est ? HB.cost.line(est).replace(/\.$/, "") : "uses some of your plan") + (n(imp.unscored) && op.op === "add_rows" ? " (finding their documents comes on top)" : "") + "." : "");
+      (n(redo.rows) ? " Scoring the affected answers again: " + (est ? HB.cost.line(est).replace(/\.$/, "") : "uses some of your plan") + (n(imp.unscored) && ops.some((o) => o.op === "add_rows") ? " (finding their documents comes on top)" : "") + "." : "");
     return Object.assign(api.propose(line, async () => {
       const got = await HB.local.post("chat/change", { op, apply: true, title });
       if (!got.ok) throw new Error(arr(got.problems).join(" ") || "It was not changed.");
@@ -538,8 +542,8 @@
     if (!local()) return everyday(api);
     const w = (fn) => (input, ctx) => fn(input || {}, api, ctx);
     return everyday(api).concat([
-      { name: "propose_change", description: "Changes the set-up at any stage, after scoring and mid-round too: change {op: add_rows (rows [{id?, name, labels}]), remove_rows (ids), rename_row (id, name), merge_rows (into, rows), add_question (question in the set-up format), remove_questions (ids), change_question (id, fields {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence}), remove_rules (ids), set_part (part scoresheet | where_to_look | needs | rules | basics, content: the whole part in the set-up format; get_setup with formats first)}. It works out what happens to the answers first (removed, out of date, new to score, kept) and the cost of scoring again, and puts that to the owner. Saved only when they click Confirm; one click undoes it.",
-        inputSchema: S({ change: { type: "object" }, title: { type: "string", description: "a few plain words, e.g. Remove Zambia" } }, ["change"]), execute: w(proposeChange) },
+      { name: "propose_change", description: "Changes the set-up at any stage, after scoring and mid-round too: change {op: add_rows (rows [{id?, name, labels}]), remove_rows (ids), rename_row (id, name), merge_rows (into, rows), add_question (question in the set-up format; new_section {name, weight} when its section is not in the score sheet yet), remove_questions (ids), change_question (id, fields {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence, and a number question's answer fields}), remove_rules (ids), set_part (part scoresheet | where_to_look | needs | rules | basics, content: the whole part in the set-up format; get_setup with formats first)}, or a list of changes applied together, all or nothing: changes that only make sense together (a new section and its question, a category's questions and its place in the score sheet) go in one list, never one by one. It works out what happens to the answers and the cost of scoring again, and puts that to the owner. Saved only when they click Confirm; one click undoes it.",
+        inputSchema: S({ change: { type: ["object", "array"], description: "one change {op, ...}, or a list of them applied together" }, title: { type: "string", description: "a few plain words, e.g. Remove Zambia" } }, ["change"]), execute: w(proposeChange) },
       { name: "run_command", description: "Runs any of the tool's own commands on this project (args, e.g. [\"help\"], [\"status\"], [\"todo\"], [\"compare\"], [\"chart\", \"--help\"]): help, status, validate, todo, cost and any --help answer at once; anything that changes the project is put to the owner with why (plain words), runs behind the page after Confirm, and can be undone. Use it for whatever no other tool covers before reaching for a background job.",
         inputSchema: S({ args: { type: "array", items: { type: "string" } }, why: { type: "string" } }, ["args"]), execute: w(runCommand) },
       { name: "get_setup", description: "The set-up as it stands (basics, questions, rows, score sheet, where to look, data needed, rules); with formats: true also the set-up file formats, needed before set_part.",
@@ -577,6 +581,7 @@
       "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; a file, a list of documents or an Excel of coding instructions: the owner drops them on this chat or uses Add documents or instructions above the Grid (it files them for their rows, and instructions under their questions, after a Confirm); \"export everything for Kenya\": make_file with rows [kenya]; " +
       "\"score Liberia\", \"start the run\", \"carry on\": start_scoring (answers already scored: propose_rescore); \"pause\", \"stop\": propose_run_control; " +
       "add, remove, rename or merge rows, add, remove or change questions and their levels or points, remove rules: propose_change; the score sheet and bands, where to look, data needed, new rules: propose_change set_part (get_setup with formats first); " +
+      "changes that only make sense together, such as a new section with its question and the data it rests on, or a category's questions removed with its place in the score sheet, go in ONE propose_change as a list: proposed one by one, each is checked alone and refused; " +
       "anything else the tool does (compare, charts, checks, any step): run_command, after run_command [\"help\"] if you are unsure what exists; a task that needs Claude to read and write across the project: propose_job. " +
       "If you notice you are about to write can't, cannot, unable, not possible or do it yourself, stop and put the route instead.";
     if (!local()) return [routes];

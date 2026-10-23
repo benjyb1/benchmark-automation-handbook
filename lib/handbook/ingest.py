@@ -381,10 +381,12 @@ def add_instruction(project: Project, text: str, questions=None, rows=None, via:
 
 
 def raise_rule(project: Project, questions: list, rows: list, ask: str, options: list,
-               recommended: str, by: str, why: str | None = None) -> dict:
+               recommended: str, by: str, why: str | None = None, link_rows: list | None = None) -> dict:
     """Append an open scoring rule on `questions` × `rows` (options as [(id, text)]), with its
     stakes, and link it to those cells: their `rules` gain its id, `judgement` becomes true, and a
-    rule doubt (`unsure.why == "rule"`) is marked handled. Returns the new rule."""
+    rule doubt (`unsure.why == "rule"`) is marked handled. Returns the new rule. `link_rows`: link only
+    the cells of these rows (the rows whose doubts raised it); the rule records them as `raised_from`, and
+    its decision marks the other rows' answers on its questions out of date (edits._decide)."""
     if by not in RAISED_BY:
         raise HandbookError(f"--by must be trial or run, not {by!r}.")
     if not (isinstance(ask, str) and ask.strip()):
@@ -413,6 +415,11 @@ def raise_rule(project: Project, questions: list, rows: list, ask: str, options:
             "recommended": recommended, "why": why,
             "stakes": {"cells": len(touched), "points": sum(_top_minus_lowest(all_q[q]) for _, q in touched)},
             "last_year_note": None, "status": "open", "decision": None, "raised_by": by}
+    if link_rows is not None and set(rows) - set(link_rows):
+        rule["raised_from"] = [r for r in dict.fromkeys(rows) if r in set(link_rows)]
+        touched_now = [(r, q) for r, q in touched if r in set(link_rows)]
+    else:
+        touched_now = touched
     problems = check_rules({"rules": [rule]}, project.read("questions"), project.read("units"))
     if problems:
         raise _problem_list("The rule was not added:", problems)
@@ -424,7 +431,7 @@ def raise_rule(project: Project, questions: list, rows: list, ask: str, options:
         answers = project.answers(r)
         cells = answers.get("cells") or {}
         changed = False
-        for row_id, qid in touched:
+        for row_id, qid in touched_now:
             c = cells.get(qid) if row_id == r else None
             if not isinstance(c, dict):
                 continue

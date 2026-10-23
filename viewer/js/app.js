@@ -68,7 +68,7 @@
 (function (HB) {
   "use strict";
 
-  const { h, store, notice, drawer, fmtInt } = HB;
+  const { h, store, notice, drawer } = HB;
   HB.views = HB.views || {};
 
   const SEP = "~";
@@ -219,11 +219,11 @@
   function refreshBanner() {
     const box = document.getElementById("hb-banner");
     if (!box) return;
-    let n = 0;
+    let said = null;
     try {
-      n = HB.edits && typeof HB.edits.pending === "function" ? Number(HB.edits.pending()) || 0 : 0;
+      said = HB.edits && typeof HB.edits.toastNode === "function" ? HB.edits.toastNode() : null;
     } catch (err) {
-      console.error("HB.edits.pending failed:", err);
+      console.error("HB.edits.toastNode failed:", err);
     }
     let deck = null;
     try {
@@ -232,15 +232,16 @@
       console.error("HB.deckBanner failed:", err);
     }
     // Saved edits still being applied float in a corner, so the page does not jump as each one comes
-    // and goes (19 Oct 2026: a yellow banner per click "threw the page off").
+    // and goes (19 Oct 2026: a yellow banner per click "threw the page off"). It clears once they are
+    // applied, or says plainly which could not be made (edits.js toastNode; 21 Oct 2026, ca-energy: one
+    // the server could not make kept "Applying your change..." up for the whole visit).
     let toast = document.getElementById("hb-applying");
     if (!toast) {
       toast = h("div", { class: "hb-applying", id: "hb-applying", hidden: true });
       document.body.append(toast);
     }
-    toast.hidden = !(n > 0);
-    toast.replaceChildren(n > 0 ? HB.working(HB.when("Applying your " + (n === 1 ? "change" : fmtInt(n) + " changes"),
-      fmtInt(n) + (n === 1 ? " change waits" : " changes wait") + " for Claude, which applies them the next time it works on this project")) : "");
+    toast.hidden = !said;
+    toast.replaceChildren(said || "");
     box.hidden = !deck;
     box.replaceChildren(deck || "");
   }

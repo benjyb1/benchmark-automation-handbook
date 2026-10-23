@@ -7,8 +7,11 @@ reach for the corner Claude").
 
     change(project, op, dry=True) -> {"ok", "problems", "said", "impact"}
 
-`op` is {"op": NAME, ...}; the names and their fields are in OPS. With `dry`, nothing is written and
-`impact` says what the change does to the answers already there:
+`op` is {"op": NAME, ...}, or a list of them applied together, in order, all or nothing (a question in a
+new section with the score sheet that weighs it and the data need it rests on: Citizens Advice, 21 Oct
+2026, where one op at a time could never add a category). The names and their fields are in OPS. An
+add_question whose section the score sheet lacks brings it with `new_section` {name, weight}. With
+`dry`, nothing is written and `impact` says what the change does to the answers already there:
     kept            answers left as they are
     out_of_date     [[row, question], ...] that keep their value but should be scored again
     removed         [[row, question], ...] answers taken away (a copy is kept for Undo by the page)
@@ -23,7 +26,7 @@ import copy
 import re
 
 from .folder import HandbookError, Project, applies
-from .shapes import check_folder
+from .shapes import check_folder, where_without_stale
 
 LIVE = ("answered", "no_evidence")
 OPS = {
@@ -31,15 +34,22 @@ OPS = {
     "remove_rows": "ids: [row ids]",
     "rename_row": "id, name",
     "merge_rows": "into: a row id, rows: [row ids merged into it (their documents join it; they are removed)]",
-    "add_question": "question: {id, short, wording, section, answer: {kind: levels, levels: [{value, points, meaning}]}, rule, no_evidence_value, applies_to}",
+    "add_question": "question: {id, short, wording, section, answer: {kind: levels, levels: [{value, points, meaning}]}, rule, no_evidence_value, applies_to}; new_section: {name, weight} when its section is not in the score sheet yet",
     "remove_questions": "ids: [question ids]",
-    "change_question": "id, fields: {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence, reading}",
+    "change_question": "id, fields: {wording, short, rule, section, levels, no_evidence_value, applies_to, evidence, reading; "
+                       "for a number question also unit, min, max, decimals, points, relative, lower_is_better, best, "
+                       "worst (null takes one away)}",
     "remove_rules": "ids: [rule ids]",
     "set_part": "part: scoresheet | where_to_look | needs | rules | basics, content (as the set-up formats say)",
 }
+PARTS = ("scoresheet", "where_to_look", "needs", "rules", "basics")
 QUESTION_FIELDS = ("wording", "short", "rule", "section", "levels", "no_evidence_value", "applies_to", "evidence",
                    "reading")
 STALE_FIELDS = ("wording", "rule", "levels", "applies_to")
+# A number question's answer: how its figure reads, and how it counts in the totals: between min and max, or with
+# `relative` between the rows' lowest and highest figures, `best` or `worst` fixing an end (answers.py). The chat
+# changes these too (21 Oct 2026: it could not make a figure relative). null takes one away.
+FIGURE_FIELDS = ("unit", "min", "max", "decimals", "points", "relative", "lower_is_better", "best", "worst")
 
 
 def _slug(name: str) -> str:
@@ -57,6 +67,9 @@ class _State:
         self.rules = project.read("rules")
         self.needs = project.read("needs") if project.file("needs").is_file() else None
         self.where_to_look = project.read("where_to_look") if project.file("where_to_look").is_file() else None
+        self.scoresheet = project.read("scoresheet") if project.file("scoresheet").is_file() else None
+        self.new_rules: list[str] = []          # rules a set_part added, whose stakes are worked out once written
+        self.gaps_before = set(_section_problems(self))   # a gap already there is not this change's to refuse
         self.answers = {u["id"]: project.answers(u["id"]) for u in self.units.get("units", [])
                         if isinstance(u, dict) and project.path.joinpath("answers", f"{u['id']}.json").is_file()}
         self.checks: dict[str, dict] = {}
@@ -144,6 +157,12 @@ def _remove_questions(s: _State, ids: list) -> None:
                 n["why"] = [q for q in n["why"] if q not in ids]
         s.needs["needs"] = [n for n in s.needs.get("needs", []) if not (isinstance(n.get("why"), list) and not n["why"])]
         s.dirty.add("needs")
+    if s.where_to_look is not None:                  # where to look stops naming them (22 Oct 2026)
+        left = {q.get("id") for q in s.questions.get("questions", []) if isinstance(q, dict)}
+        kept = where_without_stale(s.where_to_look, left)
+        if kept is not s.where_to_look:
+            s.where_to_look = kept
+            s.dirty.add("where_to_look")
 
 
 def _new_cells(s: _State, rows=None, qids=None) -> None:
@@ -212,6 +231,8 @@ def _apply(s: _State, op: dict) -> str:
         q = dict(op.get("question") or {})
         if not q.get("id") or q["id"] in s.q_by_id():
             raise HandbookError("The new question needs an id that is not taken.")
+        if op.get("new_section") is not None:
+            _new_section(s, q.get("section"), op["new_section"])
         q.setdefault("short", "")
         q.setdefault("no_evidence_value", 0)
         q.setdefault("applies_to", None)
@@ -233,13 +254,24 @@ def _apply(s: _State, op: dict) -> str:
     if name == "change_question":
         q = s.q_by_id().get(str(op.get("id")))
         fields = op.get("fields") or {}
-        bad = [k for k in fields if k not in QUESTION_FIELDS]
+        bad = [k for k in fields if k not in QUESTION_FIELDS + FIGURE_FIELDS]
         if q is None or not fields or bad:
-            raise HandbookError(f"Give an existing question id and fields from: {', '.join(QUESTION_FIELDS)}.")
+            raise HandbookError(f"Give an existing question id and fields from: {', '.join(QUESTION_FIELDS)}; for a "
+                                f"number question also {', '.join(FIGURE_FIELDS)}.")
+        figure = [k for k in fields if k in FIGURE_FIELDS]
+        kind = (q.get("answer") or {}).get("kind") if isinstance(q.get("answer"), dict) else None
+        if figure and kind != "number":
+            raise HandbookError(f"{', '.join(figure)} {'is' if len(figure) == 1 else 'are'} for a number question; the "
+                                f"answer to question {q['id']} is {kind or 'not set'}, so change its levels instead.")
         before = copy.deepcopy(q)
         for k, v in fields.items():
             if k == "levels":
                 q.setdefault("answer", {})["levels"] = v
+            elif k in FIGURE_FIELDS:
+                if v is None:
+                    q["answer"].pop(k, None)
+                else:
+                    q["answer"][k] = v
             else:
                 q[k] = v
         s.dirty.add("questions")
@@ -274,6 +306,94 @@ def _apply(s: _State, op: dict) -> str:
     raise HandbookError(f"Unknown change {name!r}. The changes are: {', '.join(OPS)}.")
 
 
+def _sheet_sections(s: _State) -> list | None:
+    """The score sheet's sections, or None when it has no list of them to check against."""
+    sheet = s.scoresheet
+    if not isinstance(sheet, dict) or sheet.get("computable") is False or not isinstance(sheet.get("sections"), list):
+        return None
+    return sheet["sections"]
+
+
+def _new_section(s: _State, sid, spec) -> None:
+    """Add section `sid` to the score sheet for a new question: {name, weight, percent?, rounding?}, its
+    percent and rounding like the sheet's first section unless given. A weighted mean needs its weight."""
+    sections = _sheet_sections(s)
+    if not isinstance(spec, dict) or not str(spec.get("name") or "").strip() or not isinstance(sid, str) or not sid:
+        raise HandbookError("new_section is {name, weight}, for the question's section.")
+    if sections is None:
+        raise HandbookError("The score sheet does not list sections, so a section cannot be added to it.")
+    if any(isinstance(x, dict) and x.get("id") == sid for x in sections):
+        return                                    # already there (an earlier change in the same list)
+    first = next((x for x in sections if isinstance(x, dict)), {})
+    sections.append({"id": sid, "name": str(spec["name"]).strip(),
+                     "percent": spec.get("percent", first.get("percent", True)),
+                     "rounding": spec.get("rounding", first.get("rounding", "none"))})
+    overall = s.scoresheet.get("overall") or {}
+    if overall.get("method") == "weighted_mean_of_section_percents":
+        weight = spec.get("weight")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
+            raise HandbookError(f"The overall is a weighted mean of the sections, so new_section needs the weight of "
+                                f"{sid} (a number, such as 0.35).")
+        overall.setdefault("weights", {})[sid] = weight
+    s.dirty.add("scoresheet")
+
+
+def _set_part(s: _State, op: dict) -> str:
+    """set_part inside a list of changes: the part replaced in memory, written with the rest (as
+    setup_parts.write_part does on its own: a draft, and the checklist item back to draft)."""
+    from .setup_parts import BASICS, SETUP_RULE_FIELDS, _set_checklist
+    part, content = str(op.get("part") or ""), op.get("content")
+    if part not in PARTS:
+        raise HandbookError("set_part takes scoresheet, where_to_look, needs, rules or basics; rows and questions change one by one.")
+    if not isinstance(content, dict):
+        raise HandbookError(f"The {part.replace('_', ' ')} must be an object.")
+    s.dirty.add("project")
+    if part == "basics":
+        unknown = [k for k in content if k not in BASICS]
+        if unknown:
+            raise HandbookError(f"Not part of the basics: {', '.join(unknown)}. The basics are {', '.join(BASICS)}.")
+        s.project.update(copy.deepcopy(content))
+        for key in ("cutoff", "group_labels"):
+            if key in content:
+                _set_checklist(s.project, key, "draft")
+        return "Changed the basics."
+    if part == "rules":
+        new = content.get("rules")
+        if not isinstance(new, list) or not new or not all(isinstance(r, dict) for r in new):
+            raise HandbookError("rules needs rules: a list of open rules to add.")
+        have = s.rules.setdefault("rules", [])
+        n = max([int(r["id"][1:]) for r in have if str(r.get("id", ""))[1:].isdigit()] or [0])
+        for r in new:
+            n += 1
+            rule = {k: r.get(k) for k in SETUP_RULE_FIELDS}
+            rule.update({"id": f"R{n}", "rows": r.get("rows"), "stakes": None, "status": "open",
+                         "decision": None, "raised_by": "setup"})
+            have.append(rule)
+            s.new_rules.append(rule["id"])
+        _set_checklist(s.project, "rules", "draft")
+        s.dirty.add("rules")
+        return f"Added rule{'s' if len(new) != 1 else ''} {', '.join(s.new_rules[-len(new):])}."
+    data = copy.deepcopy(content)
+    if part == "scoresheet":
+        data["status"] = "draft"
+    setattr(s, part, data)
+    _set_checklist(s.project, part, "draft")
+    s.dirty.add(part)
+    return {"scoresheet": "Replaced the score sheet.", "where_to_look": "Replaced where to look.",
+            "needs": "Replaced the data needed."}[part]
+
+
+def _section_problems(s: _State) -> list[str]:
+    """Questions whose section the score sheet lacks, said with the way to add it."""
+    sections = _sheet_sections(s)
+    if sections is None:
+        return []
+    ids = {x.get("id") for x in sections if isinstance(x, dict)}
+    return [f"Question {q.get('id')} is in section {q.get('section')}, which is not in the score sheet. Add it with "
+            "new_section {name, weight} on add_question, or set the score sheet in the same change."
+            for q in s.questions.get("questions", []) if isinstance(q, dict) and q.get("section") not in ids]
+
+
 def v_of(q: dict, k: str):
     return (q.get("answer") or {}).get("levels") if k == "levels" else q.get(k)
 
@@ -287,9 +407,14 @@ def _impact(s: _State) -> dict:
             "rescore": {"rows": sorted({r for r, _ in redo}), "questions": sorted({q for _, q in redo}, key=str)}}
 
 
-def change(project: Project, op: dict, dry: bool = True) -> dict:
+def change(project: Project, op, dry: bool = True) -> dict:
+    """One change, or a list of them applied together (see the module docstring)."""
+    if isinstance(op, list):
+        if not op or not all(isinstance(o, dict) for o in op):
+            raise HandbookError("A list of changes holds objects with op, applied together in order.")
+        return _change_all(project, op, dry)
     if not isinstance(op, dict):
-        raise HandbookError("A change is an object with op.")
+        raise HandbookError("A change is an object with op, or a list of them applied together.")
     if op.get("op") == "set_part":
         from . import setup_parts
         part = str(op.get("part") or "")
@@ -300,9 +425,27 @@ def change(project: Project, op: dict, dry: bool = True) -> dict:
                     "impact": {"kept": None, "out_of_date": [], "removed": [], "unscored": [], "rescore": {"rows": [], "questions": []}}}
         got = setup_parts.write_part(project, part, op.get("content"))
         return {"ok": bool(got.get("ok")), "problems": got.get("problems") or [], "said": got.get("said"), "impact": None}
+    return _change_all(project, [op], dry)
+
+
+def _change_all(project: Project, ops: list[dict], dry: bool) -> dict:
+    """Every op applied in memory, in order; then, unless `dry`, all written, and all put back if the
+    whole-folder check finds anything new."""
     s = _State(project)
-    said = _apply(s, op)
+    saids = []
+    for o in ops:
+        try:
+            saids.append(_set_part(s, o) if o.get("op") == "set_part" else _apply(s, o))
+        except HandbookError as e:
+            if len(ops) == 1:
+                raise
+            return {"ok": False, "problems": [f"Change {len(saids) + 1} of {len(ops)} ({o.get('op')}): {e}"],
+                    "said": " ".join(saids), "impact": None}
+    said = " ".join(saids)
     impact = _impact(s)
+    problems = [x for x in _section_problems(s) if x not in s.gaps_before]
+    if problems:
+        return {"ok": False, "problems": problems, "said": said, "impact": impact}
     if dry:
         return {"ok": True, "problems": [], "said": said, "impact": impact}
     before = set(check_folder(project))
@@ -311,10 +454,19 @@ def change(project: Project, op: dict, dry: bool = True) -> dict:
     def keep(path):
         saved.setdefault(path, path.read_bytes() if path.is_file() else None)
 
-    for name in ("project", "questions", "units", "rules", "needs", "where_to_look"):
+    for name in ("project", "questions", "units", "rules", "needs", "where_to_look", "scoresheet"):
         if name in s.dirty:
             keep(project.file(name))
             project.write(name, getattr(s, name))
+    if s.new_rules:
+        from .stakes import rule_stakes
+        for rule in s.rules.get("rules", []):
+            if rule.get("id") in s.new_rules:
+                try:
+                    rule["stakes"] = rule_stakes(project, rule)
+                except (HandbookError, KeyError, TypeError, ValueError):
+                    rule["stakes"] = None
+        project.write("rules", s.rules)
     for key in s.dirty:
         kind, _, row = key.partition(":")
         if kind == "answers" and row in s.answers:
@@ -339,5 +491,12 @@ def change(project: Project, op: dict, dry: bool = True) -> dict:
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(raw)
+        empty = sorted({m.group(1) for x in problems for m in [re.search(r"section (.+?) has no questions", x)] if m})
+        if empty and any(o.get("op") == "remove_questions" for o in ops):
+            # ChemScore, sweep round 3: the refusal named the section but not what to do about it.
+            problems.append(f"Nothing was removed. Taking these questions off leaves section{'s' if len(empty) > 1 else ''} "
+                            f"{', '.join(empty)} with none: first save the score sheet without "
+                            f"{'them' if len(empty) > 1 else 'it'} (set_part scoresheet), then remove the questions, "
+                            "or send both in one list of changes.")
         return {"ok": False, "problems": problems, "said": said, "impact": impact}
     return {"ok": True, "problems": [], "said": said, "impact": impact}

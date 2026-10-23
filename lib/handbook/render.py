@@ -69,6 +69,14 @@ async () => {
     await sleep(150);
     for (const d of document.querySelectorAll('details:not([open])')) d.open = true;
   }
+  // Buttons that say "More information", "Read more" and the like, with no aria-expanded to go by (TikTok's
+  // Community Guidelines, 21 Oct 2026): clicked, then a moment for what they open to arrive.
+  // One round only: a page that draws its buttons again after a click would have them clicked shut by a second.
+  const MORE = /^\s*\+?\s*(?:more information|more info|more details|read more|show more|see more|view more|expand(?: all)?|show all|show details)\s*[+›>…]*\s*$/i;
+  const more = [...document.querySelectorAll('button, [role="button"], summary')]
+    .filter((b) => MORE.test(b.innerText || '') && safe(b)).slice(0, 80);
+  for (const b of more) { try { b.click(); } catch (e) { /* a button that will not click */ } }
+  if (more.length) await sleep(1500);
   for (const panel of document.querySelectorAll('[role="tabpanel"]')) {
     panel.hidden = false;
     if (getComputedStyle(panel).display === 'none') panel.style.display = 'block';
@@ -96,7 +104,11 @@ with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)
     except Exception:
         browser = p.chromium.launch(headless=True)
-    page = browser.new_page()
+    # Asked for as Chrome asks, not "HeadlessChrome": some sites abort that (Hamburg's law portal, 21 Oct 2026).
+    probe = browser.new_page()
+    agent = probe.evaluate("() => navigator.userAgent").replace("HeadlessChrome", "Chrome")
+    probe.close()
+    page = browser.new_page(user_agent=agent)
     try:
         page.goto(url, wait_until="networkidle", timeout=60000)
     except Exception:
@@ -110,8 +122,13 @@ with sync_playwright() as p:
     except Exception:
         text = page.evaluate("() => document.body ? document.body.innerText : ''")
     title = page.title()
+    try:
+        links = page.evaluate("() => Array.from(document.querySelectorAll('a[href]')).slice(0, 500)"
+                              ".map(a => [a.href, (a.innerText || a.title || '').trim().slice(0, 80)])")
+    except Exception:
+        links = []
     browser.close()
-print(json.dumps({"title": title, "text": text}))
+print(json.dumps({"title": title, "text": text, "links": links}))
 """
 
 
@@ -150,6 +167,7 @@ def render_text(url: str, python: Optional[str] = None) -> Optional[dict]:
     except (json.JSONDecodeError, IndexError):
         return None
     return {"title": re.sub(r"\s+", " ", out.get("title") or "").strip()[:200],
+            "links": [x for x in out.get("links") or [] if isinstance(x, list) and len(x) == 2],
             "text": "\n".join(ln for ln in (re.sub(r"[ \t\u00a0\r\f\v]+", " ", x).strip()
                                            for x in (out.get("text") or "").split("\n")) if ln)}
 
@@ -211,18 +229,32 @@ def archive_resting() -> bool:
         return False
 
 
+# What near_copy met at each capture of the last address it looked at, so archive_why_not says what happened
+# (glaad-smsi, 21 Oct 2026: "no copy from before the cut-off (its latest is from 2026-03-08)" for a cut-off of
+# 30 April, when the capture before it would not load).
+NEAR_TRIED: tuple = ("", [])
+
+
+def _day(stamp: str) -> str:
+    return f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]}"
+
+
 def archive_why_not(url: str, before: Optional[str]) -> str:
-    """Why the archive gave no usable copy, in words: unreachable, no capture at all, or only captures
-    after the cut-off (with the earliest)."""
+    """Why the archive gave no usable copy, in words: unreachable, busy, what near_copy met at each capture
+    from before the cut-off, no capture at all, or only captures after the cut-off (with the latest)."""
     if LAST_ARCHIVE_STATE == "unreachable":
         return "the web archive did not answer (try again later)"
     if LAST_ARCHIVE_STATE == "busy":
         return "the web archive was too busy to answer (it said 429, too many requests; try again later)"
+    if NEAR_TRIED[0] == url and NEAR_TRIED[1]:
+        return "; ".join(NEAR_TRIED[1])
     if before:
         later = archive_captures(url, None, limit=1)
+        if later and later[0][:8] <= before.replace("-", "")[:8]:
+            return (f"the web archive's latest copy, from {_day(later[0])}, is before the cut-off "
+                    + ("but could not be used" if _near(later[0], before) else "but more than a year before it"))
         if later:
-            return (f"the web archive has no copy from before the cut-off (its latest is from "
-                    f"{later[0][:4]}-{later[0][4:6]}-{later[0][6:8]})")
+            return f"the web archive has no copy from before the cut-off (its latest is from {_day(later[0])})"
     return "the web archive has no copy of it"
 
 
@@ -287,10 +319,13 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
         got = render_text(url, python)
         if got is None:
             tried.append("the live page would not open in a browser")
+        elif is_challenge(got["text"].encode("utf-8")):
+            tried.append("the live page showed a robot check")
         elif is_shell(got["text"]):
             tried.append("the live page rendered to nothing")
         else:
-            out.update(kind="text", content=got["text"].encode("utf-8"), title=got["title"], text_source="rendered")
+            out.update(kind="text", content=got["text"].encode("utf-8"), title=got["title"], text_source="rendered",
+                       links=got.get("links") or [])
             return out
     stamps = archive_captures(url, before)
     if not stamps:
@@ -317,7 +352,8 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
     return out
 
 
-_CHALLENGE = re.compile(rb"(?i)(captcha|cf-chl|challenge-platform|verify you are (?:a )?human|are you a robot|"
+_CHALLENGE = re.compile(rb"(?i)(captcha|cf-chl|challenge-platform|challenge validation|just a moment\.\.\.|"
+                        rb"verify you are (?:a )?human|are you a robot|"
                         rb"checking your browser|ddos protection|access denied|request rejected|radware|"
                         rb"bot (?:detection|protection))")
 
@@ -350,6 +386,81 @@ _SELECTOR = re.compile(r"(?:select|choose|pick) (?:your |a |the )?(?:country|reg
 def _mostly_short_lines(text: str) -> bool:
     lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
     return len(lines) >= 15 and sum(1 for ln in lines if len(ln) <= 40) >= 0.7 * len(lines)
+
+
+_HIDES = re.compile(rb"""(?i)aria-expanded=["']false|<details[\s>]|class=["'][^"']*\b(?:accordion|collaps)|"""
+                    rb""">\s*(?:<[^>]+>\s*)*(?:more information|read more|show more|see more|view more)\s*<""")
+
+
+def hides_sections(content: bytes) -> bool:
+    """Whether a web page keeps some of its words behind buttons, accordions or tabs (a browser opens them:
+    EXPAND_JS). TikTok's Community Guidelines (21 Oct 2026) came through at 6,000 of 19,000 characters."""
+    return bool(_HIDES.search(content[:3_000_000]))
+
+
+# A page that is only a site's menus and a document's contents list, with none of the document's own text
+# (de-transparenzranking, 22 Oct 2026: Hamburg's law portal saved 145 words of links and section headings and
+# passed the empty-page check). Bounded: only a page of at most NAV_WORDS words, with at least NAV_LINES lines,
+# whose lines of BODY_LINE words or more (sentences) hold under NAV_BODY_SHARE of its words.
+NAV_WORDS, NAV_LINES, BODY_LINE, NAV_BODY_SHARE = 1500, 8, 10, 0.25
+
+
+def navigation_only(text: str) -> bool:
+    """Whether a page's text is menus and a contents list rather than the document's text."""
+    lines = [ln.split() for ln in (text or "").splitlines() if ln.strip()]
+    words = sum(len(ln) for ln in lines)
+    if not words or words > NAV_WORDS or len(lines) < NAV_LINES:
+        return False
+    return sum(len(ln) for ln in lines if len(ln) >= BODY_LINE) < NAV_BODY_SHARE * words
+
+
+_ANCHOR = re.compile(r"(?is)<a\b[^>]*?href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")
+_PRINT = re.compile(r"(?i)(?:\.pdf(?:$|[?#])|\b(?:pdf|print|printable|printversion|druck|drucken|druckansicht|"
+                    r"druckversion|imprimer|imprimir|stampa|afdrukken)\b)")
+PRINT_TRIES = 2          # links followed at most, for one page
+
+
+def page_links(content: bytes | str, url: str) -> list[list[str]]:
+    """[[absolute address, link text]] for the links in an HTML page, at most 500."""
+    if isinstance(content, bytes):
+        content = fetch.decode_html(content)
+    out = []
+    for href, inner in _ANCHOR.findall(content or "")[:500]:
+        text = re.sub(r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", inner)).strip()[:80]
+        out.append([urllib.parse.urljoin(url, href.strip()), text])
+    return out
+
+
+def _site(url: str) -> str:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return ".".join(host.split(".")[-2:])
+
+
+def print_view(url: str, links) -> Optional[dict]:
+    """The PDF or print view of the same document a page of menus links to, on the same site:
+    `{"kind": "pdf"|"html", "content", "url", "title"}`, or None. PDFs first; PRINT_TRIES links at most."""
+    seen, picks = {url.split("#")[0]}, []
+    for href, text in links or []:
+        href = str(href).split("#")[0]
+        if not href.startswith(("http://", "https://")) or href in seen or _site(href) != _site(url):
+            continue
+        if _PRINT.search(urllib.parse.urlsplit(href).path + "?" + urllib.parse.urlsplit(href).query) or _PRINT.search(str(text)):
+            seen.add(href)
+            picks.append(href)
+    picks.sort(key=lambda h: 0 if urllib.parse.urlsplit(h).path.lower().endswith(".pdf") else 1)
+    for href in picks[:PRINT_TRIES]:
+        got = fetch.fetch_bytes(href)
+        if not got.ok:
+            continue
+        name = urllib.parse.urlsplit(href).path.rsplit("/", 1)[-1]
+        kind = fetch.kind_of(got.content, got.content_type, name)
+        if kind == "pdf":
+            return {"kind": "pdf", "content": got.content, "url": href, "title": ""}
+        if kind == "html":
+            text = fetch.extract_text_html(got.content)
+            if not is_shell(text) and not navigation_only(text):
+                return {"kind": "html", "content": got.content, "url": href, "title": fetch.html_title(got.content)}
+    return None
 
 
 def is_shell(text: str) -> bool:
@@ -385,23 +496,33 @@ def near_copy(url: str, before: Optional[str]) -> Optional[fetch.FetchResult]:
     today is and is not a shell, robot check or error page: the page as it stood then. None otherwise
     (`archive_why_not` then says why). Its `url` is the archive address."""
     import datetime as _dt
+    global NEAR_TRIED, LAST_ARCHIVE_STATE
+    met: list[str] = []
+    NEAR_TRIED = (url, met)
     if not wants_dated_copy(before):
         return None
     cut = _dt.date.fromisoformat(before)
-    for stamp in [x for x in archive_captures(url, before, limit=4) if _near(x, before)][:2]:
+    stamps = archive_captures(url, before, limit=4)
+    near = [x for x in stamps if _near(x, before)][:3]          # a shell or a dead capture: the next older one
+    if stamps and not near:
+        met.append(f"the web archive's latest copy before the cut-off is from {_day(stamps[0])}, more than a year "
+                   "before it")
+    for stamp in near:
         got = _dt.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
         if (cut - got) >= (_dt.date.today() - cut):
+            met.append(f"the archive's {_day(stamp)} copy is further from the cut-off than today's page")
             continue                     # today's page is nearer the cut-off than this capture
         raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
         if raw.status_code == 429:           # the index answered but the capture stayed busy
-            global LAST_ARCHIVE_STATE
             LAST_ARCHIVE_STATE = "busy"
             _rest_archive()
             return None
         if not raw.ok:
+            met.append(f"the archive's {_day(stamp)} copy, before the cut-off, would not load ({fetch.describe_failure(raw)})")
             continue
         if fetch.kind_of(raw.content, raw.content_type) == "html" and (
                 is_shell(fetch.extract_text_html(raw.content)) or is_challenge(raw.content)):
+            met.append(f"the archive's {_day(stamp)} copy, before the cut-off, is a script shell or a robot check")
             continue
         return fetch.FetchResult(ARCHIVE_PAGE.format(stamp=stamp, url=url), 200, raw.content, raw.content_type)
     return None

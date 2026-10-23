@@ -14,10 +14,20 @@ def main(argv) -> int:
     parser = command_parser("material-text", "Print one of the owner's uploaded files as text.")
     parser.add_argument("file", help="the file, in inbox/uploads/")
     args = parser.parse_args(argv)
-    open_project(args.project)
+    project = open_project(args.project)
     path = Path(args.file).expanduser()
     if not path.is_file():
-        raise HandbookError(f"There is no file {path}.")
+        # A bare name, as the help says (InfluenceMap, sweep round 3: "There is no file" for a name in
+        # inbox/uploads/): the stored file, or the one uploaded under that name (`<id>--<name>`).
+        uploads = project.path / "inbox" / "uploads"
+        named = [f for f in sorted(uploads.glob("*")) if f.is_file()
+                 and (f.name == args.file or f.name.split("--", 1)[-1] == args.file)] if uploads.is_dir() else []
+        if len(named) == 1:
+            path = named[0]
+        elif named:
+            raise HandbookError(f"More than one upload is called {args.file}: " + ", ".join(f.name for f in named) + ".")
+        else:
+            raise HandbookError(f"There is no file {path}, nor one called {args.file} in inbox/uploads/.")
     try:
         print(read_text(path))
     except ValueError as e:

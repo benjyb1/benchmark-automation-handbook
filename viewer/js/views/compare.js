@@ -61,6 +61,7 @@
     document_date: "Document date",
     rule_reading: "Rule reading",
     open_rule: "Undecided rule",
+    published_blank: "Blank last edition",
     unexplained: "Not yet explained",
   };
   const BY_WORDS = { files: "From the files", claude: "Claude's reading" };
@@ -1069,7 +1070,7 @@
   const BIG_GAP_SHARE = 0.25;
   const BAND_JUMP = 2;
   const NOTHING_FOUND_SHARE = 0.5;
-  const ANSWER_FLAGS = { quote_not_found: "Quote not on saved page", weak_source: "Not from the company" };
+  const ANSWER_FLAGS = { quote_not_found: "Quote not on saved page", weak_source: "Not from its own source" };
   const SEND_PATTERN = "compare:nothing_found";   // the `supplied` doc's pattern for a Send from here
   const MAX_ANSWERS = 6;                           // answer buttons on a card before "Show all on the grid"
   const openCards = new Set();                     // the open cards, by key, kept across redraws

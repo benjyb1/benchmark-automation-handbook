@@ -23,6 +23,7 @@ Find and save the documents a row's questions will be scored from (in group mode
 - `PROJECT/where_to_look.json`, `plan`: the places to look. Use entries whose `for` is `"all"`, names your row's (or group's) label value, or lists your row id.
 - `PROJECT/where_to_look.json`, `last_year`: last year's source list. Use it only as places to look: try an address listed for your row, and look for this year's version of what it was. Never assume last year's document still holds.
 - `PROJECT/questions.json`: each question's `short`, `wording` and `evidence` tell you what kind of document matters. Ignore the rest.
+- `PROJECT/needs.json`: a need with `only_source` true lists in `why` questions only the owner's own data can answer. Do not look for documents for those questions on the rows it covers (`rows`, or every row when null).
 - `PROJECT/units.json` for your row's name and labels, and `PROJECT/found/ROW.json` for documents already saved for the row (group-wide ones included). Do not fetch those again.
 
 Read nothing else in the project folder.
@@ -66,7 +67,7 @@ WHAT names the document ("Country policy page"); WHERE says where you looked (si
 
 ## Second search
 
-You are this row's only second search. Read "What was missing" in your prompt and look where the first search did not: other language versions, the parent company's site, document libraries, PDFs linked from reports, archived copies from before the cut-off. Save the same way. Record `found --expect` only for what is still missing and not already listed in `found/ROW.json`.
+You are this row's only second search. Read "What was missing" in your prompt and look where the first search did not: other language versions, the parent company's site, document libraries, PDFs linked from reports, archived copies from before the cut-off. If a saved page is a press release, news item or landing page about a report or policy, find the document it announces. If the plan names a register or list (a signatory list, a participant database), look this row up in it and save the page that shows its entry. A document named by its title, number or citation whose official home will not give it: look for the same document by that title or citation on another site that publishes such texts, and save that copy as weak. Save the same way. Record `found --expect` only for what is still missing and not already listed in `found/ROW.json`.
 
 ## Report
 

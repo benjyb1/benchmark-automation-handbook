@@ -281,6 +281,7 @@ class Reading:
     notes: list[str] = field(default_factory=list)      # plain facts for the owner
     ocr_quality: float | None = None                    # the reader's own confidence over the OCR'd text
     unread_pictures: int = 0                            # pictures whose words could not be read (no reader)
+    poor_pages: list[int] = field(default_factory=list)  # pages whose words were read from a picture poorly
 
 
 # The kinds office.py reads, and the function for each.
@@ -437,7 +438,9 @@ COVER_SHARE = 0.35            # a picture covering this share of the page
 MANY_IMAGES = 8               # or this many separate pictures (logos)
 MANY_SHAPES = 40              # or this many drawn shapes on a nearly empty page (a chart)
 MAX_OCR_PAGES = 300           # OCR is read for at most this many pages of one document (Kenya's budget: 124 scans)
-MAX_PAGE_PICTURES = 40        # and at most this many page pictures are kept for one document
+MAX_PAGE_PICTURES = 40        # and at most this many page pictures are kept for one document,
+MAX_POOR_PICTURES = 40        # and this many more for pages whose words were read poorly (es-imco-bipe, 21 Oct 2026:
+POOR_OCR = 0.8                # a budget's image-only salary tables came through garbled with no picture)
 RENDER_LONG_EDGE = 2600       # a page is drawn about 200 dpi for reading its words
 
 
@@ -519,6 +522,23 @@ def _new_lines(ocr_text: str, text: str) -> str:
         if key and key not in have_text:
             out.append(line)
     return "\n".join(out)
+
+
+def pdf_unreadable(path: Path) -> str:
+    """Why a PDF would not open, in a sentence: cut short in the download (no end-of-file marker in its last
+    kilobytes; InfluenceMap, sweep round 3: a 5,242,880-byte copy of a longer report was called damaged), else
+    damaged or locked."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            f.seek(max(0, size - 2048))
+            tail = f.read()
+    except OSError:
+        return "the PDF could not be read (damaged, or locked with a password)."
+    if size and b"%%EOF" not in tail:
+        return (f"the PDF stops part way ({size:,} bytes and no end-of-file marker): the download was cut short. "
+                "Fetch it again, or save it from a browser and add it.")
+    return "the PDF could not be read (damaged, or locked with a password)."
 
 
 def pdfium_read(path: Path) -> tuple[list[str], dict]:
@@ -618,7 +638,7 @@ def read_pdf(path: Path, scans: bool = True) -> Reading:
         try:
             pdf = _pdfium.PdfDocument(str(path))
         except _pdfium.PdfiumError:
-            raise HandbookError("the PDF could not be read (damaged, or locked with a password).") from None
+            raise HandbookError(pdf_unreadable(path)) from None
     try:
         if pdf is not None:
             texts, features, info = [], [], {}
@@ -637,7 +657,7 @@ def read_pdf(path: Path, scans: bool = True) -> Reading:
             texts, features, info = (pdf_page_texts(path, count), [None] * count, pdf_info(path)) if count > 0 \
                 else ([], [], {})
         if not texts:
-            raise HandbookError("the PDF could not be read (damaged, or locked with a password).")
+            raise HandbookError(pdf_unreadable(path))
         reading = Reading("pdf", texts, info=info)
         if scans:
             _read_pictures_of_pdf(path, pdf, reading, features)
@@ -664,7 +684,7 @@ def _read_pictures_of_pdf(path: Path, pdf, reading: Reading, features: list) -> 
     if not wanted:
         return
     engine = ocr.engine()
-    scores, drawn, kept, cut_off = [], 0, 0, 0
+    scores, drawn, kept, cut_off, poor_kept = [], 0, 0, 0, 0     # poor_kept: pictures kept past the cap for poor pages
     for i, scanned in wanted:
         if drawn >= MAX_OCR_PAGES:
             cut_off += 1
@@ -695,11 +715,17 @@ def _read_pictures_of_pdf(path: Path, pdf, reading: Reading, features: list) -> 
                     texts[i] = texts[i].rstrip() + "\n" + extra
                     reading.ocr_pages.append(i + 1)
                     scores.append(got.get("confidence"))
-        if (words or not scanned or got is None) and kept < MAX_PAGE_PICTURES:
+        poor = bool(words) and (got or {}).get("confidence") is not None and got["confidence"] < POOR_OCR
+        if poor:
+            reading.poor_pages.append(i + 1)      # its words may be garbled: the scorer should see the picture
+        if (words or not scanned or got is None) and (kept < MAX_PAGE_PICTURES or (poor and poor_kept < MAX_POOR_PICTURES)):
             pictures = kit_pictures(_png_bytes(im))
             if pictures:
                 reading.pictures[i + 1] = pictures
-                kept += 1
+                if kept < MAX_PAGE_PICTURES:
+                    kept += 1
+                else:
+                    poor_kept += 1
     scores = [s for s in scores if s is not None]
     reading.ocr_quality = round(sum(scores) / len(scores), 3) if scores else None
     if reading.ocr_pages:

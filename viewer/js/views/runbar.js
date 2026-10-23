@@ -13,8 +13,10 @@
    cells still to score (scoring).
 
    What it does: Pause or Resume, "Stop after <row>", Stop now, "Choose what to
-   run" (a dialog: rows by label value, questions, each with "all"), and "Stop
-   after: Finding documents | Scoring | Don't stop". Each writes one
+   run" (a dialog: rows by name or by a label's value, questions, each with "all";
+   with nothing running, the cost of a trial on the ticked rows and a Start that
+   asks for it through HB.nextStep.start), and "Stop after: Finding documents |
+   Scoring | Don't stop". Each writes one
    request to the Artifact database collection `control` through HB.edits.save:
      {action: "pause" | "resume" | "stop_now" | "stop_after_row" | "scope" |
       "stop_after", row?, rows?, questions?, stage?}  (+ id, by, at)
@@ -64,6 +66,7 @@
 .rb-pick__list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 14rem), 1fr)); gap: 0 var(--s4); }
 .rb-pick__list .hb-check { align-items: flex-start; }
 .rb-pick__list .hb-check input { margin-top: 0.3rem; }
+.rb-pick__rows { max-height: 14rem; overflow: auto; padding: var(--s2); border: 1px solid var(--rule); border-radius: var(--radius); }
 @media (width < 40rem) {
   .rb__facts { display: grid; gap: 2px; font-size: var(--fs-12); }
   .rb__facts > span + span::before { content: none; }
@@ -159,7 +162,7 @@
     const left = (u) => {
       const cells = (b.cells || {})[u.id] || {};
       return Object.keys(cells).some((q) => (!qsIn || qsIn.has(q)) && (!runQs || runQs.has(q))
-        && !(HB.data.isScored(cells[q]) && cells[q].out_of_date !== true));
+        && !HB.data.isWaiting(cells[q]) && !(HB.data.isScored(cells[q]) && cells[q].out_of_date !== true));
     };
     const ordered = inGroups(inScope, b.project && b.project.group_by);
     const finding = ordered.find(toFind);
@@ -229,6 +232,34 @@
     redraw();
   }
 
+  /** Whether this page's own computer is scoring now (under hb serve), or null when the page cannot tell. */
+  function scoringHere() {
+    const s = HB.local && typeof HB.local.state === "function" ? HB.local.state() : null;
+    if (!s) return null;
+    const scoring = (j) => j && (j.kind === "scoring" || j.kind === "rerun");
+    return Boolean(scoring(s.job) || arr(s.queued).some(scoring));
+  }
+
+  /** Resume. Under hb serve a pause ends the job after the row it was on, so lifting the pause alone starts
+      nothing (Global Health 50/50, sweep round 3: "Running, finding documents" for 13 minutes with no job):
+      with nothing scoring here and a run left part way, carry that run on, as the chat's resume does. */
+  async function resume(b, id) {
+    const run = openRun(b);
+    const here = scoringHere();
+    if (here === false && run && (run.kind === "trial" || run.kind === "full") && HB.nextStep && typeof HB.nextStep.carryOn === "function") {
+      focusId = id || null;
+      try {
+        await HB.nextStep.carryOn(run);
+        message = null;
+      } catch (err) {
+        message = { tone: "critical", text: err && err.message ? err.message : "This could not be saved." };
+      }
+      redraw();
+      return;
+    }
+    await send({ action: "resume" }, id);
+  }
+
   /* ---- Choose what to run (a dialog, styled like the edit dialogs) ------------------ */
 
   function tick(id, value, on, text) {
@@ -237,28 +268,44 @@
     return { input, node: h("label", { class: "hb-check", for: id }, input, h("span", null, text)) };
   }
 
+  /* Rows by name (a search and a tick for each), with each label's values as a quick way to tick every
+     row that has one; and, when nothing is running, the cost of a trial on the ticked rows with a Start
+     (ca-energy, 21 Oct 2026: rows could only be picked by label, one label value ticked all 16, "16 of 16
+     chosen" stayed after All was unticked, and only the chat could start a trial). */
   function chooseDialog(b, ctl) {
     const old = document.getElementById("rb-dialog");
     if (old) old.remove();
     const units = arr(b.units).filter((u) => u && u.id);
     const questions = arr(b.questions).filter((q) => q && q.id);
     const labels = arr(b.project && b.project.labels);
+    const one = (b.project && b.project.unit_word) || "row";
     const plural = (b.project && b.project.unit_word_plural) || "rows";
-    const scoped = ctl.scope.rows ? units.filter((u) => ctl.scope.rows.includes(u.id)) : units;
+    const Plural = plural.charAt(0).toUpperCase() + plural.slice(1);
+    const canStart = Boolean(HB.edits && HB.edits.ready) && !openRun(b) && !scoringBusy();
 
     const allRows = tick("rb-rows-all", "all", !ctl.scope.rows, "All " + plural);
+    const picked = new Set(ctl.scope.rows || []);
+    const rowTicks = units.map((u, i) => tick("rb-row-" + i, u.id, picked.has(u.id), String(u.name || u.id)));
+    const find = h("input", { type: "search", class: "input", id: "rb-rows-find", placeholder: "Find a " + one, "aria-label": "Find a " + one });
+    find.addEventListener("input", () => {
+      const q = find.value.trim().toLowerCase();
+      rowTicks.forEach((t, i) => { t.node.hidden = Boolean(q) && !String(units[i].name || units[i].id).toLowerCase().includes(q); });
+    });
+    const rowList = h("div", { class: "rb-pick__list rb-pick__rows", id: "rb-rows-list" }, rowTicks.map((x) => x.node));
     const groups = labels.map((label, i) => {
       const values = HB.data.labelValues(label);
-      const present = new Set(scoped.map((u) => String((u.labels || {})[label])));
-      const every = values.every((v) => present.has(v));
-      const boxes = values.map((v, j) => tick("rb-rows-" + i + "-" + j, v, ctl.scope.rows && !every && present.has(v), v));
+      const boxes = values.map((v, j) => tick("rb-rows-" + i + "-" + j, v, false, v));
+      boxes.forEach((x) => x.input.addEventListener("change", () => {
+        units.forEach((u, k) => { if (String((u.labels || {})[label]) === x.input.value) rowTicks[k].input.checked = x.input.checked; });
+        sync();
+      }));
       return { label, boxes, node: h("fieldset", { class: "hb-pick", id: "rb-rows-set-" + i },
         h("legend", null, label.charAt(0).toUpperCase() + label.slice(1).replace(/_/g, " ")), boxes.map((x) => x.node)) };
     });
-    const rowPick = h("div", { class: "hb-pick-set", id: "rb-rows-pick" }, groups.map((g) => g.node));
+    const labelPick = labels.length ? h("div", { class: "hb-pick-set", id: "rb-rows-pick" }, groups.map((g) => g.node)) : null;
+    const rowPick = h("div", { class: "stack", id: "rb-rows-choose" }, find, rowList, labelPick);
     const rowCount = h("p", { class: "rb-pick__count", id: "rb-rows-count", "aria-live": "polite" });
-    // The hint matches what is on screen: the label boxes only show once "All" is unticked.
-    const rowHint = labels.length ? h("p", { class: "hb-hint" }) : null;
+    const rowHint = h("p", { class: "hb-hint", id: "rb-rows-hint" });
 
     const allQs = tick("rb-qs-all", "all", !ctl.scope.questions, "All questions");
     const qBoxes = questions.map((q, i) => tick("rb-q-" + i, q.id, ctl.scope.questions && ctl.scope.questions.includes(q.id),
@@ -267,33 +314,71 @@
     const qCount = h("p", { class: "rb-pick__count", id: "rb-qs-count", "aria-live": "polite" });
 
     function chosenRows() {
-      if (allRows.input.checked) return null;
-      const filter = groups.map((g) => ({ label: g.label, values: g.boxes.filter((x) => x.input.checked).map((x) => x.input.value) }))
-        .filter((f) => f.values.length);
-      if (!filter.length) return null;
-      return units.filter((u) => filter.every((f) => f.values.includes(String((u.labels || {})[f.label])))).map((u) => u.id);
+      return allRows.input.checked ? null : rowTicks.filter((x) => x.input.checked).map((x) => x.input.value);
     }
     function chosenQs() {
       return allQs.input.checked ? null : qBoxes.filter((x) => x.input.checked).map((x) => x.input.value);
     }
+    const costLine = canStart ? h("p", { class: "rb__cost", id: "rb-dialog-cost", "aria-live": "polite" }) : null;
+    const start = canStart ? h("button", { type: "button", class: "btn btn--primary", id: "rb-dialog-start" }, "Start a trial") : null;
     function sync() {
-      rowPick.hidden = allRows.input.checked || !labels.length;
-      if (rowHint) rowHint.textContent = allRows.input.checked
-        ? "To run only some " + plural + ", untick All and pick by label."
-        : "Only the " + plural + " with a ticked value in every label you tick are run.";
+      rowPick.hidden = allRows.input.checked;
+      rowHint.textContent = allRows.input.checked ? "To run only some " + plural + ", untick All."
+        : "Tick the " + plural + " to run" + (labels.length ? ", or tick a label's value to tick every " + one + " that has it." : ".");
+      groups.forEach((g) => g.boxes.forEach((x) => {
+        const holders = rowTicks.filter((t, k) => String((units[k].labels || {})[g.label]) === x.input.value);
+        x.input.checked = holders.length > 0 && holders.every((t) => t.input.checked);
+      }));
       qPick.hidden = allQs.input.checked;
       const r = chosenRows();
       const q = chosenQs();
       rowCount.textContent = (r ? fmtInt(r.length) : fmtInt(units.length)) + " of " + HB.data.unitWords(units.length) + " chosen.";
       qCount.textContent = (q ? fmtInt(q.length) : fmtInt(questions.length)) + " of " + fmtInt(questions.length) + " questions chosen.";
+      if (!start) return;
+      const est = r && r.length && (!q || q.length) && HB.cost ? HB.cost.rows(r, q) : null;
+      start.disabled = !r || !r.length || Boolean(q && !q.length);
+      start.textContent = r && r.length ? "Start a trial on " + HB.data.unitWords(r.length) : "Start a trial";
+      costLine.textContent = !r ? "To try a few " + plural + ", untick All and tick them."
+        : !r.length ? "Tick at least one " + one + " to try."
+          : q && !q.length ? "Tick at least one question, or all questions."
+            : est ? "A trial on " + HB.data.unitWords(r.length) + " uses " + HB.cost.line(est).replace(/^A/, "a") +
+              // the figure includes finding for those not searched yet (costs.estimate_rows(..., finding=True)); only
+              // a bundle from before finding was priced leaves it out
+              (est.finding ? HB.cost.findWords(est) : HB.cost.part() && HB.cost.part().find ? "" : " Finding their documents adds more.")
+              : "";
     }
-    [allRows, allQs, ...qBoxes, ...groups.flatMap((g) => g.boxes)].forEach((x) => x.input.addEventListener("change", sync));
+    [allRows, allQs, ...qBoxes, ...rowTicks].forEach((x) => x.input.addEventListener("change", sync));
 
     const status = h("div", { class: "hb-dialog__status", id: "rb-dialog-status", "aria-live": "polite" });
-    const save = h("button", { type: "submit", class: "btn btn--primary", id: "rb-dialog-save" }, "Save");
+    const save = h("button", { type: "submit", class: ["btn", !start && "btn--primary"], id: "rb-dialog-save" }, start ? "Save for the next run" : "Save");
     const d = h("dialog", { class: "hb-dialog", id: "rb-dialog", "aria-labelledby": "rb-dialog-title" });
     const cancel = h("button", { type: "button", class: "btn btn--quiet", id: "rb-dialog-cancel", onclick: () => d.close() }, "Cancel");
     const same = (a, x) => (a === null && x === null) || (Array.isArray(a) && Array.isArray(x) && a.length === x.length && a.every((v) => x.includes(v)));
+    const problemOf = (rows, qs) => (rows && !rows.length ? "Tick at least one " + one + ", or all " + plural + "."
+      : qs && !qs.length ? "Tick at least one question, or all questions." : null);
+    if (start) {
+      start.addEventListener("click", async () => {
+        const rows = chosenRows();
+        const qs = chosenQs();
+        const problem = !rows ? "Untick All and tick the " + plural + " to try." : problemOf(rows, qs);
+        if (problem) {
+          status.replaceChildren(HB.notice("critical", problem));
+          return;
+        }
+        start.disabled = true;
+        try {
+          if (HB.nextStep && typeof HB.nextStep.start === "function") await HB.nextStep.start({ kind: "trial", rows, questions: qs });
+          else await HB.edits.save("scoring", { action: "start", kind: "trial", rows, questions: qs });
+        } catch (err) {
+          start.disabled = false;
+          status.replaceChildren(HB.notice("critical", err && err.message ? err.message : "This could not be saved."));
+          return;
+        }
+        d.close();
+        message = { tone: "good", text: "Trial asked for on " + HB.data.unitWords(rows.length) + ". It starts in a moment, and the Grid fills in as it goes." };
+        redraw();
+      });
+    }
     const form = h("form", {
       class: "hb-dialog__form",
       novalidate: true,
@@ -301,9 +386,7 @@
         ev.preventDefault();
         const rows = chosenRows();
         const qs = chosenQs();
-        const problem = rows && !rows.length ? "No " + plural + " match these values. Tick other values, or all " + plural + "."
-          : qs && !qs.length ? "Tick at least one question, or all questions."
-            : same(rows, ctl.scope.rows) && same(qs, ctl.scope.questions) ? "Nothing has changed." : null;
+        const problem = problemOf(rows, qs) || (same(rows, ctl.scope.rows) && same(qs, ctl.scope.questions) ? "Nothing has changed." : null);
         if (problem) {
           status.replaceChildren(HB.notice("critical", problem));
           return;
@@ -326,17 +409,17 @@
     h("div", { class: "hb-dialog__head" },
       h("p", { class: "eyebrow" }, "Run control"),
       h("h2", { id: "rb-dialog-title" }, "Choose what to run"),
-      h("p", { class: "hb-hint" }, "Claude runs only what you tick, from the next " + ((b.project && b.project.unit_word) || "row")
-        + " on. " + plural.charAt(0).toUpperCase() + plural.slice(1) + " and questions left out keep the answers they have.")),
+      h("p", { class: "hb-hint" }, (start ? "Tick what to run, then start a trial on it now or save it for the next run. "
+        : "Claude runs only what you tick, from the next " + one + " on. ") + Plural + " and questions left out keep the answers they have.")),
     h("div", { class: "hb-dialog__body" },
       h("fieldset", { class: "hb-dialog__fields", id: "rb-rows" },
-        h("legend", { class: "field__label" }, plural.charAt(0).toUpperCase() + plural.slice(1)),
-        allRows.node, rowHint,
-        rowPick, rowCount),
+        h("legend", { class: "field__label" }, Plural),
+        allRows.node, rowHint, rowPick, rowCount),
       h("fieldset", { class: "hb-dialog__fields", id: "rb-qs" },
-        h("legend", { class: "field__label" }, "Questions"), allQs.node, qPick, qCount)),
+        h("legend", { class: "field__label" }, "Questions"), allQs.node, qPick, qCount),
+      costLine),
     status,
-    h("div", { class: "hb-dialog__foot" }, cancel, save));
+    h("div", { class: "hb-dialog__foot" }, cancel, save, start));
     d.append(form);
     d.addEventListener("click", (ev) => { if (ev.target === d) d.close(); });
     d.addEventListener("close", () => {
@@ -349,6 +432,13 @@
     if (typeof d.showModal === "function") d.showModal();
     else d.setAttribute("open", "");
     allRows.input.focus();
+  }
+
+  /** A scoring job on this computer, running or waiting (hb serve): a second start would only queue behind it. */
+  function scoringBusy() {
+    const s = HB.local && typeof HB.local.state === "function" ? HB.local.state() : null;
+    const busy = (j) => Boolean(j && j.kind === "scoring");
+    return Boolean(s && (busy(s.job) || arr(s.queued).some(busy)));
   }
 
   /* ---- The bar ------------------------------------------------------------------------ */
@@ -419,7 +509,7 @@
       const list = [];
       if (run || halted) {
         list.push(halted
-          ? button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => send({ action: "resume" }, "rb-resume"), { primary: true, disabled: wants("resume") })
+          ? button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => resume(b, "rb-resume"), { primary: true, disabled: wants("resume") })
           : button("rb-pause", wants("pause") ? "Pause asked" : "Pause", () => send({ action: "pause" }, "rb-pause"), { disabled: wants("pause") }));
       }
       if (run && prog.row && !halted) {
@@ -463,11 +553,15 @@
     const halted = ctl.paused || ctl.stop_now;
     const s = HB.local && typeof HB.local.state === "function" ? HB.local.state() : null;
     const headerPause = Boolean(s && s.job && s.job.kind === "scoring");   // the top of the page has Pause then
+    // Under hb serve: a run left open with nothing scoring here is not running, whatever its last row says.
+    const idleHere = Boolean(run && !theirs && !halted && scoringHere() === false && (run.kind === "trial" || run.kind === "full"));
     const said = [];
     if (theirs) {
       said.push(h("b", null, (HB.team.nameOf(run.by) || "A colleague") + " is running this"));
     } else if (halted) {
       said.push(h("b", null, ctl.paused ? "Paused" : "Stopped"));
+    } else if (idleHere) {
+      said.push(h("b", null, "Not running"), ": the run stopped part way");
     } else if (run && prog.row) {
       said.push(h("b", null, prog.phase.charAt(0).toUpperCase() + prog.phase.slice(1) + " " + name(prog.row)));
     } else if (run) {
@@ -479,7 +573,9 @@
     if (run && HB.cost && HB.cost.part()) said.push(" \u00b7 " + HB.cost.tokens(spentOn(run)) + " tokens so far");
     let main = null;
     if (ready && !theirs && halted) {
-      main = button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => send({ action: "resume" }, "rb-resume"), { primary: true, disabled: wants("resume") });
+      main = button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => resume(b, "rb-resume"), { primary: true, disabled: wants("resume") });
+    } else if (ready && !theirs && run && idleHere) {
+      main = button("rb-carry", "Carry on", () => resume(b, "rb-carry"), { primary: true, title: "Carry on the run from where it stopped" });
     } else if (ready && !theirs && run && !headerPause) {
       main = button("rb-pause", wants("pause") ? "Pause asked" : "Pause", () => send({ action: "pause" }, "rb-pause"), { disabled: wants("pause") });
     }
@@ -519,7 +615,8 @@
         text = "The full run of the " + HB.data.unitWords(est.rows) + " left: " + HB.cost.line(est).replace(/^A/, "a") + " This comes from your trial and includes finding documents.";
       } else {
         const r = HB.cost.rows(prog.leftIds, ctl.scope.questions);
-        if (r) text = "Scoring the " + HB.data.unitWords(r.rows) + " left: " + HB.cost.line(r).replace(/^A/, "a") + " Finding their documents adds more.";
+        if (r) text = "Scoring the " + HB.data.unitWords(r.rows) + " left: " + HB.cost.line(r).replace(/^A/, "a") +
+          (r.find_rows ? " That includes finding their documents." : "");
       }
     }
     return text ? h("p", { class: "rb__cost", id: "rb-cost" }, text) : null;
@@ -610,5 +707,6 @@
   // For the corner chat: save a request (Promise of the doc), and the bar's words for one.
   HB.runBar.request = request;
   HB.runBar.redraw = redraw;
+  HB.runBar.resume = (id) => resume(HB.data.bundle() || {}, id);   // the bar's Resume (tests/js/runbar_harness.mjs)
   HB.runBar.describe = (body) => requestWords(body || {}, HB.data.bundle() || {});
 })((window.HB = window.HB || {}));

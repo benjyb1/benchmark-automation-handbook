@@ -24,6 +24,11 @@
                                 unit_word and unit_word_plural)
    HB.data.isScored(cell)       true for a cell with an answer (answered or
                                 no_evidence)
+   HB.data.isWaiting(cell)      true for a cell that waits for data only the owner
+                                holds (cell.waiting names the need)
+   HB.data.leftToScore(cell)    true while the cell has something to score: not
+                                scored yet or out of date, and not waiting
+   HB.data.need(id)             the data need with that id, or null
    HB.data.foundCount(row)      how many documents Claude has found for a row
    HB.data.gaps(row)            what Claude could not get for a row: {missing:
                                 [{what, where_looked}] (expected but not found,
@@ -125,6 +130,25 @@
     return Boolean(c) && (c.state === "answered" || c.state === "no_evidence");
   }
 
+  // An answer that waits for data only the owner holds (needs.py): it is not scored until that arrives.
+  function isWaiting(c) {
+    return Boolean(c && c.waiting);
+  }
+
+  // Whether there is still something to score in this cell: not scored yet (or missing), or out of
+  // date, and not waiting for the owner's data.
+  function leftToScore(c) {
+    if (!c) return true;
+    if (c.waiting) return false;
+    return c.state === "not_run" || c.state === "missing" || c.out_of_date === true;
+  }
+
+  function need(id) {
+    const b = bundle();
+    const list = b && Array.isArray(b.needs) ? b.needs : [];
+    return list.find((n) => n && n.id === id) || null;
+  }
+
   function found(row) {
     const b = bundle();
     return (b && b.found && b.found[row]) || {};
@@ -210,6 +234,9 @@
     labelValues,
     unitWords,
     isScored,
+    isWaiting,
+    leftToScore,
+    need,
     foundCount,
     gaps,
     gapRows,

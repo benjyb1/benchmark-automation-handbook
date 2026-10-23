@@ -386,7 +386,7 @@
       dearest: Object.keys(c.measured || {}).length
         ? Object.entries(c.measured).sort((x, y) => y[1] - x[1]).slice(0, 5).map(([row, t]) => ({ row, name: (HB.data.unit(row) || {}).name, used: HB.cost.tokens(t), document_characters: (c.rows || {})[row] }))
         : Object.entries(c.rows || {}).sort((x, y) => y[1] - x[1]).slice(0, 5).map(([row, ch]) => ({ row, name: (HB.data.unit(row) || {}).name, document_characters: ch, would_use: HB.cost.range(HB.cost.rows([row], qids)) })),
-      not_included: "These ranges are for scoring. Finding documents, second searches and second reads add more; the trial's estimate below includes them when the trial recorded them.",
+      not_included: "These ranges include finding the documents of each " + unitWord() + " not looked for yet, which often costs more than the scoring itself. Second searches and second reads add more; the trial's estimate below includes them when the trial recorded them.",
       full_run_estimate_from_the_trial: b.estimate && b.estimate.point != null
         ? { rows_left: b.estimate.rows, tokens: HB.cost.range(b.estimate), assumptions: arr(b.estimate.assumptions).slice(0, 4) } : null,
       one_chat_reply: HB.cost.range(HB.cost.chatTurn()),
@@ -398,7 +398,8 @@
     out.full_run = trialEst && !qids
       ? { rows_left: trialEst.rows, tokens: HB.cost.range(trialEst), includes: "finding documents and scoring (from the trial)",
         say: "Quote this range for the whole run, every time." }
-      : scoreEst ? { rows_left: leftIds.length, tokens: HB.cost.range(scoreEst), includes: "scoring only; finding documents adds more",
+      : scoreEst ? { rows_left: leftIds.length, tokens: HB.cost.range(scoreEst),
+        includes: scoreEst.find_rows ? "finding the documents not found yet, and scoring" : "scoring only",
         say: "Quote this range for the whole run, every time." } : null;
     let rows = null;
     if (arr(input.rows).length) rows = arr(input.rows).map(rowOf);
@@ -695,8 +696,23 @@
     let value = input.value == null || input.value === "" ? null : input.value;
     const levels = q.answer && Array.isArray(q.answer.levels) ? q.answer.levels : null;
     if (value != null && levels) {
-      value = Number(value);
-      if (!levels.some((l) => l.value === value)) throw new Error("Question " + qid + " takes one of: " + levels.map((l) => l.value).join(", ") + ".");
+      // A level as written ("yes", "ND", 3); a number question also takes a figure in its range (hpc-pay, 21 Oct
+      // 2026: every value went through Number(), so "yes" and every figure were refused).
+      const level = levels.find((l) => l.value === value) || levels.find((l) => String(l.value) === String(value).trim());
+      const a = q.answer || {};
+      const n = typeof value === "number" ? value : Number(String(value).replace(/[,\s]/g, ""));
+      if (level) {
+        value = level.value;
+      } else if (a.kind === "number" && Number.isFinite(n) && !(Number.isFinite(a.min) && n < a.min) && !(Number.isFinite(a.max) && n > a.max)) {
+        value = n;
+      } else if (a.kind === "number") {
+        const span = Number.isFinite(a.min) && Number.isFinite(a.max) ? " from " + a.min + " to " + a.max
+          : Number.isFinite(a.min) ? " of at least " + a.min : Number.isFinite(a.max) ? " of at most " + a.max : "";
+        throw new Error("Question " + qid + " takes a figure" + span + (a.unit ? " (" + a.unit + ")" : "")
+          + (levels.length ? ", or one of: " + levels.map((l) => l.value).join(", ") : "") + ".");
+      } else {
+        throw new Error("Question " + qid + " takes one of: " + levels.map((l) => l.value).join(", ") + ".");
+      }
     }
     const reason = typeof input.reason === "string" ? input.reason.trim() : "";
     const evidence = {
@@ -821,10 +837,7 @@
         "walk them through the result when it is done. Do not tell them to press anything." };
   }
 
-  /** Starts scoring as the green next-step button does (views/nextstep.js): no Confirm, because the
-      owner asked for it in words. */
   const SCORING_KINDS = ["scoring", "rerun"];
-  const BIG_START = 3;          // a full run over more rows than this is put to the owner with its cost first
 
   /** The scoring or re-run job running or waiting now, or null. */
   function scoringJob() {
@@ -866,8 +879,10 @@
         "(documents first, then scoring, one at a time) and that the Grid fills in as it goes. Do not tell them to press anything." };
   }
 
-  /** Starts scoring as the green next-step button does (views/nextstep.js): no Confirm, because the
-      owner asked for it in words, unless it is a big run, which goes on a card with its cost. */
+  /** Starts scoring as the green next-step button does (views/nextstep.js), on a Confirm card with its cost.
+      Every start is put to the owner, a trial too (Global Health 50/50, sweep round 3: "what do I do next to
+      score only five first?" started a 1.4 to 3.2 million token trial with no card). The chat never refuses
+      a start; it only asks before spending. */
   async function startScoring(input) {
     if (!HB.local || !HB.nextStep) throw new Error(NOT_SAVED_HERE());
     canSave();
@@ -876,37 +891,51 @@
     const qids = arr(input.questions).map((q) => qidOf(q));
     const cells = bundle().cells || {};
     const toDo = (row) => !Object.keys(cells[row] || {}).length || Object.entries(cells[row]).some(([q, c]) => (!qids.length || qids.includes(q)) &&
-      (!c || c.state === "not_run" || c.state === "missing" || c.out_of_date));
+      HB.data.leftToScore(c));
+    // What is not scored because it waits for data only the owner holds (needs.py): say so, never "already scored".
+    const held = new Set();
+    (rows.length ? rows : Object.keys(cells)).forEach((row) => Object.entries(cells[row] || {}).forEach(([q, c]) => {
+      if ((!qids.length || qids.includes(q)) && HB.data.isWaiting(c)) held.add(c.waiting);
+    }));
+    const waits = held.size ? " Some answers wait for data the owner needs to supply (" + Array.from(held).map((id) => {
+      const n = HB.data.need(id);
+      return id + (n && n.what ? ": " + clipText(n.what, 80) : "");
+    }).join("; ") + "). Ask them for it; once it is added for its rows, mark that need supplied with save_setup_part (needs), and those answers can be scored." : "";
     if (rows.length && !rows.some(toDo)) {
-      throw new Error("Those are already scored, so a start would score nothing. To score them again use propose_rescore (it shows the cost on a Confirm card).");
+      throw new Error((held.size ? "Nothing there can be scored now." : "Those are already scored, so a start would score nothing. To score them again use propose_rescore (it shows the cost on a Confirm card).") + waits);
     }
     const left = rows.length ? rows.filter(toDo) : arr(bundle().units).map((u) => u.id).filter(toDo);
-    if (!left.length) throw new Error("Everything is already scored. To score answers again use propose_rescore.");
-    const est = HB.cost && left.length ? HB.cost.rows(left, qids) : null;
+    if (!left.length) throw new Error((held.size ? "Nothing can be scored now." : "Everything is already scored. To score answers again use propose_rescore.") + waits);
+    // A trial with no rows named tries three (serve.py TRIAL_ROWS): priced as the job is (serve.py _trial_rows),
+    // on three rows not looked for yet, else any, so the chat, the Score dialog and the job give one figure.
+    const looked = ((HB.cost && HB.cost.part()) || {}).rows || {};
+    const ids = arr(bundle().units).map((u) => u.id);
+    const unlooked = ids.filter((id) => !Object.prototype.hasOwnProperty.call(looked, id));
+    const priced = kind === "trial" && !rows.length ? (unlooked.length ? unlooked : ids).slice(0, 3) : left;
+    const est = HB.cost && priced.length ? HB.cost.rows(priced, qids) : null;
     const req = { kind, rows: rows.length ? left : [], questions: qids };
     const go = async () => {
       const since = new Date().toISOString().slice(0, 19) + "Z";
       await HB.nextStep.start(req);
       return startedWords(await scoringNow(since));
     };
-    if (kind === "full" && left.length > BIG_START) {
-      // 20 Oct 2026: "start the run" got its cost and a question back, and the owner had to type yes.
-      const w = (bundle().project || {});
-      const line = "Score " + fmtInt(left.length) + " " + (left.length === 1 ? w.unit_word || "row" : w.unit_word_plural || "rows") +
-        (qids.length ? " on " + fmtInt(qids.length) + " question" + (qids.length === 1 ? "" : "s") : "") +
-        ", finding their documents first. " + (est ? HB.cost.line(est) + " Finding the documents adds a little more." : "It uses your Claude plan.") +
-        " Pause at the top stops it at any time.";
-      return Object.assign(propose(line, async () => {
-        const got = await go();
-        return { __result: true, started: got.started, applied: !got.started,
-          note: got.started ? "The header at the top shows progress, with Pause." : "It ended at once: " + (got.said || got.ended || "see the run bar") + ".",
-          told: "Scoring " + (got.started ? "has started" : "ended at once: " + (got.said || got.ended)) + ".)" };
-      }), { cost: est ? HB.cost.line(est) : null,
-        next: "The card shows the cost; do not ask them to type yes, and do not say it has started until they press Confirm. Suggest scoring a few first if nothing has been tried." });
-    }
-    const got = await go();
-    return Object.assign({ kind, rows: rows.length ? left : "chosen by Claude to cover the groups" + (kind === "full" ? " (every row still to score)" : ""),
-      cost: est ? HB.cost.line(est) : null }, got);
+    const w = (bundle().project || {});
+    const n = priced.length;
+    const what = kind === "trial" && !rows.length
+      ? "Try a few " + (w.unit_word_plural || "rows") + " first (Claude picks three that cover the groups)"
+      : (kind === "trial" ? "Try " : "Score ") + fmtInt(n) + " " + (n === 1 ? w.unit_word || "row" : w.unit_word_plural || "rows");
+    const line = what + (qids.length ? " on " + fmtInt(qids.length) + " question" + (qids.length === 1 ? "" : "s") : "") +
+      ", finding their documents first. " + (est ? HB.cost.line(est) + HB.cost.findWords(est) : "It uses your Claude plan.") +
+      " Pause at the top stops it at any time.";
+    return Object.assign(propose(line, async () => {
+      const got = await go();
+      return { __result: true, started: got.started, applied: !got.started,
+        note: got.started ? "The header at the top shows progress, with Pause." : "It ended at once: " + (got.said || got.ended || "see the run bar") + ".",
+        told: "Scoring " + (got.started ? "has started" : "ended at once: " + (got.said || got.ended)) + ".)" };
+    }), { cost: est ? HB.cost.line(est) : null, kind,
+      rows: rows.length ? left : "chosen by Claude to cover the groups" + (kind === "full" ? " (every row still to score)" : ""),
+      next: "The card shows what it scores and its cost; do not ask them to type yes, and do not say it has started until they press Confirm." +
+        (kind === "full" ? " Suggest scoring a few first if nothing has been tried." : "") });
   }
 
   /* While the set-up draft runs, one entry at the end of the conversation says what Claude is doing now
@@ -1117,7 +1146,7 @@
         inputSchema: S({ row: ROW, question: QID, value: { type: ["number", "string"] }, reason: { type: "string" }, quote: { type: "string" }, doc: { type: "string" }, page: { type: "number" }, link: { type: "string" } }, ["row", "question"]), execute: proposeCorrection },
       { name: "read_material", description: "The owner's set-up files (added on the Set-up tab under Your material): without file, the list (id, name, kind, length); with file, its text as PDF, Word, Excel or text, 20,000 characters from start. For the fit check.",
         inputSchema: S({ file: { type: "string" }, start: { type: "number" } }), execute: readMaterial },
-      { name: "start_scoring", description: "Starts scoring now, as the page's green next-step button does: kind \"trial\" scores a few rows first (give rows, or leave them out and Claude picks rows that cover the groups), kind \"full\" scores every row still to do (or the rows given). Claude finds each row's documents, then scores it; the header shows progress, with Pause. Use it when the owner asks to score (\"score Liberia\", \"try a few\", \"go\", \"start the run\"). A trial, or a full run of three rows or fewer, starts at once with no Confirm; a bigger full run is put to the owner on a Confirm card with its cost, so never ask them to type yes. It only scores answers not scored yet: to score answers again, use propose_rescore. Its result says whether the run really started; say only what it says.",
+      { name: "start_scoring", description: "Starts scoring now, as the page's green next-step button does: kind \"trial\" scores a few rows first (give rows, or leave them out and Claude picks rows that cover the groups), kind \"full\" scores every row still to do (or the rows given). Claude finds each row's documents, then scores it; the header shows progress, with Pause. Use it when the owner asks to score (\"score Liberia\", \"try a few\", \"go\", \"start the run\"). Every start is put to the owner on a Confirm card with what it scores and its cost (finding included), so never ask them to type yes, and never start one when they only ask what to do next: say what the next step is and offer it. It only scores answers not scored yet: to score answers again, use propose_rescore. Its result says whether the run really started; say only what it says.",
         inputSchema: S({ kind: { type: "string", enum: ["trial", "full"] }, rows: { type: ["array", "null"], items: ROW }, questions: { type: ["array", "null"], items: QID } }, ["kind"]),
         execute: startScoring },
       { name: "start_draft_setup", description: "Starts Draft my set-up now: one background Claude session reads every file under Your material and drafts the questions, rows, score sheet and groups as drafts for the owner to check, with its open questions as rules to decide and data to supply. It starts at once, with no Confirm, so use it when the owner asks for the set-up (or says yes to it) and their files are in. The chat then shows its progress and, when it is done, you carry on with what to check.",
@@ -1927,6 +1956,8 @@
       p.applied = Boolean(own && own.applied);
       p.started = Boolean(own && own.started);       // a run or re-score: started behind the page, not done yet
       p.folder = (own && own.folder) || null;
+      // An edit or a decision saved for Claude to apply: its card says so if Claude could not make it.
+      p.doc = !own && out && typeof out === "object" && typeof out.id === "string" ? out.id : null;
       p.note = own && own.note ? own.note
         : HB.when("Saved. It is being applied now.", "Saved. It shows as Waiting for Claude, and Claude applies it the next time it works on this project.");
       const told = "(The owner clicked Confirm: " + p.line + ". " + (own && own.told ? own.told
@@ -2085,6 +2116,12 @@
       const no = h("button", { type: "button", class: "btn btn--small", id: "hbc-" + p.id + "-cancel", disabled: p.state === "saving" }, "Cancel");
       no.addEventListener("click", () => cancel(p.id));
       box.append(...[line, contextNode(p), h("div", { class: "cluster" }, yes, no)].filter(Boolean));
+    } else if (p.state === "done" && p.doc && HB.edits && typeof HB.edits.failures === "function"
+      && HB.edits.failures().some((f) => f.id === p.doc)) {
+      // Saved, but Claude could not make it (edits.js failures): the owner's words, the server's under Details.
+      const f = HB.edits.failures().find((x) => x.id === p.doc);
+      box.append(line, HB.notice("warning", f.words), h("details", { class: "hb-problem__details" }, h("summary", null, "Details"),
+        h("pre", { class: "hb-problem__raw" }, f.why)));
     } else if (p.state === "done") {
       // Saved; moving dots while the page still lists it as waiting, then Done once it has been applied.
       const waiting = !p.applied && !p.started && HB.edits && typeof HB.edits.pending === "function" && Number(HB.edits.pending()) > 0;
@@ -2104,7 +2141,10 @@
     } else if (p.state === "cancelled") {
       box.append(line, h("p", { class: "small muted" }, "Cancelled. Nothing was saved. Say below what you'd like instead."));
     } else {
-      box.append(line, HB.notice("critical", p.note || "This could not be saved."));
+      // In the owner's words: a change that failed the folder check named files (21 Oct 2026, ca-energy and
+      // pt-qdsd: 'scoresheet.json: score sheet: section "CO" has no questions'). Claude was told the raw words.
+      box.append(line, typeof HB.problemNotice === "function" ? HB.problemNotice(p.note || "This could not be saved.")
+        : HB.notice("critical", p.note || "This could not be saved."));
     }
     return box;
   }

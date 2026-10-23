@@ -78,11 +78,12 @@ PATTERNS = {
         "none": ("No documents at all", "documents"),
     },
     "scores": {
-        "weak_source": ("Answers from a copy that isn't the company's own", "grid"),
+        "weak_source": ("Answers from a copy that isn't their own", "grid"),
         "quote_not_found": ("Quotes that don't match the saved page word for word", "grid"),
         "group_differs": ("Same chain, same document, different answers by country", "grid"),
         "after_cutoff": ("Evidence dated after the cut-off", "grid"),
         "todays_version": ("Web pages saved as they are today, not as they stood at the cut-off", "grid"),
+        "needs_document": ("Answers scored as if there were nothing, for want of a document I couldn't get", "grid"),
         "reads_disagree": ("A second read came out differently", "grid"),
         "document_changed": ("Saved documents that changed after the answer was scored", "grid"),
     },
@@ -101,7 +102,7 @@ HELP = {
                          "(for a web page, print it to PDF) and upload it here."),
     "not_found": ("send", "Do you know where this is? Upload the file or paste a link."),
     "none": ("send", "Do you know where they publish this? Upload a file or paste a link."),
-    "weak_source": ("send", "Do you have the company's own copy? Upload it, or paste a link to it, "
+    "weak_source": ("send", "Do you have their own copy? Upload it, or paste a link to it, "
                             "and I'll score from that instead."),
     "quote_not_found": ("check", "Can you open a few and see whether the words are on the page? If "
                                  "you have the version that was live, send it and I'll score again."),
@@ -109,11 +110,13 @@ HELP = {
     "after_cutoff": ("send", "Do you have a version from before the cut-off? Upload it or paste a link."),
     "todays_version": ("send", "Do you have these pages as they stood at the cut-off? Upload a saved copy or "
                                "paste a link to one, and I'll score from that."),
+    "needs_document": ("send", "Do you have the document each of these needed? Upload it or paste a link, and "
+                               "I'll score those answers again."),
     "reads_disagree": ("check", "Can you open these and say which reading is right?"),
     "document_changed": ("check", "Nothing to send: I'll score these again from the new copy. Say if "
                                   "you would rather I kept the answers from the old one."),
-    "big_change": ("check", "Can you check a few against what you know of these companies?"),
-    "band_jump": ("check", "Can you check a few against what you know of these companies?"),
+    "big_change": ("check", "Can you check a few against what you know of these {plural}?"),
+    "band_jump": ("check", "Can you check a few against what you know of these {plural}?"),
     "nothing_found": ("send", "Did they publish something I missed? Upload it or paste a link."),
 }
 # The step's own choices: the label shown (with {plural}, the owner's word for rows) and the tab
@@ -188,7 +191,7 @@ def _rank(cases: list[dict]) -> list[dict]:
     return sorted(cases, key=lambda c: (-c["points"], str(c["name"]).casefold()))
 
 
-def _pattern(step: str, key: str, cases: list[dict], cells: list | None = None) -> dict:
+def _pattern(step: str, key: str, cases: list[dict], cells: list | None = None, plural: str = "rows") -> dict:
     label, tab = PATTERNS[step][key]
     cases = _rank(cases)
     rows = list(dict.fromkeys(c["row"] for c in cases if c.get("row")))
@@ -196,7 +199,7 @@ def _pattern(step: str, key: str, cases: list[dict], cells: list | None = None) 
            "points": _number(sum(c["points"] for c in cases)), "rows": len(rows),
            "cases": cases[:CASES_SHOWN], "more": max(0, len(cases) - CASES_SHOWN),
            "open": {"tab": tab, "rows": rows},
-           "help": {"kind": HELP[key][0], "ask": HELP[key][1]}, SLOT: None}
+           "help": {"kind": HELP[key][0], "ask": HELP[key][1].replace("{plural}", plural)}, SLOT: None}
     if cells is not None:
         out["cells"] = len(cells)
         out["open"] = {"tab": tab, "cells": cells}
@@ -246,7 +249,7 @@ def _setup(f: _Files) -> tuple[dict, list[dict], list[dict]]:
                            "points": _number(sum(f.row_points(r) for r in rows))})
     drafts = [{"row": None, "name": k.replace("_", " ").capitalize(), "item": k, "points": 0}
               for k, v in (proj.get("checklist") or {}).items() if v in ("draft", "missing")]
-    patterns = [_pattern("setup", k, v) for k, v in (("need", need_cases), ("draft", drafts)) if v]
+    patterns = [_pattern("setup", k, v, plural=f.plural) for k, v in (("need", need_cases), ("draft", drafts)) if v]
     for p in patterns:
         only_rules = p["pattern"] == "draft" and [c["item"] for c in p["cases"]] == ["rules"]
         p["open"] = {"tab": "rules" if only_rules else PATTERNS["setup"][p["pattern"]][1]}
@@ -279,7 +282,7 @@ def _documents(f: _Files) -> tuple[dict, list[dict], list[dict]]:
                 str(x.get("what") or x) if isinstance(x, dict) else str(x) for x in missing]))
         if not ids:
             none.append(f.case(row, points=pts))
-    patterns = [_pattern("documents", k, v) for k, v in
+    patterns = [_pattern("documents", k, v, plural=f.plural) for k, v in
                 (("not_kept", not_kept), ("not_found", not_found), ("none", none)) if v]
 
     def biggest(docs):
@@ -339,7 +342,7 @@ def _scores(f: _Files) -> tuple[dict, list[dict], list[dict]]:
             cases.append(f.case(row, points=_number(pts), questions=qids))
             cells += [[row, q] for q in qids]
         if cases:
-            patterns.append(_pattern("scores", flag, cases, cells))
+            patterns.append(_pattern("scores", flag, cases, cells, plural=f.plural))
     choices = []
     if own_reading:
         choices.append(_choice(f, "judgement", cells=own_reading,
@@ -380,7 +383,7 @@ def _results(f: _Files) -> tuple[dict, list[dict], list[dict]]:
         per_row: dict[str, dict] = {}
         for m in _rank(moves):
             per_row.setdefault(m["row"], m)
-        patterns.append(_pattern("results", why, list(per_row.values())))
+        patterns.append(_pattern("results", why, list(per_row.values()), plural=f.plural))
     agree = sum(1 for r in compare.get("rows") or [] if (r.get("agree") or {}) and all(r["agree"].values()))
     facts = compute_facts(f.project)
     numbers = {"rows_scored": facts["rows_scored"], "rows_complete": facts["rows_complete"],

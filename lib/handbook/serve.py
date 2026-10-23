@@ -60,7 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import chatwork, costs, edition, readers, updates
+from . import chatwork, costs, edition, needs, readers, updates
 from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home
@@ -77,6 +77,11 @@ WATCHED = ("control", "edits", "decisions", "corrections", "supplied", "report",
 TICK_S = 3.0
 MAX_UPLOAD = 40 * 1024 * 1024
 SCORE_TIMEOUT_S = 1900
+TRIAL_ROWS = 3                  # rows a trial tries when the owner chose none (hb cover picks them)
+# A page trial or run that has used this many times the top of its estimate pauses and waits for the owner
+# (knowthechain, 21 Oct 2026: 4.06M tokens against 74k to 175k, and the page never paused).
+OVER_ESTIMATE = 3
+ARCHIVE_AGAIN = 20              # pages a job asks the web archive for again (serve.Worker._archive_again)
 # A background job that fails (a correction's re-read, a re-run) is not queued again at once: its request
 # is still on file, and the apply loop would otherwise start it again every tick (20 Oct 2026 review: 376
 # scorer sessions in 75 seconds). It waits this long, doubling after each failure, up to RETRY_MAX_S.
@@ -379,14 +384,27 @@ class Worker:
                 rebuild = True
             ed = {k: docs.get(k) for k in ("edits", "decisions") if k in docs}
             if ed and any([self._new(k, v) for k, v in ed.items()]):
-                payload = {"edits": screen("edits", self.store.list("edits")),
-                           "decisions": screen("decisions", self.store.list("decisions"))}
-                pending = {c: self.team.before(c, payload[c]) for c in payload} if self.team is not None else {}
-                code, out = self._run_with(payload, "apply-edits", "--via", "viewer")
-                self._said(code, out, self._edit_words(out), "Your change could not be applied.")
-                for c, p in pending.items():
-                    self.team.logged(c, p)
-                rebuild = True
+                # Only what is not applied yet: every earlier answer sent again came back as "Skipped 6,
+                # Already applied earlier" under each new one (four format tests, 21 Oct 2026). A change that
+                # could not be made stays unapplied (edits-applied `failed`), so it is tried again next time.
+                done = set((self.project.read("edits-applied") or {}).get("applied") or [])
+                payload = {c: [d for d in screen(c, self.store.list(c)) if d.get("id") not in done]
+                           for c in ("edits", "decisions")}
+                if payload["edits"] or payload["decisions"]:
+                    pending = {c: self.team.before(c, payload[c]) for c in payload} if self.team is not None else {}
+                    code, out = self._run_with(payload, "apply-edits", "--via", "viewer")
+                    if code == 0:
+                        words, tone = self._edit_words(out)
+                        if tone == "warning":            # some could not be made: the page says which and why
+                            self.note(words, tone, out[-800:] or None)
+                        else:
+                            said, detail = self._edit_said(out, payload)
+                            self.note(said, "good" if detail is None else "warning", detail)
+                    else:
+                        self.note("Your change could not be applied.", "critical", out[-800:] or None)
+                    for c, p in pending.items():
+                        self.team.logged(c, p)
+                    rebuild = True
             if "corrections" in docs and self._new("corrections", docs["corrections"]):
                 mine = screen("corrections", docs["corrections"])
                 pending = self.team.before("corrections", mine) if self.team is not None else {}
@@ -423,11 +441,50 @@ class Worker:
             self.note(bad, "critical", out[-800:] or None)
 
     @staticmethod
-    def _edit_words(out: str) -> str:
+    def _edit_words(out: str) -> tuple[str, str]:
+        """What apply-edits did, in the owner's words, and the note's tone. A change it could not make is said
+        as such (ca-energy, 21 Oct 2026: one skipped at every open read "Nothing new to apply", in green); the
+        page shows which, and why, from the bundle's failed_edits."""
+        lines = out.splitlines()
+        at = next((i for i, ln in enumerate(lines) if re.match(r"Skipped \d+:", ln)), None)
+        turned = [ln for ln in (lines[at + 1:] if at is not None else []) if ln.startswith("  ")
+                  and not ln.rstrip().endswith("Already applied earlier.")]
+        m = re.search(r"Applied (\d+) of", out)
+        made = int(m.group(1)) if m else None
+        if turned:
+            n = len(turned)
+            head = "One change from the page could not be made" if n == 1 else f"{n} changes from the page could not be made"
+            return head + (", and the rest are applied." if made else ", so nothing changed.") + " The page says why.", "warning"
+        if made == 0:
+            return "Nothing new to apply.", "neutral"
+        return "Your change is applied and the page is up to date.", "good"
+
+    @staticmethod
+    def _edit_said(out: str, payload: dict) -> tuple[str, str | None]:
+        """What this payload of edits and decisions changed, in the owner's words, and the command's own
+        account as the note's detail only when something could not be applied."""
+        decisions = [d for d in payload.get("decisions") or [] if isinstance(d, dict)]
+        decided = list(dict.fromkeys(str(d.get("rule")) for d in decisions if d.get("rule") and not d.get("skip")))
+        later = list(dict.fromkeys(str(d.get("rule")) for d in decisions if d.get("rule") and d.get("skip")))
+        edits = len(payload.get("edits") or [])
         m = re.search(r"Applied (\d+) of", out)
         if m and m.group(1) == "0":
-            return "Nothing new to apply."
-        return "Your change is applied and the page is up to date."
+            return "That could not be applied.", out[-800:] or None
+        parts = []
+        if decided:
+            parts.append(("Rule " if len(decided) == 1 else "Rules ") + ", ".join(decided) + (" is" if len(decided) == 1 else " are") + " decided")
+        if later:
+            parts.append(("Rule " if len(later) == 1 else "Rules ") + ", ".join(later) + " left for later")
+        if edits:
+            parts.append(f"{edits} change{'s' if edits != 1 else ''} saved")
+        said = (". ".join(parts) or "Your change is applied") + "."
+        stale = re.search(r"(\d+) answers? (?:is|are) now out of date", out)
+        if stale:
+            n = int(stale.group(1))
+            said += f" {n} answer{'s are' if n != 1 else ' is'} now out of date and can be scored again."
+        else:
+            said += " The page is up to date."
+        return said, (out[-800:] if "Skipped" in out else None)
 
     def _corrections_said(self, code: int, out: str) -> None:
         if code != 0:
@@ -666,11 +723,22 @@ class Worker:
             req = {"id": d["id"], "kind": d["kind"], "rows": [str(r) for r in d.get("rows") or []],
                    "questions": [str(q) for q in d.get("questions") or []], "asked": now_iso()}
             title = ("Trying a few " if req["kind"] == "trial" else "Scoring ") + self._plural()
+            # Finding the documents is priced too, for each row not looked for yet (21 Oct 2026: trials came in at
+            # 3 to 14 times the top of an estimate that left it out). A trial with no rows chosen picks its own
+            # when it starts (score_run), so it is priced on as many rows as it will try.
             self.enqueue("scoring:" + d["id"], "scoring", title, lambda job, r=req: self.score_run(job, r),
-                         estimate=lambda r=req: costs.estimate_rows(self.project, r["rows"] or self._row_ids(), r["questions"] or None))
+                         estimate=lambda r=req: costs.estimate_rows(
+                             self.project, r["rows"] or (self._trial_rows() if r["kind"] == "trial" else self._row_ids()),
+                             r["questions"] or None, finding=True))
 
     def _row_ids(self) -> list[str]:
         return [u.get("id") for u in self.project.read("units").get("units") or [] if u.get("id")]
+
+    def _trial_rows(self) -> list[str]:
+        """Rows to price a trial on before it picks its own: TRIAL_ROWS not looked for yet, else any."""
+        ids = self._row_ids()
+        fresh = [r for r in ids if not (self.project.path / "found" / f"{r}.json").is_file()]
+        return (fresh or ids)[:TRIAL_ROWS]
 
     def _plural(self) -> str:
         return (self.bundle().get("project") or {}).get("unit_word_plural") or "rows"
@@ -682,9 +750,13 @@ class Worker:
         except (json.JSONDecodeError, IndexError):
             return {}
 
-    def _stop_now(self, job: dict, row: str | None = None) -> str | None:
+    def _stop_now(self, job: dict, row: str | None = None, over: bool = True) -> str | None:
         """The run control check before every row (the run skill's): apply what the page asked, then
-        say why to stop, or None to carry on."""
+        say why to stop, or None to carry on. A trial or run far over its estimate is paused first, but
+        only while work is left (`over`): at the end it finishes and its note says it used more than
+        estimated (gh5050, 21 Oct 2026: a one-row trial was left paused and unfinished without a word)."""
+        if over and self._over_estimate(job):
+            return "over"
         ctl = self._json_out("control")
         if ctl.get("paused"):
             return "paused"
@@ -693,6 +765,15 @@ class Worker:
         if row and ctl.get("stop_after_row") == row:
             return "stopped after " + row
         return None
+
+    def _over_estimate(self, job: dict) -> bool:
+        """True, with the run paused, once a scoring job has used OVER_ESTIMATE times the top of its estimate."""
+        high = (job.get("estimate") or {}).get("high")
+        if job.get("kind", "scoring") != "scoring" or not high or job.get("tokens", 0) <= OVER_ESTIMATE * high:
+            return False
+        with self.cmd.lock:
+            self.cmd.run("control", "set", "--pause")
+        return True
 
     def _clear_old_stop(self, asked: str | None) -> None:
         """A start the owner asked for clears a pause or stop that was already set when they asked: one left
@@ -711,9 +792,9 @@ class Worker:
             control.set_control(self.project, [{"action": "resume"}])
 
     def score_run(self, job: dict, req: dict) -> None:
-        """Find and score, row by row, rebuilding the page after each so the Grid fills in as it goes.
-        Not done here yet (the run skill does them with judgement): second searches, second reads, and
-        turning a scorer's rule doubt into a rule question. The answers still carry their flags."""
+        """Find and score, row by row, rebuilding the page after each so the Grid fills in as it goes. Then the
+        scorers' rule doubts become questions on the Rules tab (doubts.py). Not done here yet (the run skill does
+        it with judgement): second reads. The answers still carry their flags."""
         from .cmd_find import run_finder
         names = {u.get("id"): u.get("name") or u.get("id") for u in self.bundle().get("units") or []}
         project_meta = self.project.read("project")
@@ -725,11 +806,18 @@ class Worker:
         self._clear_old_stop(req.get("asked"))
         if kind == "trial" and not rows:
             first = next(iter(self.project.read("questions").get("questions") or []), {}).get("id")
-            rows = (self._json_out("cover", "--question", str(first), "--size", "3").get("rows") or [])[:3] if first else []
+            rows = (self._json_out("cover", "--question", str(first), "--size", str(TRIAL_ROWS)).get("rows") or [])[:TRIAL_ROWS] if first else []
         with self.cmd.lock:
             open_full = next((r for r in self.project.runs() if r.get("kind") == "full" and r.get("finished") is None), None)
+            # Carrying on a paused trial (the run bar's Resume, the chat's resume) goes on in the same trial run
+            # rather than opening a second one beside it.
+            open_trial = next((r for r in self.project.runs() if r.get("kind") == "trial" and r.get("finished") is None
+                               and rows and sorted(r.get("rows") or []) == sorted(rows)
+                               and sorted(r.get("questions") or []) == sorted(qids)), None)
             if kind == "full" and open_full:
                 run_id = open_full["id"]
+            elif kind == "trial" and open_trial:
+                run_id = open_trial["id"]
             else:
                 args = ["run", "start", "--kind", kind] + (["--rows", ",".join(rows)] if rows else []) \
                     + (["--questions", ",".join(qids)] if qids else []) + ["--json"]
@@ -739,8 +827,34 @@ class Worker:
         def in_scope(listed):
             return [x for x in listed if not rows or x in rows]
 
+        # The finder looks only for the questions this run covers (sweep round 3: told every question, it searched
+        # for all of them in a run scoped to a third).
+        find_qs = qids or None
+        if find_qs is None:
+            from . import control
+            try:
+                find_qs = control.read(self.project)["scope"]["questions"]
+            except HandbookError:
+                find_qs = None
+
         # Phase 1: documents. Group-wide ones first (once per run), then each row's.
-        to_find = in_scope(self._json_out("todo", "--find").get("rows") or [])
+        # Only what the job's questions need (es-imco-bipe, 21 Oct 2026: a trial of 15 of 116 questions searched
+        # for all 116); a row an earlier search covered for other questions only is listed for the rest.
+        listing = self._json_out("todo", "--find", *(["--questions", ",".join(qids)] if qids else []))
+        partly = listing.get("questions") or {}
+        # What is left to score is decided first: finding never runs for a row with nothing to score (tpi-mq,
+        # 22 Oct 2026: a row whose found/ file was gone but whose answers stood spent 335k tokens finding, then
+        # was reported already scored), and a row's search is only for the questions it has left.
+        pending = {}
+        for w in self._json_out("todo").get("rows") or []:
+            left = [q for q in w.get("questions") or [] if not qids or q in qids]
+            if left and (not rows or w.get("row") in rows):
+                pending[w.get("row")] = left
+        for row, wanted in list(partly.items()):
+            partly[row] = [q for q in wanted if q in (pending.get(row) or [])]
+        to_find = [r for r in in_scope(listing.get("rows") or []) if r in pending
+                   and (r not in partly or partly[r])]
+        job.update({"left": list(rows or to_find), "questions": qids})      # for a pause far over the estimate
         run = self.project.run(run_id) or {}
         done_groups = set((run.get("group_usage") or {}).keys())
         units = [u for u in self.project.read("units").get("units") or [] if u.get("id") in to_find]
@@ -757,7 +871,7 @@ class Worker:
                 if (why := self._stop_now(job)):
                     return self._scoring_stopped(job, why)
                 job["line"] = f"Finding documents for every {label} {value}"
-                got = self._find(job, run_finder, group=(label, value))
+                got = self._find(job, run_finder, group=(label, value), **({"questions": find_qs} if find_qs else {}))
                 with self.cmd.lock:
                     self.cmd.run("run", "usage", "--run", run_id, "--group", f"{label}={value}", "--step", "find",
                                  "--tokens", str(got.get("tokens") or 0))
@@ -767,7 +881,9 @@ class Worker:
             if (why := self._stop_now(job, row)):
                 return self._scoring_stopped(job, why)
             job["line"] = f"Finding documents for {names.get(row, row)} ({i} of {len(to_find)})"
-            got = self._find(job, run_finder, row=row)
+            # the questions this row has left (todo --find), else the job's questions or the control's scope
+            wanted = partly.get(row) or ([q for q in find_qs if q in pending[row]] if find_qs else None)
+            got = self._find(job, run_finder, row=row, **({"questions": wanted} if wanted else {}))
             if got.get("broke"):
                 unsearched.append(row)
             with self.cmd.lock:
@@ -776,6 +892,8 @@ class Worker:
                 self.cmd.run("prepare", timeout=1800)
             job["done"] = i
             self.build()
+
+        self._archive_again(job, to_find)
 
         # Phase 2: score each row blind from a kit, check, rebuild.
         work = [w for w in self._json_out("todo").get("rows") or []
@@ -787,7 +905,7 @@ class Worker:
         if kind == "trial" or qids:
             work = [dict(w, questions=[q for q in w.get("questions") or [] if not qids or q in qids]) for w in work]
             work = [w for w in work if w["questions"]]
-        job.update({"total": len(to_find) + len(work) or 1, "done": len(to_find)})
+        job.update({"total": len(to_find) + len(work) or 1, "done": len(to_find), "left": [w["row"] for w in work]})
         failed = []
         for i, w in enumerate(work, 1):
             row, qs = w["row"], w.get("questions") or []
@@ -802,11 +920,25 @@ class Worker:
                 failed.append(row)
                 self.note(f"{names.get(row, row)} could not be scored.", "warning", str(e)[-600:])
             job["done"] = len(to_find) + i
+            job["left"] = [r for r in job["left"] if r != row]
             self.build()
 
+        # Phase 3: one wider second search for a row whose answers say its documents fell short, as the run skill's
+        # (gh5050, 21 Oct 2026: one organisation's homepage only, 17 of 18 answers with no evidence), then its rule
+        # doubts become questions on the Rules tab.
+        stopped = {st["row"] for st in job["steps"] if st.get("left")}
+        for w in work:
+            row = w["row"]
+            if row in failed or row in stopped:
+                continue
+            if (why := self._stop_now(job, row, over=False)):
+                return self._scoring_stopped(job, why)
+            if (why := self._wider_search(job, run_id, row, names.get(row, row), run_finder, qids)):
+                return self._scoring_stopped(job, why)
+        doubted, asked = self._rule_doubts(job, kind, [w["row"] for w in work if w["row"] not in failed])
         with self.cmd.lock:
             self.cmd.run("check")
-            if (why := self._stop_now(job)) is None:
+            if (why := self._stop_now(job, over=False)) is None:      # nothing left to do: no pause for the estimate
                 self.cmd.run("run", "finish", "--run", run_id)
             if (self.project.path / "compare" / "compare.json").is_file() or self.project.held_back.is_dir():
                 self.cmd.run("compare")
@@ -815,27 +947,181 @@ class Worker:
         # A row whose scorer stopped at its budget before answering anything waits on the Grid (its own note says so).
         waiting = {st["row"] for st in job["steps"] if st.get("left") and len(st["left"]) == len(st.get("questions") or [])}
         scored = len(work) - len(failed) - len(waiting)
+        # What the answers came to, and what waits for the owner's data (needs.py): said plainly, never "good"
+        # when almost nothing could be answered (Consumer Reports, 21 Oct 2026: four empty answers read as good,
+        # with an offer to score the rest for 897,000 tokens).
+        got = needs.outcome(self.project, rows or self._row_ids(), qids or None)
+        held = sum(got["waiting"].values())
         if not work and not unsearched:
             job["line"] = "Nothing to score"
             self.log_usage({"kind": kind, "job": job["key"], "processed": job["tokens"], "estimate": job.get("estimate")})
+            if held:
+                self.note("Nothing could be scored, because every answer left rests " + self._owner_data_words(got), "warning",
+                          self.spent(job) if job["tokens"] else None)
+                return
             self.note(("Those are already scored, so nothing was scored. To score them again, ask the chat to "
                        "re-score them (it shows the cost first). " if rows or qids else "Everything is already scored. ")
                       + (self.spent(job) if job["tokens"] else ""), "neutral")
             return
+        total = got["answered"] + got["no_evidence"] + held
+        little = total > 0 and got["answered"] < needs.ALMOST_NOTHING * total
         said = f"Scored {scored} {self._plural() if scored != 1 else (project_meta.get('unit_word') or 'row')}"
         if failed:
             said += f"; {len(failed)} could not be scored"
         if waiting:
             said += f"; {len(waiting)} stopped at {'its' if len(waiting) == 1 else 'their'} token budget and wait{'s' if len(waiting) == 1 else ''} on the Grid for you"
-        said += ". Check the answers on the Grid. " + self.spent(job)
-        if est.get("point"):
+        said += ". "
+        # In the order it happened: the wider search (and the answers scored again), then what the answers came
+        # to, what waits for the owner's data, and the new rule questions.
+        if (wider := job.get("wider")):
+            one = (project_meta.get("unit_word") or "row") if wider["rows"] == 1 else self._plural()
+            said += (f"A wider search for {wider['rows']} {one} found "
+                     + (f"{wider['saved']} more document{'s' if wider['saved'] != 1 else ''}, and those answers were "
+                        "scored again. " if wider["saved"] else "nothing more. "))
+        if little:
+            said += (f"Only {got['answered']} of {total} answers could be found. " if got["answered"]
+                     else f"None of the {total} answers could be found. ")
+        if held:
+            said += f"{held} answer{' waits' if held == 1 else 's wait'} because {'it rests' if held == 1 else 'they rest'} " \
+                    + self._owner_data_words(got) + " "
+        # A need is named only for the answers that rest on it: those waiting for it (above), and the empty answers
+        # to its questions (gh5050, 21 Oct 2026: empty answers were put down to a need they had nothing to do with).
+        for_needs, unexplained = got["no_evidence_for_needs"], got["no_evidence"] - got["no_evidence_for_needs"]
+        if little and got["open_needs"]:
+            said += ("The answers with no evidence rest" if not unexplained else
+                     f"{for_needs} of the {got['no_evidence']} answers with no evidence {'rests' if for_needs == 1 else 'rest'}") \
+                    + " on data you still need to supply (" + self._need_words(got["open_needs"]) + "). "
+        if asked:
+            said += (f"Claude was unsure how the rules apply to {doubted} answer{'s' if doubted != 1 else ''}, so there "
+                     f"{'is 1 new question' if asked == 1 else f'are {asked} new questions'} for you on the Rules tab. ")
+        said += "Check the answers on the Grid. " + self._spent_words(job)
+        if little:
+            if got["open_needs"] or (held and not unexplained):
+                said += " Scoring the rest now would find little, so add that data first" \
+                        + (", and check where Claude looked." if unexplained else ".")
+            else:
+                said += " Check where Claude looked before scoring the rest."
+        elif est.get("point"):
             low, high = est.get("low") or est["point"], est.get("high") or est["point"]
-            rough = " (from this trial alone, so a rough figure: trying a few more firms it up)" if scored < 3 else ""
+            rough = (f" (from this trial alone, so a rough figure: trying a few more {self._plural()} would make it "
+                     "surer)") if scored < 3 else ""
             said += (f" Scoring the rest should use about {show_tokens(est['point'])}" if round(low, -5) == round(high, -5)
                      else f" Scoring the rest should use about {show_tokens(low)} to {show_tokens(high)}") + rough + "."
         job["line"] = "Done"
         self.log_usage({"kind": kind, "job": job["key"], "processed": job["tokens"], "estimate": job.get("estimate")})
-        self.note(said, "good" if not failed and not waiting else "warning")
+        top = (job.get("estimate") or {}).get("high")
+        far_over = bool(top) and job["tokens"] > OVER_ESTIMATE * top
+        self.note(said, "good" if not failed and not waiting and not little and not far_over else "warning")
+
+    def _spent_words(self, job: dict) -> str:
+        """What a finished job used (`spent`), said plainly as more than estimated, with the figures, when it went
+        past the top of its estimate."""
+        est = job.get("estimate") or {}
+        high = est.get("high")
+        if not high or job["tokens"] <= high:
+            return self.spent(job)
+        said = (f"It used more than estimated: {job['tokens']:,} tokens processed on your Claude plan, against an "
+                f"estimate of about {show_tokens(est.get('low') or high)} to {show_tokens(high)}")
+        times = job["tokens"] / high
+        if times >= 2:
+            said += " (about " + (f"{times:.1f}".rstrip("0").rstrip(".") if times < 10 else f"{round(times):,}") \
+                + " times its top)"
+        return said + "."
+
+    def _need_words(self, ids: list[str]) -> str:
+        """The needs `ids` in the owner's words: what each asks for, cut short."""
+        listed = {n.get("id"): n for n in self.project.read("needs").get("needs") or [] if isinstance(n, dict)}
+        out = []
+        for nid in ids:
+            what = " ".join(str((listed.get(nid) or {}).get("what") or nid).split())
+            out.append(what if len(what) <= 120 else what[:120].rsplit(" ", 1)[0] + "…")
+        return "; ".join(out)
+
+    def _owner_data_words(self, got: dict) -> str:
+        """The end of a sentence about answers waiting for the owner's data: which data, and how to send it."""
+        return (f"on data only you hold ({self._need_words(list(got['waiting']))}). Claude does not search the web "
+                "for it. Drop the file on the chat to add it, and those answers are scored from it.")
+
+    def _archive_again(self, job: dict, rows: list[str]) -> None:
+        """Web pages these rows kept as they are today because the web archive did not answer or was busy get one
+        more try at its copy from before the cut-off, once the finding is done (glaad-smsi, 21 Oct 2026: 8 pages
+        kept as today's with no retry). Bounded: ARCHIVE_AGAIN pages a job, one try each."""
+        docs = self.project.documents()
+        ids = sorted({d for r in rows for d in self.project.found(r).get("documents") or []
+                      if re.search(r"did not answer|too busy",
+                                   str(((docs.get(d) or {}).get("todays_version") or {}).get("why") or ""))})
+        for doc in ids[:ARCHIVE_AGAIN]:
+            job["line"] = "Asking the web archive again for pages as they stood at the cut-off"
+            with self.cmd.lock:
+                self.cmd.run("recover-shells", "--doc", doc, "--archive", timeout=900)
+
+    def _wider_search(self, job: dict, run_id: str, row: str, name: str, run_finder, qids=None) -> str | None:
+        """A row's one wider second search, when its answers call for it (cmd_find.wider_search): one finder
+        session told what was missing; if it saved anything, the documents are read and those answers scored again.
+        Returns "over", with the run paused, when the job is far over its estimate before a search it would make."""
+        from .cmd_find import wider_search
+        need = wider_search(self.project, row)
+        if need and qids:
+            need["questions"] = [q for q in need["questions"] if q in qids]     # only the job's questions
+        if not need or not need["questions"]:
+            return None
+        if self._over_estimate(job):           # work is left (this search), so a job far over its estimate pauses
+            return "over"
+        job["line"] = f"Looking wider for {name}'s missing documents"
+        before = set(self.project.found(row).get("documents") or [])
+        got = self._find(job, run_finder, row=row, missing=need["missing"], rounds=1,
+                         **({"questions": need["questions"]} if qids else {}))
+        # Only documents new to the row count (a second address for one on file is not: tpi-mq, 22 Oct 2026).
+        metas = self.project.documents()
+        new = [d for d in self.project.found(row).get("documents") or []
+               if d not in before and not (metas.get(d) or {}).get("not_kept_why")]
+        wider = job.setdefault("wider", {"rows": 0, "saved": 0})
+        wider["rows"] += 1
+        wider["saved"] += len(new)
+        with self.cmd.lock:
+            self.cmd.run("run", "usage", "--run", run_id, "--row", row, "--step", "second_find",
+                         "--tokens", str(got.get("tokens") or 0))
+            if new:
+                job["line"] = f"Reading the new documents for {name}"
+                self.cmd.run("prepare", timeout=1800)
+        if new:
+            # The answers the search was for, read again from what it added and what they cited, not the whole kit
+            # (tpi-mq and de-transparenzranking, 22 Oct 2026: 2.41M and 2.77M, most of it the kit read again).
+            cells = self.project.answers(row).get("cells") or {}
+            cited = [e.get("doc") for q in need["questions"] for e in ((cells.get(q) or {}).get("evidence") or [])
+                     if isinstance(e, dict) and e.get("doc") in before]
+            docs = list(dict.fromkeys(new + cited))
+            try:
+                self._score_row(job, run_id, row, need["questions"], f"{name} (again, with the new documents)", name,
+                                docs=docs)
+            except HandbookError as e:
+                self.note(f"{name} could not be scored again with the new documents.", "warning", str(e)[-600:])
+        if not got.get("broke"):
+            with self.cmd.lock:
+                self.cmd.run("found", "--row", row, "--second-search-done")
+
+    def _rule_doubts(self, job: dict, kind: str, rows: list[str]) -> tuple[int, int]:
+        """The scorers' rule doubts on `rows` become rule questions on the Rules tab, as the run skill's do
+        (doubts.py): one small Claude call, its tokens counted in the job. Returns (doubts, questions raised)."""
+        from . import doubts
+        found = doubts.open_doubts(self.project, rows)
+        if not found:
+            return 0, 0
+        job["line"] = "Turning Claude's doubts about the rules into questions for you"
+        try:
+            drafted, usage = doubts.draft(self.project, found)
+        except HandbookError as e:
+            self.note("Claude's doubts about how the rules apply could not be turned into questions this time. "
+                      "The answers keep their doubts.", "warning", str(e)[-400:])
+            return len(found), 0
+        tokens = sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens",
+                                                       "cache_read_input_tokens", "output_tokens"))
+        job["tokens"] += tokens
+        self.log_usage({"kind": "rule-doubts", "job": job["key"], "processed": tokens, "doubts": len(found)})
+        with self.cmd.lock:
+            got = doubts.settle(self.project, drafted, "trial" if kind == "trial" else "run",
+                                rows=sorted({d["row"] for d in found}))
+        return len(found), len(got["raised"])
 
     def _find(self, job: dict, run_finder, **who) -> dict:
         try:
@@ -849,6 +1135,20 @@ class Worker:
 
     def _scoring_stopped(self, job: dict, why: str) -> None:
         self.build()
+        if why == "over":
+            # What was spent, against what was expected, and what the rest should use (with finding).
+            high = job["estimate"]["high"]
+            left = [r for r in job.get("left") or [] if r]
+            plural = self._plural() if len(left) != 1 else ((self.bundle().get("project") or {}).get("unit_word") or "row")
+            rest = costs.estimate_rows(self.project, left, job.get("questions") or None, finding=True) if left else {}
+            job["line"] = "Stopped (paused, far over its estimate)"
+            self.note(f"Scoring is paused because it has used {show_tokens(job['tokens'])} tokens, about "
+                      f"{max(OVER_ESTIMATE, round(job['tokens'] / high))} times the top of its estimate "
+                      f"({show_tokens(high)}). "
+                      + (f"{len(left)} {plural} still to score should use about {show_tokens(rest['low'])} to "
+                         f"{show_tokens(rest['high'])} more. " if rest.get("high") else "")
+                      + "Nothing is lost. Press Carry on to go on, or leave it here.", "warning")
+            return
         job["line"] = f"Stopped ({why})"
         self.note(f"Scoring {why}. Nothing is lost: press Carry on, or ask in the chat, to pick up where it left off. "
                   + self.spent(job), "neutral")
@@ -998,7 +1298,8 @@ class Worker:
         cells = self.bundle().get("cells") or {}
         return {(r, q): (cells.get(r) or {}).get(q, {}).get("value") for r in rows for q in qids}
 
-    def _score_row(self, job: dict, run_id: str, row: str, qs: list[str], label: str, name: str) -> int:
+    def _score_row(self, job: dict, run_id: str, row: str, qs: list[str], label: str, name: str,
+                   docs: list[str] | None = None) -> int:
         """Kit, scorer, usage, ingest and check for one row's questions; returns the tokens. A scorer
         stopped at its budget or turn cap (cmd_score.py) keeps what it wrote: that is ingested, the
         questions left stay not scored, and the job goes on to its next row. The row then waits on the
@@ -1006,7 +1307,8 @@ class Worker:
         document, or leave it."""
         job["line"] = f"{label}: getting the documents ready"
         with self.cmd.lock:
-            kit = last_line(self.cmd.must("kit", "--row", row, "--run", run_id, "--questions", ",".join(qs)))
+            kit = last_line(self.cmd.must("kit", "--row", row, "--run", run_id, "--questions", ",".join(qs),
+                                          *(["--docs", ",".join(docs)] if docs is not None else [])))
         job["line"] = f"{label}: Claude is scoring {len(qs)} answer{'s' if len(qs) != 1 else ''}"
         tokens = self._score(job, kit)
         receipt = read_json(Path(kit) / "receipt.json", {}) or {}
@@ -1804,11 +2106,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(got)
             if parts == ["change"] and method == "POST":
                 body = self.body_json() or {}
-                op = json.dumps(body.get("op") or {})
+                given = body.get("op") or {}            # one change, or a list applied together (changes.py)
+                op = json.dumps(given)
                 if not body.get("apply"):
                     code, out = w.cmd.run("change", "--op", op, "--json")
                 else:
-                    said = str((body.get("op") or {}).get("op") or "a change")
+                    said = (", ".join(str(o.get("op")) for o in given if isinstance(o, dict)) if isinstance(given, list)
+                            else str(given.get("op") or "a change")) if given else "a change"
                     got = w.changed_by_chat(str(body.get("title") or said), lambda: w.cmd.run("change", "--op", op, "--apply", "--json"))
                     code, out = got["code"], got["out"]
                 try:

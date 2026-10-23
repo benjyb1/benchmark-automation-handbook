@@ -152,6 +152,29 @@
     );
   }
 
+  /** A Confirm button on a checklist item in draft, on this computer's page (hb serve). Before sweep round 3
+      only the questions and the rows had one, so the score sheet, group labels, cut-off, where to look, the
+      data needs and the rules could be confirmed only by asking the chat (RDR, Global Health 50/50). */
+  function checkConfirm(key) {
+    if (key === "questions" || key === "units") return HB.edits && HB.edits.ready ? confirmButton(key, "Confirm") : null;
+    if (!(HB.local && typeof HB.local.post === "function")) return null;
+    return h("button", {
+      class: "btn btn--small", type: "button", id: "su-confirm-" + key, "aria-label": "Confirm " + words(key),
+      onclick: (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        HB.local.post("setup/status", { item: key, status: "confirmed" })
+          .then((got) => {
+            if (got && got.ok === false && HB.local.flag) HB.local.flag((got.problems || [])[0] || "This could not be confirmed.");
+            if (typeof HB.local.refresh === "function") return HB.local.refresh();
+            return null;
+          })
+          .catch((err) => { if (HB.local.flag) HB.local.flag(err && err.message ? err.message : "This could not be saved."); })
+          .then(() => { button.disabled = false; });
+      },
+    }, "Confirm");
+  }
+
   /* ---- The set-up draft while it runs ------------------------------------------------ */
 
   // Checklist items the draft writes (the skill's drafting.md); the others stay as they are while it runs.
@@ -247,7 +270,8 @@
         { class: "su-check", "data-status": stateOf(key) },
         h("div", { class: "su-check__text" }, h("span", { class: "su-check__label" }, t[0]), t[1] ? h("span", { class: "su-check__hint" }, t[1]) : null),
         h("div", { class: "su-check__chip" }, drafting && stateOf(key) === "missing" && DRAFTED.has(key)
-          ? HB.working("Claude is drafting this", { status: false }) : checklistChip(stateOf(key), mustHave)),
+          ? HB.working("Claude is drafting this", { status: false }) : checklistChip(stateOf(key), mustHave),
+        stateOf(key) === "draft" && !drafting ? checkConfirm(key) : null),
       );
     };
 
@@ -918,7 +942,7 @@
 .su-check__text { display: grid; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .su-check__label { font-weight: 600; }
 .su-check__hint { color: var(--ink-2); font-size: var(--fs-14); }
-.su-check__chip { justify-self: end; }
+.su-check__chip { justify-self: end; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 @media (width < 30rem) {
   .su-check { grid-template-columns: minmax(0, 1fr); }
   .su-check__chip { justify-self: start; }

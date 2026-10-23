@@ -78,15 +78,88 @@ def prompt_for(project: Path, python: str) -> str:
         "needs that as the no_evidence_value); and results_sites lists only hosts the material names as "
         "where the results are published, and the hosts their tables load from (a Google Sheet behind a "
         "tracker): never guess one (ChickenTrack's draft invented two and missed the real one). Also: a "
-        "published rank is held back as rank:overall (a number); the cut-off you recommend goes into the "
-        "basics as the draft cutoff; where you invent a boundary between levels the material does not give, "
+        "published rank is held back as rank:overall (a number); a cut-off the material states (a date, or a "
+        "window such as 'June to mid-August 2025') goes into the basics as the draft cutoff, but when the material "
+        "states none, leave cutoff null and its checklist item missing (never today's date, never a date you work "
+        "out) and raise one open rule asking the owner for the date, each option with \"sets\": {\"cutoff\": "
+        "\"YYYY-MM-DD\"} holding a date from the material (when last edition's data was collected, when it was "
+        "published), with no date recommended (RDR and Global Health 50/50, 21 Oct 2026, got an invented date and "
+        "today's); where you invent a boundary between levels the material does not give, "
         "raise a rule naming it; and walk two real rows through each ladder you write. A question or category the "
-        "material says is scored from the owner's own records or database, not from what the organisations publish, "
-        "is left out, as drafting.md says under \"The owner's own records\" (BankTrack's Category 6, 20 Oct 2026, "
-        "came back as three questions, a rule and a data need).",
+        "material says is scored from the owner's own records, survey or figures the organisations send only to the "
+        "owner is kept with its published scale, points and weight, and linked to one data need with only_source "
+        "true, as drafting.md says: never drop a weighted part of the score sheet (Citizens Advice's complaints, "
+        "35% of its rating, and the abuses third of RSF's safety score were dropped, 21 Oct 2026). Raise an open "
+        "question too when the methodology "
+        "names another edition or year than the one the owner is scoring (say which questions it may change), when "
+        "the published results rest on a questionnaire the organisations answered or on evidence behind a login, or "
+        "when a published value averages many dated items by weights the material does not give: those cells may "
+        "not be reproducible from public documents (sweep round 3, 21 Oct 2026: UK university league, the fashion "
+        "index, InfluenceMap).",
         f"Token cap: {CAP:,}. If you get near it, save the drafts you have, validate, build and stop.",
         "Reply in two lines: what you drafted, and how many open questions you left for the owner.",
     ])
+
+
+def _about_cutoff(rule: dict) -> bool:
+    return any(isinstance(o, dict) and "cutoff" in (o.get("sets") or {}) for o in rule.get("options") or []) \
+        or any(w in str(rule.get("ask") or "").lower() for w in ("cut-off", "cutoff", "cut off"))
+
+
+def ensure_cutoff_rule(project, today: str) -> dict | None:
+    """After a draft: a cut-off the material did not give (none, or the day of drafting) goes to the owner as an
+    open rule, unless one already asks about it (de-transparenzranking and gh5050, 21 Oct 2026: today's date stood
+    in silently, while the published results were collected months earlier). Returns the rule added, or None.
+    The day of drafting is never kept as the cut-off, and the rule recommends no date: nothing is set until the owner
+    picks (sweep round 3, 21 Oct 2026: RDR got an invented date and Global Health 50/50 today's)."""
+    from .stakes import rule_stakes
+    meta = project.read("project")
+    if meta.get("cutoff") not in (None, "", today):
+        return None
+    if meta.get("cutoff") == today:
+        meta["cutoff"] = None
+        if isinstance(meta.get("checklist"), dict):
+            meta["checklist"]["cutoff"] = "missing"
+        project.write("project", meta)
+    rules = project.read("rules")
+    if any(isinstance(r, dict) and _about_cutoff(r) for r in rules.get("rules") or []):
+        return None
+    qids = [q.get("id") for q in project.read("questions").get("questions") or [] if isinstance(q, dict) and q.get("id")]
+    if not qids:
+        return None
+    have = rules.setdefault("rules", [])
+    n = max([int(r["id"][1:]) for r in have if isinstance(r, dict) and str(r.get("id", ""))[1:].isdigit()] or [0])
+    rule = {"id": f"R{n + 1}", "kind": "evidence", "question_ids": qids, "rows": None,
+            "ask": ("Your material does not say what date the evidence must date from (the cut-off), or what date last "
+                    "edition's results reflect. Which date should Claude use?"),
+            "options": [{"id": "a", "text": f"Today ({today}), the evidence as it stands now.", "sets": {"cutoff": today}},
+                        {"id": "b", "text": "Another date, such as when last edition's results were collected. Give it in your own words."}],
+            "recommended": None, "why": "Your material does not say, so the date is yours to give.",
+            "stakes": None, "last_year_note": None, "status": "open", "decision": None, "raised_by": "setup"}
+    have.append(rule)
+    try:
+        rule["stakes"] = rule_stakes(project, rule)
+    except (HandbookError, KeyError, TypeError, ValueError):
+        rule["stakes"] = None
+    project.write("rules", rules)
+    return rule
+
+
+def drop_stale_where_refs(project) -> list[str]:
+    """After a draft: where to look may still name questions the draft merged or renumbered away (TranspariMED
+    CTIS, 22 Oct 2026). Those mentions are taken out, so a stale id never reaches the finder or the page.
+    Returns the ids taken out."""
+    from .shapes import stale_where_refs, where_without_stale
+    if not project.file("where_to_look").is_file():
+        return []
+    where = project.read("where_to_look")
+    qids = {q.get("id") for q in project.read("questions").get("questions") or [] if isinstance(q, dict) and q.get("id")}
+    if not qids:
+        return []
+    gone = list(dict.fromkeys(q for _, _, ids in stale_where_refs(where, qids) for q in ids))
+    if gone:
+        project.write("where_to_look", where_without_stale(where, qids))
+    return gone
 
 
 def command(project: Path, python: str, held_back: Path | None = None) -> list[str]:
@@ -112,15 +185,22 @@ def upload_names(project: Path) -> dict[str, str]:
     return {f.name: f.name.split("--", 1)[1] for f in project.joinpath("inbox", "uploads").glob("*--*")}
 
 
+ALL = "*"                     # describe(): a step that read every upload at once
+
+
 def describe(tool: dict, uploads: dict[str, str]) -> tuple[str, str | None, str | None]:
     """One step of the draft session in the owner's words: (line, upload read, set-up file written)."""
     name, inp = tool.get("name"), tool.get("input") or {}
     if name == "Bash":
         cmd = str(inp.get("command") or "")
-        if "material-text" in cmd:
-            for stored, shown in uploads.items():
-                if stored in cmd:
-                    return f"Reading {shown}", stored, None
+        named = [stored for stored, shown in uploads.items() if stored in cmd or (shown and shown in cmd)]
+        if "material-text" in cmd or (named and any(w in cmd for w in ("cat ", "head ", "python", "open("))):
+            # Sweep round 3 (four benchmarks): the draft read its files in one loop or script, so no command
+            # named a file and the page said "0 of 4 files read" until Done.
+            if len(named) > 1 or (not named and "inbox/uploads" in cmd and any(c in cmd for c in ("*", "for ", "glob"))):
+                return "Reading your files", ALL, None
+            if named:
+                return f"Reading {uploads[named[0]]}", named[0], None
             return "Reading one of your files", None, None
         for word, line in ((" validate", "Checking the draft for gaps"), (" build", "Building your page"),
                            ("hold-back", "Setting last edition's results aside"), ("rebuild-check", "Checking last edition's results add up"),
@@ -153,6 +233,11 @@ def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> di
              "wrote": [], "started": now_iso(), "at": now_iso()}
     read: set[str] = set()
     write_json(path, state)
+    # What the draft wrote, from the files themselves: it often writes them with a script, not the Write tool.
+    def stamp(name):
+        f = project / name
+        return f.stat().st_mtime_ns if f.is_file() else None
+    before = {name: stamp(name) for name in LANDS}
     proc = subprocess.Popen(cmd, cwd=project, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8")
     killer = threading.Timer(timeout, proc.kill)
@@ -174,10 +259,13 @@ def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> di
                 if part.get("type") != "tool_use":
                     continue
                 line, upload, wrote = describe(part, uploads)
-                if upload:
+                if upload == ALL:
+                    read.update(uploads)
+                elif upload:
                     read.add(upload)
-                if wrote and wrote not in state["wrote"]:
-                    state["wrote"].append(wrote)
+                for name in [wrote] + [n for n in LANDS if stamp(n) != before[n]]:
+                    if name and name not in state["wrote"]:
+                        state["wrote"].append(name)
                 state.update({"line": line, "files_read": len(read), "steps": state["steps"] + 1, "at": now_iso()})
                 if line.startswith("Reading ") and uploads and upload:
                     state["line"] = f"{line} ({len(read)} of {len(uploads)})"
@@ -204,7 +292,16 @@ def main(argv) -> int:
     if not files(project):         # names plain files put in inbox/uploads/ by hand, as uploads are
         raise HandbookError("There are no files to draft from. Add them on the Set-up tab first.")
     project.held_back.mkdir(parents=True, exist_ok=True)
+    today = datetime.now(timezone.utc).date().isoformat()
     result = run_streaming(command(project.path, sys.executable, project.held_back), project.path)
+    try:
+        ensure_cutoff_rule(project, today)          # never a silent default for the cut-off
+    except (HandbookError, OSError, ValueError):
+        pass
+    try:
+        drop_stale_where_refs(project)              # where to look never names a question that is gone
+    except (HandbookError, OSError, ValueError):
+        pass
     path = project.path.joinpath(*RECEIPT)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_json(path, result)

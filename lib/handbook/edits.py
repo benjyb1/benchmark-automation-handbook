@@ -9,19 +9,30 @@ The viewer collects the owner's edits and decisions and the host exports them as
 - question `applies_to`, unit `labels`: a cell that stops applying becomes `not_applicable` (the old
   cell is kept under `previous`); a cell that starts applying gets no answer, so it is not_run
 - confirm `questions` or `units`: the checklist item and every item's status become confirmed
-- decision: the rule is decided, and every cell resting on it becomes out of date
+- decision: the rule is decided, and every cell resting on it becomes out of date. The chosen option's
+  `sets` writes what the decision settles: `cutoff` into the project (its checklist item confirmed), and
+  `no_evidence_value` into the rule's questions and their no-evidence answers (CCPI, 21 Oct 2026: "leave
+  it to the experts" left the questions at "Very low"). The owner's own words on a cut-off rule set the
+  cut-off when they hold a date.
 - decision with `skip: true`: an open rule becomes skipped (Claude's reading stays in use and no
   cell changes); a rule already decided or skipped is left as it is
+- a decision older than the one in force changes nothing: the later answer wins, whatever the order
+  they arrive in (ca-energy, 21 Oct 2026: an early answer the rule could not take was tried at every
+  open after the owner's later answer was applied)
 
 Nothing is written unless the whole payload has been worked through, and ids already listed in
-`edits-applied.json` are skipped, so applying a payload twice changes nothing.
+`edits-applied.json` are skipped, so applying a payload twice changes nothing. An entry that cannot
+be made is kept aside in `edits-applied.json` under `failed` ({id: why}) until it is made, so the
+page stops saying it is being applied and can say why it was not.
 """
 from __future__ import annotations
 import copy
+import re
 from datetime import datetime, timezone
 
+from . import answers as answer_kinds
 from .folder import HandbookError, applies, effective_question
-from .shapes import check_edits
+from .shapes import check_edits, is_date
 
 VIA = ("viewer", "chat")
 LIVE = ("answered", "no_evidence")      # cells that carry a scored value
@@ -35,6 +46,22 @@ def _stamp(now: datetime) -> str:
     if now.tzinfo is not None:
         now = now.astimezone(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _when(stamp) -> datetime | None:
+    """An ISO timestamp (a Z or an offset, with or without fractions of a second) as a UTC datetime."""
+    try:
+        when = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return when.astimezone(timezone.utc) if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def _overtaken(rule: dict, d: dict) -> bool:
+    """Whether the rule's decision in force was made after the decision `d`."""
+    old = rule.get("decision") if rule.get("status") == "decided" else None
+    then, now = _when((old or {}).get("at")), _when(d.get("at"))
+    return then is not None and now is not None and then > now
 
 
 def _points_for(question: dict, value):
@@ -214,6 +241,8 @@ def _decide(f: _Folder, d: dict, via: str) -> str | None:
             rule["status"] = "skipped"
             f.dirty.add("rules")
         return None
+    if _overtaken(rule, d):                          # a later answer is in force: it stands
+        return None
     options = {o.get("id"): o.get("text") for o in rule.get("options") or [] if isinstance(o, dict)}
     if option is not None and option not in options:
         return f"Rule {rid} has no option {option!r} (its options are {', '.join(map(repr, options))})."
@@ -226,8 +255,14 @@ def _decide(f: _Folder, d: dict, via: str) -> str | None:
         return None                                  # the same decision again: nothing changes
     rule["status"], rule["decision"] = "decided", decision
     f.dirty.add("rules")
+    _settle_values(f, rule, option, decision["text"])
+    # A rule raised from some rows' doubts (ingest.raise_rule, `raised_from`) left the other rows' answers on its
+    # questions as they were: its decision marks those out of date too.
+    wider = set(rule.get("rows") or []) if isinstance(rule.get("raised_from"), list) else set()
     for row, qid, cell in f.live_cells():
-        if rid in (cell.get("rules") or []):
+        if rid not in (cell.get("rules") or []) and row in wider and qid in (rule.get("question_ids") or []):
+            f.flag(row, qid, cell)
+        elif rid in (cell.get("rules") or []):
             f.flag(row, qid, cell)
             # The cell no longer rests on Claude's own reading once its rules are settled (ChickenTrack,
             # 15 Oct 2026: 'judgement 32' after every rule was decided).
@@ -236,6 +271,54 @@ def _decide(f: _Folder, d: dict, via: str) -> str | None:
                 cell["judgement"] = False
                 f.touch(row)
     return None
+
+
+_MONTH = r"(January|February|March|April|May|June|July|August|September|October|November|December)"
+
+
+def date_in(text) -> str | None:
+    """The first date written in `text`, as YYYY-MM-DD: 2026-04-30, 30 April 2026 or April 30, 2026."""
+    s = str(text or "")
+    m = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", s)
+    if m and is_date(m.group(0)):
+        return m.group(0)
+    for pattern, fmt in ((r"\b(\d{1,2})(?:st|nd|rd|th)? " + _MONTH + r" (\d{4})\b", "%d %B %Y"),
+                         (r"\b" + _MONTH + r" (\d{1,2})(?:st|nd|rd|th)?,? (\d{4})\b", "%B %d %Y")):
+        m = re.search(pattern, s, re.I)
+        if m:
+            try:
+                return datetime.strptime(" ".join(m.groups()).title(), fmt).date().isoformat()
+            except ValueError:
+                pass
+    return None
+
+
+def _settle_values(f: _Folder, rule: dict, option, text) -> None:
+    """Write what a decision settles (its option's `sets`; a date in the owner's words on a cut-off rule)."""
+    chosen = next((o for o in rule.get("options") or [] if isinstance(o, dict) and o.get("id") == option), None)
+    sets = dict((chosen or {}).get("sets") or {}) if option is not None else {}
+    if option is None and any(isinstance(o, dict) and "cutoff" in (o.get("sets") or {}) for o in rule.get("options") or []):
+        when = date_in(text)
+        if when:
+            sets["cutoff"] = when
+    if is_date(sets.get("cutoff")):
+        proj = f.docs["project"]
+        proj["cutoff"] = sets["cutoff"]
+        proj.setdefault("checklist", {})["cutoff"] = "confirmed"
+        f.dirty.add("project")
+    if "no_evidence_value" in sets:
+        value = sets["no_evidence_value"]
+        for qid in rule.get("question_ids") or []:
+            q = f.questions.get(qid)
+            if q is None or not answer_kinds.accepts(q, value):
+                continue
+            q["no_evidence_value"] = value
+            f.dirty.add("questions")
+            points = answer_kinds.points_for(q, value)
+            for row, _, cell in f.live_cells(qid):
+                if cell.get("state") == "no_evidence":
+                    cell["value"], cell["points"] = value, (0 if points is answer_kinds.MISSING else points)
+                    f.touch(row)
 
 
 def apply(project, payload: dict, now: datetime, via: str = "viewer") -> dict:
@@ -275,8 +358,10 @@ def apply(project, payload: dict, now: datetime, via: str = "viewer") -> dict:
 
     applied_doc = project.read("edits-applied")
     done = list(applied_doc.get("applied", []))
+    failed_before = dict(applied_doc.get("failed") or {})
     folder = _Folder(project)
     applied, skipped = [], []
+    turned_down = {}                                 # id: the decision, for one overtaken later in this payload
 
     def run(entry, key, do):
         eid = entry.get("id") if isinstance(entry, dict) else None
@@ -287,6 +372,8 @@ def apply(project, payload: dict, now: datetime, via: str = "viewer") -> dict:
         why = problems[0] if problems else do(entry)
         if why:
             skipped.append({"id": eid, "why": why})
+            if key == "decisions" and not problems:
+                turned_down[eid] = entry
         else:
             applied.append(eid)
             done.append(eid)
@@ -296,10 +383,25 @@ def apply(project, payload: dict, now: datetime, via: str = "viewer") -> dict:
         run(e, "edits", lambda e: handlers[e["target"]](folder, e))
     for d in prepared(entries["decisions"]):
         run(d, "decisions", lambda d: _decide(folder, d, via))
+    # A decision turned down, then overtaken by a later one in the same payload, changes nothing either.
+    for eid, d in turned_down.items():
+        rule = folder.rules.get(d.get("rule"))
+        if eid is not None and rule is not None and _overtaken(rule, d):
+            skipped[:] = [s for s in skipped if s["id"] != eid]
+            applied.append(eid)
+            done.append(eid)
 
-    if applied:
-        folder.save()
+    failed = {k: v for k, v in failed_before.items() if k not in done}
+    failed.update({s["id"]: s["why"] for s in skipped
+                   if isinstance(s["id"], str) and s["id"] not in done and s["why"] != "Already applied earlier."})
+    if applied or failed != failed_before:
+        if applied:
+            folder.save()
         applied_doc["applied"] = done
+        if failed:
+            applied_doc["failed"] = failed
+        else:
+            applied_doc.pop("failed", None)
         project.write("edits-applied", applied_doc)
     return {"applied": applied, "skipped": skipped, "out_of_date": len(folder.flagged),
             "recomputed": folder.recomputed, "now_not_run": folder.now_not_run,

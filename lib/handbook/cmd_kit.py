@@ -22,6 +22,8 @@ def main(argv) -> int:
     parser.add_argument("--look", action="append", default=None, metavar="DOC:PAGE",
                         help="a page the brief asks the scorer to read first (a correction's re-read); "
                              "repeat for more")
+    parser.add_argument("--docs", default=None, metavar="DOC,...",
+                        help="only these of the row's documents (the rescore after a wider search)")
     args = parser.parse_args(argv)
     project = open_project(args.project)
     look = []
@@ -30,7 +32,8 @@ def main(argv) -> int:
         if not (sep and doc.strip() and page.strip().isdigit()):
             parser.error(f"--look should look like DOC:PAGE, for example d-0123456789:4 (got {item!r})")
         look.append((doc.strip(), int(page)))
-    kit = write_kit(project, args.row, args.run, id_list(args.questions), args.second, look)
+    kit = write_kit(project, args.row, args.run, id_list(args.questions), args.second, look,
+                    id_list(args.docs) if args.docs is not None else None)
     docs = [d for d in (kit / "docs").iterdir() if d.is_dir()]
     kept = sum(1 for d in docs if any(d.glob("p*.txt")))
     what = "second-reading kit" if args.second else "scorer kit"

@@ -1,6 +1,7 @@
 """One read: score a kit in a single Claude call with no tools, the row's pages and questions in the message.
 
-    fits(kit) -> bool                       # small enough to send whole (else the full scorer, cmd_score.py)
+    fits(kit) -> bool                       # small enough to send whole (else read in parts)
+    plan(kit) -> {"mode", "parts", "estimate", "why"}   # what hb score will do: one read, parts or the full scorer
     choose(kit, model, effort) -> (model, effort)
     run(kit, model=None, effort=None) -> result   # writes KIT/answers.json; the result is receipt-shaped
 
@@ -33,6 +34,17 @@ Questions marked `"reading": "lookup"` (a value read straight off a record, list
 the cheaper model when every question in the kit is one: on LCV votes and CTIS checks Haiku 5.5 gave the
 same answers as Opus 5.5 for about a fiftieth of the price. Anything else is read by MODEL at
 ONE_READ_EFFORT: on the Pecking Order low effort drifted (3.0 points off) and high came closest.
+
+A kit too long for one message is read in parts (`parts`), not handed to the full scorer. Sweep round 3
+(21 Oct 2026) showed the cliff that used to sit at LIMIT: a kit 1% over it (TI Chemring) cost 693,000
+tokens in the full scorer against 177,000 for one just under, and a university's 468,000 characters
+cost 3.4 million over 29 turns, each re-reading the same pages. Now the documents are cut into parts
+that each fit, whole documents where they can and page ranges of a long one where they cannot, and
+every part is read with all the questions. Each reading is told which documents sit in the other parts,
+so it does not call them missing. The answers are then put together by plain code: a question answered
+in one part takes that answer; the same answer in several parts keeps every quote; parts that disagree
+go to one more short call that sees only the pages the answers cite (`reconcile`). The cost is about
+the documents once plus the brief and questions once per part.
 """
 from __future__ import annotations
 import json
@@ -118,8 +130,8 @@ def _questions(kit: Path) -> dict:
     return data
 
 
-def _documents(kit: Path, names: set[str], question_words: list[set[str]]) -> str:
-    """Every document with page files, as <document> blocks of <page> blocks, shared ones trimmed."""
+def _page_texts(kit: Path, names: set[str], question_words: list[set[str]]) -> list[tuple[str, dict, list]]:
+    """[(doc id, meta, [(page number, text)])] for every document with page files, shared ones trimmed."""
     docs = kit / "docs"
     out = []
     for folder in sorted(p for p in docs.iterdir() if p.is_dir()) if docs.is_dir() else []:
@@ -127,37 +139,139 @@ def _documents(kit: Path, names: set[str], question_words: list[set[str]]) -> st
         pages = sorted(folder.glob("p*.txt"), key=lambda p: int(re.sub(r"\D", "", p.stem) or 0))
         if not pages:
             continue
-        attrs = " ".join(f'{k}="{v}"' for k, v in meta.items()
-                         if k in ("title", "publisher", "date", "saved_on", "language") and v)
-        out.append(f'<document id="{folder.name}" {attrs}>')
+        texts = []
         for p in pages:
             text = p.read_text(encoding="utf-8")
             if meta.get("shared"):
                 text = trim(text, names, question_words)
-            out.append(f'<page n="{int(p.stem[1:])}">\n{text}\n</page>')
+            texts.append((int(p.stem[1:]), text))
+        out.append((folder.name, meta, texts))
+    return out
+
+
+def _head(doc: str, meta: dict) -> str:
+    # An undated document says so: the day it was saved is shown as that, never as its date (RSF, 21 Oct 2026).
+    shown = dict(meta, date=meta.get("date") or "unknown")
+    attrs = " ".join(f'{k}="{v}"' for k, v in shown.items()
+                     if k in ("title", "publisher", "date", "saved_on", "language") and v)
+    return f'<document id="{doc}" {attrs}>'
+
+
+def _page(n: int, text: str) -> str:
+    return f'<page n="{n}">\n{text}\n</page>'
+
+
+def _documents(kit: Path, names: set[str], question_words: list[set[str]], only: dict | None = None) -> str:
+    """Every document with page files, as <document> blocks of <page> blocks, shared ones trimmed.
+    `only` {doc id: set of page numbers} keeps just those pages (one part of a long kit)."""
+    out = []
+    for doc, meta, texts in _page_texts(kit, names, question_words):
+        if only is not None:
+            texts = [(n, t) for n, t in texts if n in only.get(doc, ())]
+            if not texts:
+                continue
+        out.append(_head(doc, meta))
+        out += [_page(n, t) for n, t in texts]
         out.append("</document>")
     return "\n".join(out)
 
 
-def message(kit: Path, qids: list[str] | None = None) -> str:
-    """The one message: the brief, the questions (those in `qids`, else all) with the rulings they name,
-    and the documents."""
+def _asked(kit: Path, qids: list[str] | None) -> tuple[dict, list, dict, list, set]:
+    """(questions file, the questions asked, {"guidance"?, "rulings"} they name, question words, row name words)."""
     data = _questions(kit)
     qs = [q for q in data["questions"] if qids is None or q.get("id") in qids]
     asked = {q.get("id") for q in qs}
-    rulings = [r for r in data.get("rulings") or [] if asked & set(r.get("questions") or [])]
+    guidance = [g for g in data.get("guidance") or [] if asked & set(g.get("questions") or [])]
+    rulings = {**({"guidance": guidance} if guidance else {}),
+               "rulings": [r for r in data.get("rulings") or [] if asked & set(r.get("questions") or [])]}
+    qwords = [set(words(" ".join([q.get("short") or "", q.get("wording") or ""]))) for q in qs]
+    names = name_words((data.get("row") or {}).get("name") or "")
+    return data, qs, rulings, qwords, names
+
+
+def _brief(kit: Path) -> str:
     brief = (kit / BRIEF).read_text(encoding="utf-8") if (kit / BRIEF).is_file() else ""
     if not brief:
         raise HandbookError(f"{kit} has no {BRIEF}. Build the kit again with hb kit.")
-    qwords = [set(words(" ".join([q.get("short") or "", q.get("wording") or ""]))) for q in qs]
-    names = name_words((data.get("row") or {}).get("name") or "")
-    return (brief + "\n<questions>\n" + json.dumps({"rulings": rulings, "questions": qs}, ensure_ascii=False)
-            + "\n</questions>\n\n<documents>\n" + _documents(kit, names, qwords) + "\n</documents>\n")
+    return brief
+
+
+def message(kit: Path, qids: list[str] | None = None, part: dict | None = None, note: str = "") -> str:
+    """The one message: the brief, the questions (those in `qids`, else all) with the rulings they name,
+    and the documents (only the pages in `part`, with `note` saying what is in the other parts)."""
+    data, qs, rulings, qwords, names = _asked(kit, qids)
+    brief = _brief(kit)
+    return (brief + (note + "\n" if note else "") + "\n<questions>\n"
+            + json.dumps({**rulings, "questions": qs}, ensure_ascii=False)
+            + "\n</questions>\n\n<documents>\n" + _documents(kit, names, qwords, part) + "\n</documents>\n")
 
 
 def estimate(kit: Path) -> int:
     """Tokens the message is likely to hold (characters / CHARS_PER_TOKEN)."""
     return int(len(message(kit)) / CHARS_PER_TOKEN)
+
+
+NOTE_ROOM = 3000                     # tokens kept free in each part for the note on the other parts
+
+
+def parts(kit: Path, qids: list[str] | None = None, limit: int | None = None) -> list[dict]:
+    """The kit's pages cut into parts that each fit one message with the brief and the questions:
+    [{doc id: set of page numbers}]. A document stays whole when it fits in the part being filled, or
+    starts a new part when it fits in one; a document longer than a part is cut into page ranges. One
+    part (every page) when the kit fits."""
+    limit = limit or LIMIT
+    data, qs, rulings, qwords, names = _asked(kit, qids)
+    overhead = len(message(kit, qids, part={})) / CHARS_PER_TOKEN + NOTE_ROOM
+    room = max(limit - overhead, limit // 4) * CHARS_PER_TOKEN       # characters of pages per part
+    out, current, size = [], {}, 0.0
+    for doc, meta, texts in _page_texts(kit, names, qwords):
+        sizes = [len(_page(n, t)) + 1 for n, t in texts]
+        whole = sum(sizes) + len(_head(doc, meta)) + 13
+        if current and size + whole > room and whole <= room:
+            out.append(current)
+            current, size = {}, 0.0
+        if size + whole <= room:
+            current[doc] = {n for n, _ in texts}
+            size += whole
+            continue
+        for (n, _), k in zip(texts, sizes):          # too long for one part: page ranges
+            if current and size + k > room:
+                out.append(current)
+                current, size = {}, 0.0
+            current.setdefault(doc, set()).add(n)
+            size += k + (len(_head(doc, meta)) + 13 if len(current[doc]) == 1 else 0)
+    if current or not out:
+        out.append(current)
+    return out
+
+
+def _span(pages: set) -> str:
+    """{1, 2, 3, 7} -> "pages 1 to 3, 7"."""
+    nums, runs = sorted(pages), []
+    for n in nums:
+        if runs and n == runs[-1][1] + 1:
+            runs[-1][1] = n
+        else:
+            runs.append([n, n])
+    words_ = [f"{a}" if a == b else f"{a} to {b}" for a, b in runs]
+    return ("page " if len(nums) == 1 else "pages ") + ", ".join(words_)
+
+
+def part_note(kit: Path, all_parts: list[dict], k: int) -> str:
+    """What a reading of part k (0-based) is told about the documents in the other parts."""
+    titles = {doc: (meta.get("title") or doc) for doc, meta, _ in _page_texts(kit, set(), [])}
+    counts = {doc: len(t) for doc, _, t in _page_texts(kit, set(), [])}
+    elsewhere = []
+    for j, part in enumerate(all_parts):
+        if j == k:
+            continue
+        for doc, pages in part.items():
+            whole = len(pages) == counts.get(doc)
+            elsewhere.append(f"{doc} ({titles.get(doc)}" + ("" if whole else f", {_span(pages)}") + ")")
+    return (f"\nThe row's documents are too long for one message, so they are read in {len(all_parts)} parts and the "
+            f"answers put together afterwards. This is part {k + 1}. Answer every question from the pages here; when "
+            "nothing here supports an answer, give no_evidence. The other parts hold: " + "; ".join(elsewhere)
+            + ". Never name one of those as missing.")
 
 
 def lookup_only(kit: Path) -> bool:
@@ -166,10 +280,38 @@ def lookup_only(kit: Path) -> bool:
 
 
 def fits(kit: Path) -> bool:
-    """Whether the kit can be read in one go: a brief for it, and a message under the limit."""
+    """Whether the kit can be read in one go: a brief for it, and a message under the limit. Size alone: a kit
+    that does not fit is read in parts (`plan` says when it goes to the full scorer instead)."""
     if not (kit / BRIEF).is_file():
         return False
     return estimate(kit) <= (LOOKUP_LIMIT if lookup_only(kit) else LIMIT)
+
+
+def needs_pictures(kit: Path) -> bool:
+    """Whether the kit holds pictures of pages whose words were read poorly (kit.PICTURES): the full scorer can
+    look at them, while one read, whole or in parts, sends words only (es-imco-bipe, 21 Oct 2026)."""
+    return bool((read_json(kit / "pictures.json", {}) or {}).get("poor"))
+
+
+def plan(kit: Path) -> dict:
+    """How `hb score` will read the kit, before it starts: {"mode": "one read" | "parts" | "full scorer",
+    "parts", "estimate", "why"} (estimate: tokens of message, summed over the parts; why, for the full scorer:
+    "careful" when the project scores carefully, "pictures" when the kit holds pictures to look at)."""
+    if not (kit / BRIEF).is_file():
+        return {"mode": "full scorer", "parts": 0, "estimate": None, "why": "careful"}
+    if needs_pictures(kit):
+        return {"mode": "full scorer", "parts": 0, "estimate": None, "why": "pictures"}
+    if fits(kit):
+        return {"mode": "one read", "parts": 1, "estimate": estimate(kit)}
+    data = _questions(kit)
+    qids = [str(q.get("id")) for q in data["questions"]]
+    total, n = 0, 0
+    for i in range(0, len(qids), MAX_QUESTIONS):
+        chunk = qids[i:i + MAX_QUESTIONS] if len(qids) > MAX_QUESTIONS else None
+        cut = parts(kit, chunk)
+        n += len(cut)
+        total += sum(len(message(kit, chunk, part)) for part in cut) / CHARS_PER_TOKEN + NOTE_ROOM * len(cut) / 4
+    return {"mode": "parts", "parts": n, "estimate": int(total)}
 
 
 def choose(kit: Path, model: str | None = None, effort: str | None = None) -> tuple[str, str | None]:
@@ -246,21 +388,117 @@ def _repair_text(kit: Path, problems: list[dict], cells: dict) -> str:
               "{\"cells\": {...}}.\n<documents>\n" + "\n".join(blocks) + "\n</documents>\n")
 
 
+ANSWERED = ("answered", "not_applicable")
+
+
+def _same(a: dict, b: dict) -> bool:
+    return a.get("state") == b.get("state") and a.get("value") == b.get("value") and a.get("figure") == b.get("figure")
+
+
+def merge(found: list[dict]) -> tuple[dict, list[str]]:
+    """Put the answers of the parts together: ({question: cell}, [questions the parts disagree on]).
+    A question answered in one part takes that answer; the same answer in several keeps every quote
+    (and stays unsure only when every part was unsure); no answer anywhere keeps the first no_evidence
+    cell that says what is missing, else the first."""
+    out, split = {}, []
+    qids = list(dict.fromkeys(q for cells in found for q in cells))
+    for q in qids:
+        cands = [c[q] for c in found if isinstance(c.get(q), dict)]
+        got = [c for c in cands if c.get("state") in ANSWERED]
+        if not got:
+            out[q] = next((c for c in cands if (c.get("unsure") or {}).get("missing")), cands[0]) if cands else {}
+        elif len(got) == 1:
+            out[q] = got[0]
+        elif all(_same(got[0], c) for c in got[1:]):
+            cell, seen = dict(got[0]), set()
+            evidence = []
+            for c in got:
+                for e in c.get("evidence") or []:
+                    key = (e.get("doc"), e.get("page"), e.get("quote")) if isinstance(e, dict) else None
+                    if key not in seen:
+                        seen.add(key)
+                        evidence.append(e)
+            cell["evidence"] = evidence
+            cell["unsure"] = got[0].get("unsure") if all(c.get("unsure") for c in got) else None
+            out[q] = cell
+        else:
+            split.append(q)
+            out[q] = got[0]
+    return out, split
+
+
+def _reconcile_text(kit: Path, questions: list[str], found: list[dict]) -> str:
+    """One more message for the questions the parts answered differently: the brief, those questions, each
+    part's answer, and only the pages those answers cite."""
+    data, qs, rulings, qwords, names = _asked(kit, questions)
+    cited: dict[str, set] = {}
+    answers = {}
+    for q in questions:
+        answers[q] = []
+        for k, cells in enumerate(found):
+            c = cells.get(q)
+            if isinstance(c, dict) and c.get("state") in ANSWERED:
+                answers[q].append({"part": k + 1, **c})
+                for e in c.get("evidence") or []:
+                    if isinstance(e, dict) and isinstance(e.get("page"), int) and e.get("doc"):
+                        cited.setdefault(str(e["doc"]), set()).add(e["page"])
+    return (_brief(kit) + "\nThe row's documents were read in parts, and these questions were answered differently in "
+            "different parts. Each part's answer is below with the pages it cites. Weigh them together and give one "
+            "answer per question, as the rules above say, quoting those pages. Reply with only {\"cells\": {...}} for "
+            "these questions.\n<questions>\n" + json.dumps({**rulings, "questions": qs}, ensure_ascii=False)
+            + "\n</questions>\n<part_answers>\n" + json.dumps(answers, ensure_ascii=False) + "\n</part_answers>\n"
+            + "\n<documents>\n" + _documents(kit, names, qwords, cited) + "\n</documents>\n")
+
+
+def _ask_cells(text: str, qids: list[str], model: str, effort: str | None, kit: Path, results: list,
+               tries: int = 1) -> dict:
+    """One call's cells for `qids`; a reply that is not an answers file is asked again `tries` more times."""
+    while True:
+        r = ask(text, model, effort, kit)
+        results.append(r)
+        try:
+            return {str(q): c for q, c in parse_reply(r.get("result"))["cells"].items() if str(q) in qids}
+        except HandbookError:
+            if tries <= 0:
+                raise
+            tries -= 1
+
+
+def _read(kit: Path, qids: list[str], model: str, effort: str | None, results: list, info: dict) -> dict:
+    """Every question in `qids` read once over the kit's pages, in parts when they do not fit one message:
+    {question: cell}. info["parts"] counts the parts read."""
+    chunk = qids if len(qids) < len(_questions(kit)["questions"]) else None
+    if fits(kit):
+        info["parts"] += 1
+        return _ask_cells(message(kit, chunk), qids, model, effort, kit, results, tries=0)
+    cut = parts(kit, chunk)
+    info["parts"] += len(cut)
+    # A part whose reply is not an answers file is asked once more: falling back to the full scorer for a
+    # kit this long is what cost 3.4 million tokens (sweep round 3).
+    found = [_ask_cells(message(kit, chunk, part, part_note(kit, cut, k)), qids, model, effort, kit, results)
+             for k, part in enumerate(cut)]
+    cells, split = merge(found)
+    if split:
+        try:
+            cells.update(_ask_cells(_reconcile_text(kit, split, found), split, model, effort, kit, results, tries=0))
+        except HandbookError:
+            pass                    # each disagreeing question keeps the first part's answer
+    return cells
+
+
 def run(kit: Path, model: str | None = None, effort: str | None = None) -> dict:
-    """Read the kit in one call (one per MAX_QUESTIONS questions), check the quotes, send failing quotes back
-    once, write KIT/answers.json and return a receipt-shaped result: usage summed over the calls, num_turns
-    the number of calls, `mode` "one read", `quote_problems` the quotes still not on their page. A reply that
-    is not an answers file raises HandbookError (the caller can fall back to the full scorer)."""
+    """Read the kit in one call (one per MAX_QUESTIONS questions), or in parts when it is too long (`parts`),
+    check the quotes, send failing quotes back once, write KIT/answers.json and return a receipt-shaped
+    result: usage summed over the calls, num_turns the number of calls, `mode` "one read" or "one read in
+    parts", `parts`, `quote_problems` the quotes still not on their page. A reply that is not an answers file
+    raises HandbookError (the caller can fall back to the full scorer)."""
     model, effort = choose(kit, model, effort)
     data = _questions(kit)
     qids = [str(q.get("id")) for q in data["questions"]]
-    results, cells = [], {}
+    whole = fits(kit)
+    results, cells, info = [], {}, {"parts": 0}
     for i in range(0, len(qids), MAX_QUESTIONS):
-        part = qids[i:i + MAX_QUESTIONS]
-        r = ask(message(kit, part if len(qids) > MAX_QUESTIONS else None), model, effort, kit)
-        results.append(r)
-        got = parse_reply(r.get("result"))
-        cells.update({q: c for q, c in got["cells"].items() if str(q) in part})
+        cells.update(_read(kit, qids[i:i + MAX_QUESTIONS], model, effort, results, info))
     answers = {"row": (data.get("row") or {}).get("id"), "cells": cells}
     write_json(kit / "answers.json", answers)
     problems = check_kit(kit)
@@ -277,11 +515,15 @@ def run(kit: Path, model: str | None = None, effort: str | None = None) -> dict:
     usage = {k: sum(int((r.get("usage") or {}).get(k) or 0) for r in results) for k in USAGE_KEYS}
     states = Counter(c.get("state") for c in cells.values() if isinstance(c, dict))
     unsure = sum(1 for c in cells.values() if isinstance(c, dict) and c.get("unsure"))
-    return {"type": "result", "subtype": "success", "is_error": False, "mode": "one read", "model": model,
+    mode = "one read" if whole else "one read in parts"
+    return {"type": "result", "subtype": "success", "is_error": False, "mode": mode, "model": model,
             "effort": effort, "num_turns": len(results), "usage": usage,
             "total_cost_usd": round(sum(float(r.get("total_cost_usd") or 0) for r in results), 4),
             "quote_problems": len(problems),
-            "result": (f"Answered {len(cells)} of {len(qids)} questions in one reading: {states.get('no_evidence', 0)} "
+            "parts": None if whole else info["parts"],
+            "result": (f"Answered {len(cells)} of {len(qids)} questions in one reading"
+                       + ("" if whole else f" in {info['parts']} parts (the documents are too long for one message)")
+                       + f": {states.get('no_evidence', 0)} "
                        f"with no evidence, {unsure} marked unsure"
                        + (f", {len(problems)} quote{'s' if len(problems) != 1 else ''} still not word for word"
                           if problems else "") + ".")}

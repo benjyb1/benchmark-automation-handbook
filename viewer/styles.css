@@ -513,6 +513,13 @@ h4, .h4,
 
 .hb-applying { position: fixed; z-index: 40; left: 50%; bottom: max(1rem, env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); max-width: calc(100vw - 2rem); padding: 0.375rem 0.75rem; border: 1px solid var(--rule); background: var(--surface); box-shadow: 0 0.5rem 1.5rem -0.75rem var(--shadow); border-radius: 0.75rem; }
 .hb-applying[hidden] { display: none; }
+.hb-problem { display: grid; gap: var(--s1); }
+.hb-problem__details > summary { width: max-content; color: var(--ink-2); font-size: var(--fs-12); cursor: pointer; }
+.hb-problem__raw { max-height: 10rem; overflow: auto; margin: var(--s1) 0 0; white-space: pre-wrap; font-size: var(--fs-12); color: var(--ink-2); }
+.hb-applying__failed { display: grid; gap: var(--s1); max-width: 34rem; font-size: var(--fs-14); }
+.hb-applying__failed p { margin: 0; }
+.hb-applying__failed > .btn { justify-self: end; }
+.hb-applying__why { max-height: 8rem; overflow: auto; margin: var(--s1) 0 0; white-space: pre-wrap; font-size: var(--fs-12); color: var(--ink-2); }
 
 /* ---- Buttons, segmented control, tabs ------------------------------------ */
 

@@ -136,7 +136,10 @@ def _tokens(text: str, value) -> list[int]:
     """Where `value` stands alone in `text` (a grade "B", "NR", or a number however written: 73, 73.0, 73%)."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         out = []
-        for m in re.finditer(r"(?<![\w.])(\d+(?:[.,]\d+)?)(?![\w])", text):
+        # A comma is a decimal point ("7,5") except on a line of comma-separated cells: Freedom on the Net's
+        # "Turkey,5,1,4,3,..." read 5,1 as 5.1, so 13 of Turkey's figures were reported missing (sweep round 3).
+        decimal = r"[.]" if text.count(",") >= 3 else r"[.,]"
+        for m in re.finditer(r"(?<![\w.])(\d+(?:" + decimal + r"\d+)?)(?![\w])", text):
             try:
                 if abs(float(m.group(1).replace(",", ".")) - float(value)) < 1e-6:
                     out.append(m.start())

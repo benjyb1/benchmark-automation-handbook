@@ -6,7 +6,9 @@ the plan), `weak_source` (every document the cell cites is weak: see `fetch.weak
 `document_changed` (the saved copy of a cited document is no longer the capture the answer was
 scored from), `owner_changed` (the owner corrected the answer; see corrections.py) and
 `todays_version` (a web page cited was kept as it is today, long after the cut-off, with no archive
-copy from before it: see cmd_fetch). A quote is matched against the capture its answer names (`evidence[].capture`, put
+copy from before it: see cmd_fetch) and `needs_document` (the scorer needed a document it did not have and
+the answer took the question's no-evidence value: map-equality, 21 Oct 2026, scored harmful laws the finder
+had named but could not fetch at "no such law", the best score). A quote is matched against the capture its answer names (`evidence[].capture`, put
 there by `ingest` from the kit), so a document that changed after scoring is not a quote problem;
 the cell is marked out of date instead, and `hb todo` lists it for a rescore.
 `second_reads(project)` lists the cells a second reader should look at, and
@@ -33,7 +35,11 @@ from .shapes import FLAGS, is_date
 # A second read is only worth its cost where rows of one group answered the same question
 # differently from the same documents. Quote, date and single-document flags did not predict
 # fixable mistakes in earlier runs.
-SECOND_READ_TRIGGERS = {"group_differs"}
+SECOND_READ_TRIGGERS = {"group_differs", "holds_back"}
+# On a staircase score sheet (a band needs whole sections met), an answer below the top in a section the
+# next band needs holds the row below it: one wrong No low down caps the level (TPI, 21 Oct 2026: MQ10
+# alone took Tesco from 5 to 3). Those answers get their second read first.
+FIRST_READS = {"holds_back"}
 
 SCORED_STATES = ("answered", "no_evidence")      # the cells that carry evidence checks and flags
 
@@ -234,6 +240,11 @@ def compute_checks(project: Project) -> dict[str, dict]:
                     mine.add("todays_version")    # no second search for it: the finder cannot reach the archive either
             if _cited(c) and all(is_weak(docs.meta.get(doc)) for doc in _cited(c)):
                 mine.add("weak_source")
+            doubt = c.get("unsure")
+            blank = (qmap.get(qid) or {}).get("no_evidence_value")
+            if (isinstance(doubt, dict) and doubt.get("why") == "document" and not doubt.get("handled")
+                    and (c.get("state") == "no_evidence" or (blank is not None and _same_value(c.get("value"), blank)))):
+                mine.add("needs_document")    # scored as if there were nothing, for want of a document the owner can add
             for e in c.get("evidence") or []:
                 if not isinstance(e, dict) or not isinstance(e.get("doc"), str) or not docs.kept(e["doc"]):
                     continue                  # no saved copy, or no meta.json (a shape error): skip
@@ -262,6 +273,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
                     flags[row_a][qid].add("group_differs")
                     flags[row_b][qid].add("group_differs")
 
+    _holds_back(project, cells, flags, units, qmap)
+
     out = {}
     for row, row_cells in cells.items():
         old = project.checks(row)
@@ -284,6 +297,39 @@ def compute_checks(project: Project) -> dict[str, dict]:
         row_flags = old.get("row_flags") if isinstance(old.get("row_flags"), list) else []
         out[row] = {"row": row, "row_flags": row_flags, "cells": written}
     return out
+
+
+def _holds_back(project: Project, cells: dict, flags: dict, units: dict, qmap: dict) -> None:
+    """Flag holds_back on each answer below its top in a section the row's next band needs met in full,
+    when the row's score already reaches that band (so only those answers keep it out)."""
+    from .scoresheet import _full, row_totals
+    sheet = project.read("scoresheet") or {}
+    gated = [g for g in sheet.get("bands") or [] if isinstance(g, dict)
+             and any(isinstance(b, dict) and b.get("requires_full") for b in g.get("bands") or [])]
+    if not gated or sheet.get("computable") is False:
+        return
+    for row, row_cells in cells.items():
+        totals = row_totals(project, units.get(row) or row, project.answers(row).get("cells") or {})
+        if not totals or totals["partial"]:
+            continue
+        full = _full(totals["sections"])
+        for group in gated:
+            of = group.get("of")
+            score = totals["overall"] if of == "overall" else (totals["sections"].get(of) or {}).get("percent")
+            ordered = sorted((b for b in group.get("bands") or [] if isinstance(b, dict)),
+                             key=lambda b: b.get("min", 0), reverse=True)
+            names = [b.get("name") for b in ordered]
+            current = (totals.get("bands") or {}).get(of)
+            if current not in names or names.index(current) == 0 or score is None:
+                continue
+            nxt = ordered[names.index(current) - 1]
+            if not isinstance(nxt.get("min"), (int, float)) or nxt["min"] > score:
+                continue
+            missing = set(nxt.get("requires_full") or []) - full
+            for qid, c in row_cells.items():
+                q = qmap.get(qid)
+                if q is not None and q.get("section") in missing and (c.get("points") or 0) < answers.top_points(q):
+                    flags[row][qid].add("holds_back")
 
 
 def run_checks(project: Project) -> dict:
@@ -325,6 +371,7 @@ def second_reads(project: Project) -> list[dict]:
     units = {u.get("id"): u for u in project.read("units").get("units", []) if isinstance(u, dict)}
     order = _question_order(project)
     waiting: dict[tuple, list] = {}
+    first: set = set()
     for row in _order(project, _stems(project.path / "checks")):
         for qid, c in (project.checks(row).get("cells") or {}).items():
             if not isinstance(c, dict) or c.get("second_read"):
@@ -333,7 +380,9 @@ def second_reads(project: Project) -> list[dict]:
                 group = _group_value(units.get(row), group_label)
                 label = f"{group_label}={group}" if group is not None else ""
                 waiting.setdefault((qid, label), []).append(row)
-    keys = sorted(waiting, key=lambda k: (order.get(k[0], len(order)), str(k[0]), k[1]))
+                if FIRST_READS & set(c.get("flags") or []):
+                    first.add((qid, label))
+    keys = sorted(waiting, key=lambda k: (k not in first, order.get(k[0], len(order)), str(k[0]), k[1]))
     return [{"question": q, "group": g, "rows": waiting[(q, g)]} for q, g in keys]
 
 

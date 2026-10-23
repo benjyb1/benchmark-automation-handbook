@@ -72,6 +72,8 @@ your recommended option and a one-sentence reason, `raised_by: "setup"`.
   Each option must be a reading a scorer could apply to any row without re-interpreting it.
 - **Recommend the reading a third party could apply consistently**, and say why in one sentence.
   A recommendation is a suggestion the owner accepts or rejects, never a decision made for them.
+- **An option that settles a value carries it in `sets`** (`drafting.md`): the cut-off date, or
+  what its questions take when nothing is found. Deciding the option then writes it.
 - Then run `python3 "<lib>/hb.py" stakes --project "<project>"`. It fills each rule's stakes: the
   cells it touches and the points that could move across them.
 

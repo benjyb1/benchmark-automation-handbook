@@ -37,12 +37,13 @@ import shutil
 from collections import Counter
 from pathlib import Path
 
-from . import answers
+from . import answers, needs
 from .folder import HandbookError, Project, write_json
 from .quotecheck import capture_id, page_hash
 
 META_KEYS = ("title", "publisher", "date", "language")
 MAX_PICTURES = 12                       # pictures in one kit: each costs a scorer up to about 1,600 tokens to look at
+PICTURES = "pictures.json"              # {"poor": [[doc, page]]}: pictures of pages read poorly, which the scorer must see
 MAX_PICTURE_BYTES = 6_000_000
 IMAGE_FILES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".tiff", ".tif")
 SELF_CHECK = "check_quotes.py"          # the kit's copy of quotecheck.py
@@ -99,6 +100,17 @@ def kit_questions(project: Project, row: str, questions=None) -> tuple[list[dict
         # A run's question list is for all its rows; one that does not apply to this row is left out
         # of its kit (FAIRR, 14 Oct 2026: two salmon questions stopped the kit of a shrimp producer).
         mine = [by_id[q] for q in dict.fromkeys(questions) if q in by_id]
+    # An answer that waits for the owner's data is not scored until it arrives (needs.py).
+    listed, held = needs.only_source_needs(project), {q["id"]: None for q in mine}
+    if listed:
+        cells, docs = project.answers(row).get("cells") or {}, set(project.found(row).get("documents") or [])
+        held = {q["id"]: needs.waiting_for(project, row, q["id"], cells.get(q["id"]), listed, docs) for q in mine}
+    if mine and all(held.values()):
+        names = ", ".join(sorted(set(held.values())))
+        raise HandbookError(f"Question {', '.join(held)} on {row} waits for the owner's data ({names}), so there is "
+                            f"nothing to score yet. Once that data is added for {row}, mark the need supplied "
+                            "(or waived) and score it.")
+    mine = [q for q in mine if not held[q["id"]]]
     rules = project.read("rules").get("rules", [])
     out, rulings = [], {}
     for q in mine:
@@ -119,15 +131,74 @@ def kit_questions(project: Project, row: str, questions=None) -> tuple[list[dict
     return out, sorted(rulings.values(), key=lambda r: order.get(r["id"], len(order)))
 
 
+# A line of coding rule this long or longer that two or more of the kit's questions share is given once,
+# under `guidance`, and each rule names it ("[guidance G1]"). Sweep round 3 (21 Oct 2026): drafts pasted
+# the same scale and methodology quotes into every question's rule (InfluenceMap 68,000 of 73,000 characters
+# of rules, RDR 36,000 of 44,000), and every kit carried each copy.
+GUIDANCE_MIN = 40
+
+
+def share_guidance(questions: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(questions, guidance): runs of rule lines that several questions share, moved into guidance entries
+    {id, text, questions} given once; each rule keeps its own lines and "[guidance Gn]" where a run was.
+    A run only one question has stays in its rule."""
+    def lines(q):
+        return (q.get("rule") or "").split("\n") if isinstance(q.get("rule"), str) else []
+    counts = Counter(x for q in questions for x in {l.strip() for l in lines(q) if len(l.strip()) >= GUIDANCE_MIN})
+    shared = {x for x, n in counts.items() if n > 1}
+    if not shared:
+        return questions, []
+    runs = []                                   # per question: [("own", line) | ("run", [lines])]
+    for q in questions:
+        parts, run, blanks = [], [], []
+        for line in lines(q):
+            if line.strip() in shared:
+                run += blanks + [line]
+                blanks = []
+            elif not line.strip() and run:
+                blanks.append(line)
+            else:
+                if run:
+                    parts.append(("run", run))
+                    run = []
+                parts += [("own", b) for b in blanks] + [("own", line)]
+                blanks = []
+        if run:
+            parts.append(("run", run))
+        parts += [("own", b) for b in blanks]
+        runs.append(parts)
+    used = Counter("\n".join(r) for parts in runs for kind, r in parts if kind == "run")
+    ids, guidance, out = {}, [], []
+    for q, parts in zip(questions, runs):
+        text, mine = [], []
+        for kind, r in parts:
+            block = "\n".join(r) if kind == "run" else r
+            if kind == "run" and used[block] > 1:
+                if block not in ids:
+                    ids[block] = f"G{len(ids) + 1}"
+                    guidance.append({"id": ids[block], "text": block, "questions": []})
+                guidance[int(ids[block][1:]) - 1]["questions"].append(q["id"])
+                mine.append(ids[block])
+                text.append(f"[guidance {ids[block]}]")
+            else:
+                text.append(block)
+        out.append({**q, "rule": "\n".join(text), **({"guidance": list(dict.fromkeys(mine))} if mine else {})}
+                   if mine else q)
+    return out, guidance
+
+
 def _page_name(number: int, width: int) -> str:
     return f"p{number:0{width}d}.txt"
 
 
-def _picture_plan(project: Project, docs: list[str]) -> tuple[dict, int]:
+def _picture_plan(project: Project, docs: list[str], qwords: set | None = None) -> tuple[dict, int]:
     """Which page pictures go in the kit: {(doc, page number): [file names in the document's folder]} and
-    how many were left out. A picture that is a whole document (an image file) comes before a page picture
-    of a longer document; within each, the row's document order and page order. Stops at MAX_PICTURES
-    files or MAX_PICTURE_BYTES."""
+    how many were left out. A page whose words were read poorly from its picture (`poor`, readers.POOR_OCR)
+    comes first, those sharing most words with the questions (`qwords`) first: its page file may be garbled,
+    so the scorer needs its picture (es-imco-bipe, 21 Oct 2026). Then a picture that is a whole document (an
+    image file), then a page picture of a longer document; within each, the row's document order and page
+    order. Stops at MAX_PICTURES files or MAX_PICTURE_BYTES."""
+    from .oneread import words
     wanted = []
     for order, doc in enumerate(docs):
         folder = project.doc_dir(doc)
@@ -136,10 +207,11 @@ def _picture_plan(project: Project, docs: list[str]) -> tuple[dict, int]:
             files = [f for f in page.get("images") or [] if isinstance(f, str) and (folder / f).is_file()]
             if files:
                 number = page.get("page") if isinstance(page.get("page"), int) else i
-                wanted.append((0 if whole else 1, order, number, doc, files))
-    wanted.sort(key=lambda w: w[:3])
+                share = -len(set(words(page.get("text") or "")) & (qwords or set())) if page.get("poor") else 0
+                wanted.append((0 if page.get("poor") else 1 if whole else 2, share, order, number, doc, files))
+    wanted.sort(key=lambda w: w[:4])
     plan, count, size, left_out = {}, 0, 0, 0
-    for _, _, number, doc, files in wanted:
+    for _, _, _, number, doc, files in wanted:
         total = sum((project.doc_dir(doc) / f).stat().st_size for f in files)
         if count + len(files) > MAX_PICTURES or size + total > MAX_PICTURE_BYTES:
             left_out += len(files)
@@ -149,7 +221,81 @@ def _picture_plan(project: Project, docs: list[str]) -> tuple[dict, int]:
     return plan, left_out
 
 
-def _write_docs(project: Project, row: str, docs_dir: Path) -> tuple[dict, dict]:
+def late_documents(project: Project, row: str) -> dict[str, str]:
+    """{doc: its date} for the row's documents dated after the row's cut-off (its own, else the project's). They
+    never go in a kit: tpi-mq, 22 Oct 2026, a scorer used General Mills' plan dated 8 July 2025 for a cut-off of
+    31 March 2025."""
+    from .checks import _after_cutoff
+    from .shapes import is_date
+    cutoff = (unit(project, row) or {}).get("cutoff")
+    cutoff = cutoff if is_date(cutoff) else project.read("project").get("cutoff")
+    if not is_date(cutoff):
+        return {}
+    metas = project.documents()
+    return {d: str(metas[d].get("date")) for d in project.found(row).get("documents") or []
+            if d in metas and _after_cutoff(metas[d], cutoff)}
+
+
+def note_late(project: Project, row: str, late: dict[str, str]) -> None:
+    """Name each document dated after the cut-off on the row as expected but not found (the page's gaps, and the
+    wider search's brief), once: its version as it stood at the cut-off is what is wanted."""
+    if not late:
+        return
+    from .shapes import is_date
+    found = project.found(row)
+    notes = found.setdefault("expected_not_found", [])
+    cutoff = (unit(project, row) or {}).get("cutoff")
+    cutoff = cutoff if is_date(cutoff) else project.read("project").get("cutoff")
+    metas, added = project.documents(), False
+    for doc, when in late.items():
+        if any(isinstance(e, dict) and doc in str(e.get("where_looked") or "") for e in notes):
+            continue
+        title = (metas.get(doc) or {}).get("title") or doc
+        notes.append({"what": f"{title}, as it stood at the cut-off",
+                      "where_looked": f"The saved copy ({doc}) is dated {when}, after the cut-off ({cutoff}), so "
+                                      "Claude does not score from it. An earlier version, or an archived copy from "
+                                      "before the cut-off, is needed."})
+        added = True
+    if added:
+        found["row"] = row
+        project.write_found(row, found)
+
+
+
+# A document whose long lines are nearly all in another of the row's documents is that document again (a
+# report saved alone and inside a combined report): it is left out of the kit. ChemScore, sweep round 3:
+# Evonik's 136-page Sustainability Report inside its 326-page Financial and Sustainability Report.
+INSIDE_SHARE = 0.9
+INSIDE_LINE = 60             # characters: shorter lines (headings, page furniture) are not compared
+INSIDE_MIN_LINES = 20
+
+
+def _lines_of(project: Project, doc: str) -> set[str]:
+    return {" ".join(line.split()).lower() for p in project.pages(doc) if isinstance(p, dict)
+            for line in str(p.get("text") or "").splitlines() if len(line.strip()) >= INSIDE_LINE}
+
+
+def contained(project: Project, docs: list[str]) -> dict[str, str]:
+    """{doc: the document it is inside} for documents whose long lines are nearly all (INSIDE_SHARE) in another
+    document of the list, the smaller one going; two copies of the same text keep the first listed."""
+    lines = {d: _lines_of(project, d) for d in docs}
+    out: dict[str, str] = {}
+    for a in docs:
+        la = lines[a]
+        if len(la) < INSIDE_MIN_LINES:
+            continue
+        for b in docs:
+            lb = lines[b]
+            if b == a or b in out or len(lb) < len(la) or (len(lb) == len(la) and docs.index(b) > docs.index(a)):
+                continue
+            if len(la & lb) >= INSIDE_SHARE * len(la):
+                out[a] = b
+                break
+    return out
+
+
+def _write_docs(project: Project, row: str, docs_dir: Path, qwords: set | None = None,
+                skip=(), keep=()) -> tuple[dict, dict]:
     """Copy the row's found documents into `docs_dir`; returns ({"kept": n, "not_kept": n, "pictures": n,
     "pictures_left_out": n}, captures), where captures is `{doc: {"capture": id, "pages": {"p001.txt": sha1,
     ...}}}` for every document with page files: the hash of each page file as written, and the capture id
@@ -157,10 +303,15 @@ def _write_docs(project: Project, row: str, docs_dir: Path) -> tuple[dict, dict]
     metas = project.documents()
     counts = {"kept": 0, "not_kept": 0, "pictures": 0, "pictures_left_out": 0, "empty_pages": 0}
     captures, index = {}, []
-    found = list(dict.fromkeys(project.found(row).get("documents") or []))
+    found = [d for d in dict.fromkeys(project.found(row).get("documents") or []) if d not in skip]
     rows_with = Counter(d for u in project.read("units").get("units", []) if u.get("id")
                         for d in set(project.found(u["id"]).get("documents") or []))
-    plan, counts["pictures_left_out"] = _picture_plan(project, [d for d in found if d in metas])
+    inside = {a: b for a, b in contained(project, [d for d in found if d in metas]).items() if a not in keep}
+    found = [d for d in found if d not in inside]
+    counts["inside"] = len(inside)
+    plan, counts["pictures_left_out"] = _picture_plan(project, [d for d in found if d in metas], qwords)
+    counts["poor_pictures"] = [[doc, number] for (doc, number) in plan
+                               if any(p.get("poor") and (p.get("page") or 0) == number for p in project.pages(doc))]
     for doc in found:
         meta = metas.get(doc)
         if meta is None:
@@ -198,14 +349,20 @@ def _write_docs(project: Project, row: str, docs_dir: Path) -> tuple[dict, dict]
                 names.append(name)
             counts["pictures"] += len(names)
             counts["empty_pages"] += 0 if text.strip() else 1
-            shown.append((_page_name(number, width), text, names, bool(page.get("ocr"))))
+            shown.append((_page_name(number, width), text, names, bool(page.get("ocr")), bool(page.get("poor"))))
         captures[doc] = {"capture": capture_id(texts), "pages": hashes}
         index.append((doc, out, shown))
-    (docs_dir / INDEX).write_text(index_text(index, counts["pictures_left_out"]), encoding="utf-8")
+    text = index_text(index, counts["pictures_left_out"])
+    if inside:
+        text += "\n" + "".join(f"{a} is left out: its text is in {b}.\n" for a, b in inside.items())
+    (docs_dir / INDEX).write_text(text, encoding="utf-8")
     return counts, captures
 
 
 INDEX = "index.md"
+# The kit after a wider search (serve._wider_search, `docs`): only what it added and what the answers cited.
+SECOND_LOOK = ("These are answers scored before, looked at again because a wider search found more documents. "
+               "Only those new documents, and the ones the earlier answers cited, are here: answer from them.")
 GIST = 110             # characters of each page shown in the index
 
 
@@ -228,7 +385,9 @@ def index_text(index, left_out: int = 0) -> str:
         for entry in pages:
             name, text = entry[0], entry[1]
             pictures, ocr_page = (entry[2], entry[3]) if len(entry) > 2 else ([], False)
-            tags = (["words read from a picture by a text reader"] if ocr_page else []) + \
+            poor = len(entry) > 4 and entry[4]
+            tags = (["words read poorly from a picture: look at its picture before you answer from it" if poor
+                     else "words read from a picture by a text reader"] if ocr_page else []) + \
                    ([f"picture: {', '.join(pictures)}"] if pictures else [])
             shown = " [" + "; ".join(tags) + "]" if tags else ""
             if text.strip():
@@ -247,7 +406,9 @@ def index_text(index, left_out: int = 0) -> str:
 
 # From this many questions the brief asks for answers.json to be written as the scorer goes, so a
 # session stopped at its budget (cmd_score.py) leaves the answers it had (Zambia, 61 questions, 53 turns).
-SAVE_AS_YOU_GO = 10
+# It was 10, written "after every ten or so": Global Health 50/50 (18 questions, sweep round 3) read for nine
+# turns, was stopped at 250,000 tokens and had written nothing. Now from the first answers, every five.
+SAVE_AS_YOU_GO = 1
 # A row's token budget is this many times the cost model's figure for its kit: wide enough that a row
 # within the usual spread never meets it (half the format-test rows came within 1.3 times), narrow
 # enough to stop a row going round in circles (Canada: 5.4M; Zambia: 53 turns).
@@ -305,14 +466,17 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
                  "documents afresh and answer on the evidence alone."]
     else:
         intro = [f"# Scoring brief: {row.get('name') or row['id']}", "",
-                 f"You are scoring one {unit_word}: {row.get('name') or row['id']} ({labels})."]
+                 f"You are scoring one {unit_word}: {row.get('name') or row['id']} ({labels})."
+                 + (" " + SECOND_LOOK if counts.get("second_look") else "")]
     not_kept = (f" {counts['not_kept']} document(s) were found but their text was not saved: they "
                 "have only meta.json, so you cannot quote or cite them." if counts["not_kept"] else "")
     lines = intro + [
         "",
         f"Everything you need is in this folder: {kit}",
         f"- {qfile}: the {n_questions} question(s) to answer, with their levels and coding rule, and "
-        "under rulings the readings that apply, each given once with the questions it covers.",
+        "under rulings the readings that apply, each given once with the questions it covers."
+        + (" Rule text several questions share is under guidance, given once: a rule that says [guidance G1] "
+           "includes that text." if counts.get("guidance") else ""),
         "- docs/index.md: every document with its pages, one line per page with its first words.",
         "- docs/<doc>/meta.json: each document's title, publisher, date and language (an undated one shows "
         "saved_on, the day it was saved, which may be after the cut-off).",
@@ -387,11 +551,12 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         "what you have, add \"missing\": the document's name (with its year and country when you know them) to "
         "unsure {\"why\": \"document\"}, and move on. Do not search for the same document again for later "
         "questions: give the same missing name. It is looked for or asked for, and those questions are "
-        "scored again once it is here.",
+        "scored again once it is here. A question about what a list, register or file holds, answered only from a "
+        "page that describes it, is unsure (why \"document\") with the file as missing.",
         f"8. Write {afile} in exactly this shape. The question ids, documents and words below are only "
         "an example; use the ids from " + qfile + "."
-        + (f" With this many questions, write {afile} early and write it again, whole, after every ten or so "
-           "answers, so the answers you have are kept if the session is stopped." if n_questions > SAVE_AS_YOU_GO else ""),
+        + (f" Write {afile} as soon as you have your first answers, before reading on, and write it again, whole, "
+           "after every five or so, so the answers you have are kept if the session is stopped." if n_questions > SAVE_AS_YOU_GO else ""),
         "",
         "```json",
         example,
@@ -427,7 +592,10 @@ def reading_text(project: Project, row: dict, n_questions: int, counts: dict, fi
         f"You are scoring one {unit_word}: {row.get('name') or row['id']} ({labels}). Below are the {n_questions} "
         "question(s), with their levels and coding rule and, under rulings, the readings that apply, each given once "
         "with the questions it covers; then every document, page by page. Answer every question from these "
-        "documents alone: never outside knowledge.",
+        "documents alone: never outside knowledge."
+        + (" Rule text several questions share is under guidance, given once: a rule that says [guidance G1] "
+           "includes that text." if counts.get("guidance") else ""),
+        *([SECOND_LOOK] if counts.get("second_look") else []),
         *(["A document that many rows share (a vote record, a long list) is cut to its opening and the passages "
            "that name this row or match a question; [...] marks what was left out."] if counts.get("shared") else []),
         *([f"{counts['empty_pages']} page(s) are empty because the page could not be read (a scan or a picture). If the "
@@ -438,6 +606,7 @@ def reading_text(project: Project, row: dict, n_questions: int, counts: dict, fi
         *([f"Answer as things stood on the cut-off date, {cutoff}: a law, policy or figure that came in after it does "
            "not count, even when a later document shows it. A page that says it was updated after the cut-off may "
            "describe later changes: mark it unsure (why \"document\") when that matters."] if cutoff else []),
+        "A document with date \"unknown\" gives no date of its own: saved_on is only the day it was saved, never its date.",
         "Follow each question's coding rule and the rulings it names. A ruling marked \"decided\" is settled. A ruling "
         f"marked \"{UNDECIDED}\" is still open with the owner: apply that reading.",
         "",
@@ -463,7 +632,8 @@ def reading_text(project: Project, row: dict, n_questions: int, counts: dict, fi
         "is not here, {\"why\": \"rule\", \"note\": \"...\"} or {\"why\": \"document\", \"note\": \"...\"}. When a question "
         "turns on a document that is not here (another law, regulations, a form), answer from what you have and add "
         "\"missing\": its name, with its year and country when you know them; give the same name wherever it is "
-        "missing. Never give a confidence score or a percentage.",
+        "missing. A question about what a list, register or file holds, answered only from a page that describes it, "
+        "is unsure (why \"document\") with the file as missing. Never give a confidence score or a percentage.",
         "",
         "Reply with only the answers file, in exactly this shape (the ids, documents and words here are made up; use "
         "the ids from the questions):",
@@ -475,7 +645,7 @@ def reading_text(project: Project, row: dict, n_questions: int, counts: dict, fi
 
 
 def write_kit(project: Project, row: str, run: str, questions=None, second: bool = False,
-              look=None) -> Path:
+              look=None, docs=None) -> Path:
     """Clear and write the kit for `row` (see the module docstring) and return its folder.
     `questions` limits the questions (ids); `second` needs `questions`. `look` is a list of
     (doc, page) the brief asks the scorer to read first: the pages a correction points to, named
@@ -488,8 +658,13 @@ def write_kit(project: Project, row: str, run: str, questions=None, second: bool
             raise HandbookError(f"Document {doc} is not saved for {row}, so the kit cannot point to it.")
     if not project.run(run):
         raise HandbookError(f"There is no run {run!r} in runs/. Start one with: run start --kind ...")
+    if docs is not None:
+        unknown = [d for d in docs if d not in found]
+        if unknown:
+            raise HandbookError(f"Document {', '.join(unknown)} is not saved for {row}, so the kit cannot hold it.")
     the_unit = unit(project, row)
     qs, rulings = kit_questions(project, row, questions)
+    qs, guidance = share_guidance(qs)
     if not qs:
         raise HandbookError(f"No question applies to {row}, so there is nothing to score.")
     kit = project.kit_dir(row)
@@ -504,20 +679,29 @@ def write_kit(project: Project, row: str, run: str, questions=None, second: bool
             elif path.exists() or path.is_symlink():
                 path.unlink()
     (kit / "docs").mkdir(parents=True, exist_ok=True)
-    counts, captures = _write_docs(project, row, kit / "docs")
+    from .oneread import words
+    late = late_documents(project, row)
+    note_late(project, row, late)
+    counts, captures = _write_docs(project, row, kit / "docs",
+                                   {w for q in qs for w in words(" ".join([q.get("short") or "", q.get("wording") or ""]))},
+                                   skip=set(late) | ({d for d in found if d not in docs} if docs is not None else set()),
+                                   keep={doc for doc, _ in look or []})
+    counts["second_look"] = docs is not None
+    if counts.get("poor_pictures"):
+        # Pictures of pages read poorly: the scorer must be able to look at them, so not one read (oneread.plan).
+        write_json(kit / PICTURES, {"poor": counts["poor_pictures"]})
     write_json(kit / "capture.json", {"row": row, "run": run, "docs": captures})
     shutil.copyfile(QUOTECHECK, kit / SELF_CHECK)
     where = kit / "second" if second else kit
     write_json(where / "questions.json", {
         "row": {"id": row, "name": the_unit.get("name"), "labels": the_unit.get("labels") or {}},
-        "run": run, "rulings": rulings, "questions": qs})
+        "run": run, "rulings": rulings, **({"guidance": guidance} if guidance else {}), "questions": qs})
+    counts["guidance"] = len(guidance)
     where.mkdir(parents=True, exist_ok=True)
     (where / "brief.md").write_text(brief_text(project, the_unit, kit, len(qs), counts, second, look,
                                                      figures=any("figure" in q for q in qs),
                                                      may_not_apply=any(q.get("may_not_apply") for q in qs)),
                                     encoding="utf-8")
-    if not second:
-        write_json(kit / "limits.json", kit_limits(project, row, [q["id"] for q in qs]))
     if not second and not careful(project):
         counts["shared"] = sum(1 for d in (kit / "docs").glob("*/meta.json")
                                if (json.loads(d.read_text(encoding="utf-8")) or {}).get("shared"))
@@ -525,6 +709,14 @@ def write_kit(project: Project, row: str, run: str, questions=None, second: bool
                                                 figures=any("figure" in q for q in qs),
                                                 may_not_apply=any(q.get("may_not_apply") for q in qs)),
                                    encoding="utf-8")
+    if not second:
+        lim = kit_limits(project, row, [q["id"] for q in qs])
+        if (kit / READING).is_file():
+            # What hb score will really do (TI and ChemScore, sweep round 3: the figure here priced the full
+            # scorer for rows read in one call, 4 to 8 times too high). The budget is for the full scorer only.
+            from .oneread import plan
+            lim["reading"] = plan(kit)
+        write_json(kit / "limits.json", lim)
     return kit
 
 

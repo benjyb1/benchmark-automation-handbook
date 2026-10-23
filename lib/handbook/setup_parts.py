@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import edition
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, HandbookError, Project
-from .shapes import ROLES, check_folder
+from .shapes import ROLES, check_folder, where_without_stale
 from .stakes import rule_stakes
 
 BASICS = ("name", "edition", "unit_word", "unit_word_plural", "cutoff", "labels", "group_labels", "group_by",
@@ -47,6 +47,12 @@ def _set_checklist(p: dict, key: str, status: str) -> None:
 def _checked_write(project: Project, files: dict[str, dict]) -> list[str]:
     """Write `files` ({name: data}); keep them only if the folder check finds nothing new."""
     before = set(check_folder(project))
+    if "questions" in files and "where_to_look" not in files and project.file("where_to_look").is_file():
+        # where to look stops naming questions the new list no longer has (22 Oct 2026)
+        where = project.read("where_to_look")
+        kept = where_without_stale(where, {q.get("id") for q in files["questions"].get("questions") or [] if isinstance(q, dict)})
+        if kept is not where:
+            files = {**files, "where_to_look": kept}
     old = {name: (project.file(name).read_bytes() if project.file(name).is_file() else None) for name in files}
     for name, data in files.items():
         project.write(name, data)
@@ -212,10 +218,14 @@ def _last_results(project: Project, data: dict) -> dict:
         try:
             rebuild = rebuild_check(project)
             write_json(project.held_back / "rebuild.json", rebuild)
-            rebuild = {k: rebuild[k] for k in ("checked", "matched", "mismatches")}
-            rebuild["mismatches"] = rebuild["mismatches"][:30]
+            rebuild = {"checked": rebuild["checked"], "matched": rebuild["matched"],
+                       "mismatches": rebuild["mismatches"][:30], "only_total": rebuild.get("only_total") or []}
+            only = len(rebuild["only_total"])
             if rebuild["checked"]:
                 said += f" The score sheet gives the same figures for {rebuild['matched']} of {rebuild['checked']} rows."
+                if only:
+                    said += (f" {only} other row{'s give' if only != 1 else ' gives'} only a total, so there is nothing "
+                             "finer to check for them.")
             else:
                 said += (f" They are {results.get('level')}s only, with nothing finer to rebuild them from, so the score "
                          "sheet cannot be checked against them yet; scored rows will be compared with them.")

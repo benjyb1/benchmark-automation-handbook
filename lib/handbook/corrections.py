@@ -87,7 +87,7 @@ def not_admissible(meta: dict, cutoff: str | None) -> str | None:
     if why is None and meta.get("host_type") == "third_party":
         why = fetch.AUTO_WEAK_WHY
     if why:
-        return f"{_title(meta, meta.get('id'))} is not the company's own words ({why[0].lower() + why[1:]})."
+        return f"{_title(meta, meta.get('id'))} is not in their own words ({why[0].lower() + why[1:]})."
     return None
 
 
@@ -179,7 +179,7 @@ def _handle(project: Project, c: dict, stamp: str, rounds: list) -> dict:
             else:
                 entry["found"] = {"doc": doc, "page": page}
                 item = evidence_item(meta, doc, page, ev["quote"])
-                cutoff = project.read("project").get("cutoff")
+                cutoff = project.cutoff_for([row])      # the row's own cut-off first
                 why = not_admissible(meta, cutoff if is_date(cutoff) else None)
     if why:
         entry["status"] = "checked"

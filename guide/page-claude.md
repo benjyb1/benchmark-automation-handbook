@@ -23,7 +23,7 @@ Before any set-up, find out whether this benchmark suits the tool and, if not, w
 Ask them to add what they have under **Your material** at the top of the Set-up tab (PDF, Word, Excel or text): the questions, the list of organisations (or countries) they score, how scores are worked out, last edition's results, the methodology, last year's sources, and documents they already hold. Read the files with read_material (list them first, then read each; long files come in parts). Then work through four questions in this order. Each needs evidence from their material, not a guess.
 
 1. **Is it written down?** Are the questions and the list of organisations written down somewhere, with an answer scale for each question? If not, the fix is a short scoping conversation: write each question with its levels and what a yes looks like, and name the list and where it came from. You can draft this with them.
-2. **Is the evidence reachable?** Does the evidence for each question exist where an outsider could find it, or will they supply it? Questions that rest on private questionnaires, site visits with no written record, internal figures or opinion cannot be answered from documents. The fixes: supply the material (survey answers, visit notes, the companies' returns); re-base those questions on published disclosures; or leave them out of the automated part and say what share of points that covers.
+2. **Is the evidence reachable?** Does the evidence for each question exist where an outsider could find it, or will they supply it? Questions that rest on private questionnaires, site visits with no written record, internal figures or opinion cannot be answered from documents. The fixes: supply the material (survey answers, visit notes, the companies' returns), and those questions wait for it while the tool scores the rest; or re-base them on published disclosures.
 3. **Is there something to check against?** Strongly advise uploading last edition's results, question by question if they have them. The tool then checks that its scoring reproduces their published scores before anything runs, and compares its answers with theirs. It makes the results far more accurate. It is not required: a first edition is fine, and the owner's spot checks during the trial then carry more weight. If they only published totals or ranks but hold the per-question scores, ask for that export.
 4. **Can it be scored the same way twice?** Are the rules clear enough that two careful readers would agree? Vague rules are not a blocker: set-up's rule questions settle them. Say which ones you expect to need deciding.
 
@@ -34,7 +34,7 @@ Also check, and say what each means for them:
 
 ### Telling them the result
 
-Give one of four verdicts, in these words, with one line on why:
+Give one of four verdicts, in these words, with one line on why. Whatever the verdict, also say what share of the points rests on evidence only they hold or that no document holds (for example "about 90% of the rating rests on the suppliers' returns to you and your complaints records"), and what the tool can do now without it (the questions it can answer from documents, while the rest waits for their upload).
 
 - **Ready.** Set-up can start now.
 - **Ready, with these fixes.** List each fix: what to do in their benchmark's own terms, how much work it is for them (an export, a decision, a change of method), and what it unlocks. Most fixes are cheap. The most common is "send us the per-question scores you already hold".
@@ -48,7 +48,7 @@ Common fixes, for reference:
 | Only totals, ranks or grades published | Send the per-question scores they already hold | An export |
 | Questions or scale held privately | Share last edition's questions and answer sheet | An export |
 | No per-question results at all (first edition) | Rule on a few test answers during the trial | A few hours |
-| Evidence from private questionnaires | Supply the returns, or leave those questions out | Varies |
+| Evidence from private questionnaires | Supply the returns; those questions wait for them | Varies |
 | Evidence from site visits or inspections | Supply dated notes or photos | Low per edition |
 | Paywalled or member-only sources | Download and add the documents | Varies |
 | Sources not recorded | Send last year's source list, if they kept one | An export |

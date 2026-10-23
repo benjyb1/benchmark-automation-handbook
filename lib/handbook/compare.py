@@ -19,9 +19,9 @@ from __future__ import annotations
 import re
 from datetime import date
 
-from . import answers, edition
+from . import answers, edition, needs
 from .folder import HandbookError, Project, read_json, write_json
-from .scoresheet import round_half_up, row_totals
+from .scoresheet import round_half_up, row_totals, scales
 from .shapes import REASONS, check_compare, check_held_back, is_date
 
 # A big move is a disagreement with the latest edition whose reason is in BIG_MOVE_REASONS and that
@@ -45,6 +45,8 @@ NOT_APPLICABLE = "n/a"           # our answer when the question does not apply t
 NOT_COMPARED_TEXT = {
     "not_scored": "None of its questions have been scored yet.",
     "partial": "Some of its questions have not been scored, so its totals were not compared (a section scored in full still is).",
+    "waiting": "Some of its answers wait for data you need to supply, so they and its totals were not compared (a section scored in full still is).",
+    "total_only": "Last edition's results give only a total for it, so it is compared once all its questions are scored.",
     "not_in_last_edition": "It is not in last edition's results.",
     "not_in_units": "It is in last edition's results but not among this edition's rows.",
     "rank_only": "Last edition gives it only a rank, so it is checked in the rank order, not figure by figure.",
@@ -146,9 +148,11 @@ def _section_figure(section: dict, entry: dict):
     return round_half_up(entry["points"], section.get("rounding"))
 
 
-def _ours(project: Project, unit: dict, cells: dict, level: str, sheet: dict) -> tuple[dict, bool]:
-    """Every key we can give for the row, in a fixed order, and whether the row is partial."""
-    totals = row_totals(project, unit, cells) if sheet.get("computable") is not False else None
+def _ours(project: Project, unit: dict, cells: dict, level: str, sheet: dict, ends: dict | None = None) -> tuple[dict, bool]:
+    """Every key we can give for the row, in a fixed order, and whether the row is partial. `ends` holds
+    the relative figures' ends (scoresheet.scales). A section the sheet does not work out gives no key,
+    nor does the overall that needs it."""
+    totals = row_totals(project, unit, cells, ends) if sheet.get("computable") is not False else None
     out = {}
     if level == "question":
         for q in project.questions_for(unit):
@@ -176,11 +180,15 @@ def _ours(project: Project, unit: dict, cells: dict, level: str, sheet: dict) ->
             if section["id"] not in open_sections and entry.get("max"):
                 out[section["id"]] = _section_figure(section, entry)
         return out, True
+    skipped = set(totals.get("not_computed") or [])
     for section in sheet.get("sections") or []:
-        out[section["id"]] = _section_figure(section, totals["sections"][section["id"]])
-    out["overall"] = totals["overall"]
+        if section["id"] not in skipped:
+            out[section["id"]] = _section_figure(section, totals["sections"][section["id"]])
+    if totals["overall"] is not None or not skipped:
+        out["overall"] = totals["overall"]
     for of, name in totals["bands"].items():
-        out[f"band:{of}"] = name
+        if of not in skipped and (of != "overall" or "overall" in out):
+            out[f"band:{of}"] = name
     return out, False
 
 
@@ -197,8 +205,11 @@ def _qids_under(key: str, scored: list[dict], sections: set) -> list[str]:
 
 
 def _reason(project: Project, row: str, qids: list[str], cells: dict, rules: dict, docs: dict,
-            cutoff: str | None) -> tuple[str, str | None]:
-    """The first reason the files prove for the cells under a key, and a plain note (or None)."""
+            cutoff: str | None, as_at: str | None = None) -> tuple[str, str | None]:
+    """The first reason the files prove for the cells under a key, and a plain note (or None). `as_at` is
+    the date last edition's answers reflect: a document we cite dated after it may have changed since
+    (de-transparenzranking, 21 Oct 2026: a law amended after the owner scored it). With no such date,
+    an unexplained difference says that a change since cannot be checked."""
     stuck = {rid: [] for q in qids for rid in cells[q].get("rules") or []
              if (rules.get(rid) or {}).get("status") in UNDECIDED}
     for q in qids:
@@ -216,9 +227,17 @@ def _reason(project: Project, row: str, qids: list[str], cells: dict, rules: dic
                         date.fromisoformat(meta["date"]) > date.fromisoformat(cutoff):
                     return "document_date", (f"Cites {e['doc']}, dated {meta['date']}, after the "
                                              f"cut-off of {cutoff}.")
+    if as_at:
+        for q in qids:
+            for e in cells[q].get("evidence") or []:
+                meta = docs.get(e.get("doc")) if isinstance(e, dict) else None
+                if meta and is_date(meta.get("date")) and meta["date"] > as_at:
+                    return "document_date", (f"Cites {e['doc']}, dated {meta['date']}, after the date last edition's "
+                                             f"answers reflect ({as_at}), so the source may have changed since.")
     if not project.found(row).get("documents"):
         return "missing_document", "No documents were found for this row."
-    return "unexplained", None
+    return "unexplained", (None if as_at else "Last edition's answers carry no date, so a change in the source "
+                                              "since then cannot be checked.")
 
 
 CLAUDE_REASONS = ("missing_document", "different_document", "document_date", "rule_reading", "unexplained")
@@ -481,6 +500,7 @@ def compare(project: Project) -> dict:
     docs = project.documents()
     cutoff = project.read("project").get("cutoff")
     cutoff = cutoff if is_date(cutoff) else None
+    as_at = results.get("as_at") if is_date(results.get("as_at")) else None    # never invented: unknown is None
     try:
         previous = read_json(project.file("compare/compare"))
     except HandbookError:
@@ -490,15 +510,17 @@ def compare(project: Project) -> dict:
     ours_by_row, theirs_by_row, cells_by_row, full_totals = {}, {}, {}, {}
     this_run = {}                                    # every key we give, per scored row (history)
     question_ids = {q.get("id") for q in questions}
+    waits = needs.waiting(project)                   # answers that wait for the owner's data: not compared
+    ends = scales(project)                           # relative figures' ends among all the rows, once
     for unit in units:
         row = unit.get("id")
         cells = {q: c for q, c in (project.answers(row).get("cells") or {}).items()
-                 if isinstance(c, dict)}
+                 if isinstance(c, dict) and q not in (waits.get(row) or {})}
         if not any(c.get("state") in SCORED for c in cells.values()):
             if row in held:
                 not_compared.append({"row": row, "why": "not_scored"})
             continue
-        this_run[row], partial = _ours(project, unit, cells, "question", sheet)
+        this_run[row], partial = _ours(project, unit, cells, "question", sheet, ends)
         if row not in held:
             not_compared.append({"row": row, "why": "not_in_last_edition"})
             continue
@@ -513,10 +535,16 @@ def compare(project: Project) -> dict:
                 c = cells.get(k) or {}
                 ours_all[k] = c.get("value") if c.get("state") == "answered" else qmap_row[k].get("no_evidence_value")
         keys = [k for k in ours_all if theirs_row.get(k) is not None]
+        # A question last edition left blank (null in its results) is compared too: an answer found where
+        # they recorded none is a difference to see (hpc-pay, 21 Oct 2026: two answered blanks read as 21 of 21).
+        keys += [k for k in ours_all if level == "question" and k in question_ids and k in theirs_row
+                 and theirs_row[k] is None]
         if partial:
-            not_compared.append({"row": row, "why": "partial"})
+            # Last edition gave this row only a total: nothing to compare until the row is complete (KnowTheChain).
+            total_only = not any(k in question_ids or k in sections for k, v in theirs_row.items() if v is not None)
+            not_compared.append({"row": row, "why": "waiting" if row in waits else "total_only" if total_only else "partial"})
         if not partial and sheet.get("computable") is not False:
-            full_totals[row] = row_totals(project, unit, cells)
+            full_totals[row] = row_totals(project, unit, cells, ends)
         if not keys:
             if any(k.startswith("rank:") for k in theirs_row) and not partial:
                 not_compared.append({"row": row, "why": "rank_only"})
@@ -544,6 +572,8 @@ def compare(project: Project) -> dict:
         tol = results.get("tolerance")
 
         def agrees(k):
+            if theirs[k] is None:                  # left blank last edition: agrees only with no answer found
+                return (cells.get(k) or {}).get("state") != "answered"
             # A tolerance (last results that are a panel's mean, as Food-EPI's are) applies to answers.
             if k in qmap and _number(tol) and _number(ours[k]) and _number(theirs[k]):
                 return abs(ours[k] - theirs[k]) <= tol + 1e-9
@@ -558,12 +588,15 @@ def compare(project: Project) -> dict:
             if ok:
                 continue
             qids = _qids_under(key, scored, sections)
-            if (row, key) in keep:
+            if theirs[key] is None:
+                d = {"row": row, "key": key, "ours": ours[key], "theirs": None, "reason": "published_blank",
+                     "by": "files", "note": "Last edition left this blank; this edition found an answer.", "cells": qids}
+            elif (row, key) in keep:
                 d = {**keep[(row, key)], "row": row, "key": key, "ours": ours[key],
                      "theirs": theirs[key]}
                 d.setdefault("cells", qids)
             else:
-                reason, note = _reason(project, row, qids, cells, rules, docs, cutoff)
+                reason, note = _reason(project, row, qids, cells, rules, docs, cutoff, as_at)
                 d = {"row": row, "key": key, "ours": ours[key], "theirs": theirs[key],
                      "reason": reason, "by": "files", "note": note, "cells": qids}
             disagreements.append(d)
@@ -575,7 +608,8 @@ def compare(project: Project) -> dict:
            "summary": {"rows": len(rows),
                        "agree": {k: agree_counts[k] for k in key_order},
                        "of": {k: of_counts[k] for k in key_order},
-                       "not_compared": not_compared},
+                       "not_compared": not_compared,
+                       "as_at": as_at},
            "history": history,
            "rank_order": _rank_order(held, full_totals, unit_by_id),
            "big_moves": _big_moves(project, disagreements, history, cells_by_row, unit_by_id, sheet,

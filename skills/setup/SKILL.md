@@ -74,6 +74,9 @@ python3 "<lib>/hb.py" build --project "<project>"
   owner which cells changed and offer to re-run them (the run skill does re-runs). For a change
   apply-edits cannot carry (a level's meaning, a question's section), tell the owner first, make
   it directly, then list the scored cells it touches and offer to re-run them.
+- Confirming any other checklist item the owner has agreed (score sheet, group labels, cut-off, where to
+  look, data needs, rules), or marking a data need supplied or waived:
+  `python3 "<lib>/hb.py" confirm scoresheet,cutoff --project "<project>"` and `--need N1=waived`.
 
 ## The six steps
 

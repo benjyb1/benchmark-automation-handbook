@@ -7,6 +7,7 @@ so the range is the 25th to the 75th percentile of each step's per-row figures, 
 multiplied by the rows left."""
 from __future__ import annotations
 
+from . import needs
 from .folder import Project
 from .runs import cache_read_share
 
@@ -35,19 +36,24 @@ def _units(project: Project) -> dict:
             if isinstance(u, dict) and isinstance(u.get("id"), str)}
 
 
-def _n_questions(project: Project, unit: dict) -> int:
-    return len(project.questions_for(unit))
+def _n_questions(project: Project, unit: dict, held: dict | None = None) -> int:
+    """The questions a run would score on the row: those that apply, less any that wait for the owner's
+    data (`held`, needs.waiting)."""
+    mine = (held or {}).get(unit.get("id")) or {}
+    return len([q for q in project.questions_for(unit) if q.get("id") not in mine])
 
 
-def remaining_rows(project: Project, units: dict | None = None) -> list[str]:
+def remaining_rows(project: Project, units: dict | None = None, held: dict | None = None) -> list[str]:
     """Rows without a complete answers file: some question that applies has no answered,
-    no_evidence or not_applicable cell yet."""
+    no_evidence or not_applicable cell yet. An answer that waits for the owner's data (needs.py)
+    is not scored until it arrives, so it does not count."""
     units = _units(project) if units is None else units
+    held = needs.waiting(project) if held is None else held
     left = []
     for uid, unit in units.items():
         cells = project.answers(uid).get("cells", {}) or {}
         if any((cells.get(q.get("id")) or {}).get("state") not in DONE_STATES
-               for q in project.questions_for(unit)):
+               and q.get("id") not in (held.get(uid) or {}) for q in project.questions_for(unit)):
             left.append(uid)
     return left
 
@@ -111,8 +117,9 @@ def estimate(project: Project) -> dict:
     "per_row", "trial_run"}`. With no usable usage, point/low/high are None, `per_row` is empty
     and `note` says why."""
     units = _units(project)
-    left = remaining_rows(project, units)
-    counts = {r: _n_questions(project, units[r]) for r in left}
+    held = needs.waiting(project)
+    left = remaining_rows(project, units, held)
+    counts = {r: _n_questions(project, units[r], held) for r in left}
     cells = sum(counts.values())
     result = {"rows": len(left), "cells": cells, "point": None, "low": None, "high": None,
               "assumptions": [], "per_row": {}, "trial_run": None}
@@ -150,12 +157,23 @@ def estimate(project: Project) -> dict:
             per_cell.append(f["second"] / n)
             sent += n
     q_row = cells / len(left) if left else (
-        _mean([_n_questions(project, u) for u in units.values()]) if units else 1.0)
+        _mean([_n_questions(project, u, held) for u in units.values()]) if units else 1.0)
     q_row = max(q_row, 1.0)
     scale = 1 + QUESTION_FACTOR * (q_row - 1)
     share_rows = len(again) / len(figures)
     share_cells = sent / scored if scored else 0.0
-    steps = {"find": _step(find, 1.0), "second_find": _step(again, share_rows),
+    # A row left whose group (a company's products, a state's councils) had a row searched before it finds the
+    # group's own documents filed for it (cmd_find, "group"), so its finding costs less (nrdc-tissue, 21 Oct 2026).
+    from .costs import GROUP_FIND_SHARE, group_keys, row_chars
+    keys, looked = group_keys(project), set(row_chars(project))
+    seen = {k for r in looked for k in keys.get(r, ())}
+    followers = 0
+    for r in left:
+        mine = set(keys.get(r, ()))
+        followers += r not in looked and bool(mine & seen)
+        seen |= mine
+    reuse = (len(left) - followers + GROUP_FIND_SHARE * followers) / len(left) if left else 1.0
+    steps = {"find": _step(find, reuse), "second_find": _step(again, share_rows),
              "score": _step(score, scale), "second": _step(per_cell, share_cells * q_row)}
     point = sum(s["point"] for s in steps.values())
     low = min(sum(s["low"] for s in steps.values()), point)
@@ -182,6 +200,10 @@ def estimate(project: Project) -> dict:
              f"to run ({cells} cells in all).")
     a.append("Finding a row costs the trial's average per row. Usage recorded for a group is "
              "shared out equally over every row in that group.")
+    if followers:
+        a.append(f"{followers} of the {n} rows left share a group with a row searched before them, so that group's "
+                 f"own documents are filed for them already: finding for each is taken as {GROUP_FIND_SHARE:.0%} of "
+                 "the trial's figure (an assumption).")
     a.append(f"A full run scores every question, not one. Each extra question adds "
              f"{QUESTION_FACTOR:.0%} to the cost of the first (an assumption). The trial's per-row "
              f"scoring figure is first reduced by that for the questions the row scored in the trial, "

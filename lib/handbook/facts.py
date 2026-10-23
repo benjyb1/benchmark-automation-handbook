@@ -11,8 +11,9 @@ It never reads the held-back folder; the comparison figures come from `compare.j
 from __future__ import annotations
 import re
 
+from . import needs
 from .folder import HandbookError, Project, read_json
-from .scoresheet import ROUNDING_STEPS, round_half_up, row_totals
+from .scoresheet import ROUNDING_STEPS, round_half_up, row_totals, scales
 from .shapes import BIG_MOVE_WHY, FLAGS, REASONS, check_compare
 
 SCORED = ("answered", "no_evidence")
@@ -42,8 +43,10 @@ def _percent_mode(sheet: dict) -> str:
 # --- the facts ---------------------------------------------------------------------------------
 
 def _is_complete(project: Project, unit: dict, cells: dict) -> bool:
-    """Every question that applies to the row has a scored or not-applicable cell."""
-    return all((cells.get(q["id"]) or {}).get("state") in SCORED + ("not_applicable",)
+    """Every question that applies to the row has a scored or not-applicable cell, and none waits for
+    the owner's data (needs.py: such an answer counts as not run, 22 Oct 2026)."""
+    held = needs.waiting_in_row(project, unit["id"], cells)
+    return all(q["id"] not in held and (cells.get(q["id"]) or {}).get("state") in SCORED + ("not_applicable",)
                for q in project.questions_for(unit))
 
 
@@ -79,6 +82,7 @@ def compute(project: Project) -> dict:
     proj = project.read("project")
     sheet = project.read("scoresheet")
     computable = bool(sheet) and sheet.get("computable") is not False
+    ends = scales(project) if computable else {}          # relative figures' ends among all the rows, once
     mode = _percent_mode(sheet)
     units = [u for u in project.read("units").get("units", []) if isinstance(u, dict)]
     questions = project.read("questions").get("questions", [])
@@ -108,7 +112,7 @@ def compute(project: Project) -> dict:
         rows_scored += 1
         if _is_complete(project, unit, cells):
             complete_count += 1
-            totals = row_totals(project, unit, cells) if computable else None
+            totals = row_totals(project, unit, cells, ends) if computable else None
             if totals:
                 complete.append((unit, totals))
 

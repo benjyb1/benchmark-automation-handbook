@@ -38,6 +38,7 @@
 .hbg-sq:focus-visible { z-index: 2; outline: 2px solid var(--focus); outline-offset: 1px; }
 .hbg-sq.is-ne { color: var(--ink-2); font-weight: 400; box-shadow: inset 0 0 0 1px var(--rule-strong); background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink-2) 28%, transparent) 0 1px, transparent 1px 4px); }
 .hbg-sq.is-wait { box-shadow: inset 0 0 0 1px var(--rule-strong); }
+.hbg-sq.is-owner { box-shadow: none; outline: 1px dashed var(--ink-2); outline-offset: -1px; }
 .hbg-sq.is-na { box-shadow: none; }
 /* Many questions (RTI has 61): the sections wrap onto more lines and the squares keep a size a finger can
    hit, with no numbers in them (the shade carries the score; a tap opens the cell). */
@@ -66,6 +67,7 @@
     if (x.state === "answered" || x.state === "no_evidence") cls.push("hbg-s" + x.step);
     if (x.state === "no_evidence") cls.push("is-ne");
     if (x.state === "not_run") cls.push("is-wait");
+    if (x.owner) cls.push("is-owner");          // waits for data only the owner holds
     if (x.hl) cls.push("is-hl");
     if (x.rests) cls.push("is-rest");
     return h("a", {
@@ -75,7 +77,7 @@
       "data-q": q.id,
       "aria-label": x.label,
       title: x.label,
-    }, x.text, x.kinds.length ? HB.flagGlyph(x.kinds[0]) : null);
+    }, x.owner ? "" : x.text, x.kinds.length ? HB.flagGlyph(x.kinds[0]) : null);     // a waiting square is dashed, with no word
   }
 
   function card(ctx, m, unit) {
@@ -84,7 +86,7 @@
     return h("div", { class: "hbg-li", role: "listitem" },
       h("span", { class: "hbg-li__name" }, unit.name || unit.id, HB.gridGaps.marker(unit)),
       h("span", { class: "hbg-li__tot" }, m.overallText(t),
-        t && t.partial ? h("span", { class: "visually-hidden" }, " (partial)") : null),
+        t && t.partial ? h("span", { class: "hbg-partial" }, m.partialWords(t)) : null),     // never a bare figure
       docs ? h("span", { class: "hbg-docnote" }, docs) : flagSummary(m, unit),
       m.bandNode(m.bandName(unit)),
       docs ? null : h("span", { class: "hbg-li__strip" + (m.sections.reduce((n, sec) => n + sec.qs.length, 0) > 16 ? " hbg-li__strip--many" : "") }, m.sections.map((sec) =>

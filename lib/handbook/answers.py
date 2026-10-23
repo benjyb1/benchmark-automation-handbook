@@ -13,6 +13,11 @@ A question's `answer` is one of three kinds:
   unless the owner's scheme turns ranges into levels instead.
 
 Built 14 Oct 2026 for CIWF EggTrack, whose answers are percentages beside NR and NC.
+
+A figure counts in the totals when its answer has `points` (21 Oct 2026, RSF and CCPI): it is then worth
+`points` x (figure - min) / (max - min), or (max - figure) / (max - min) with `lower_is_better`. With
+`relative`, the ends are the lowest and highest figures among all the rows instead (`best` and `worst`
+fix either end), so the points are known only once every row is scored (scoresheet.py works the ends out).
 """
 from __future__ import annotations
 
@@ -68,8 +73,57 @@ def points_for(question, value):
     return MISSING
 
 
+def counts(question) -> bool:
+    """Whether a number question's figures count in the totals (its answer has `points`)."""
+    return is_number(question) and _num(answer_of(question).get("points")) and answer_of(question)["points"] > 0
+
+
+def relative(question) -> bool:
+    """Whether a counting figure is scored against all the rows' figures."""
+    return counts(question) and answer_of(question).get("relative") is True
+
+
+def ends(question, figures=()) -> tuple | None:
+    """(worst, best) for a counting figure: its min and max (the other way round with
+    lower_is_better), or for a relative one the rows' `figures`, with `best` or `worst` fixed when the
+    method fixes them. None when there is nothing to scale by."""
+    a = answer_of(question)
+    lower = a.get("lower_is_better") is True
+    if relative(question):
+        vals = [v for v in figures if _num(v)]
+        lo, hi = (min(vals), max(vals)) if vals else (None, None)
+        worst, best = (hi, lo) if lower else (lo, hi)
+        worst = a["worst"] if _num(a.get("worst")) else worst
+        best = a["best"] if _num(a.get("best")) else best
+    else:
+        lo, hi = a.get("min"), a.get("max")
+        worst, best = (hi, lo) if lower else (lo, hi)
+    return (worst, best) if _num(worst) and _num(best) else None
+
+
+def figure_points(question, value, scale=None):
+    """The points a figure earns in the totals: its place between the worst and best ends (`scale`,
+    from `ends`; a relative figure needs it), times the answer's `points`, kept within 0 and those
+    points. When every row has the same figure, each earns the full points. None when it cannot be
+    worked out."""
+    if not (counts(question) and _num(value)):
+        return None
+    scale = scale if scale is not None else (None if relative(question) else ends(question))
+    if scale is None:
+        return None
+    worst, best = scale
+    top = answer_of(question)["points"]
+    if best == worst:
+        return top
+    share = (value - worst) / (best - worst)
+    return top * min(1.0, max(0.0, share))
+
+
 def top_points(question):
-    return max((lv.get("points") or 0 for lv in levels(question) if _num(lv.get("points"))), default=0)
+    tops = [lv.get("points") or 0 for lv in levels(question) if _num(lv.get("points"))]
+    if counts(question):
+        tops.append(answer_of(question)["points"])
+    return max(tops, default=0)
 
 
 def show_figure(question, value) -> str:

@@ -146,6 +146,33 @@ def pdf_date(info: dict) -> str | None:
     return None
 
 
+_URL_DATES = (re.compile(r"/((?:19|20)\d{2})/(0[1-9]|1[0-2])/(0[1-9]|[12]\d|3[01])(?:/|$|[^\d])"),
+              re.compile(r"(?<!\d)((?:19|20)\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])(?!\d)"))
+
+
+def url_date(url) -> str | None:
+    """A full date written in a web address (/2025/05/29/ or 2025-05-29), as YYYY-MM-DD; None for a year
+    or month alone, a bare run of digits (it may be an id) or no such day."""
+    for pattern in _URL_DATES:
+        m = pattern.search(str(url or ""))
+        if m:
+            day = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            return day if is_date(day) else None
+    return None
+
+
+def date_from_url(meta: dict) -> None:
+    """Date a document from its address when nothing else dated it (`date_basis` "url"): never after the day
+    it was saved. A document with no date stays undated: the day it was saved is not its date (RSF,
+    21 Oct 2026)."""
+    if meta.get("date") is not None:
+        return
+    day = url_date(meta.get("url"))
+    saved = str(meta.get("fetched") or "")[:10]
+    if day and (not is_date(saved) or day <= saved):
+        meta["date"], meta["date_basis"] = day, "url"
+
+
 # --- one document -------------------------------------------------------------------------------
 
 def find_original(project, doc: str) -> Path | None:
@@ -232,6 +259,8 @@ def prepare_document(project, doc: str) -> dict:
     names = write_pictures(folder, reading.pictures)
     for n in reading.ocr_pages:
         pages[n - 1]["ocr"] = True
+    for n in reading.poor_pages:
+        pages[n - 1]["poor"] = True        # its words were read poorly from the picture (readers.POOR_OCR)
     for n, files in names.items():
         pages[n - 1]["images"] = files
     language = guess_language("\n".join(texts))
@@ -267,6 +296,17 @@ def prepare_document(project, doc: str) -> dict:
     elif meta.get("date_basis") == "pdf metadata" and (meta.get("date") in PLACEHOLDER_DATES
                                                        or str(meta.get("date") or "") < EARLIEST_PDF):
         meta["date"], meta["date_basis"] = None, None       # a placeholder kept by an older tool
+    if kind == "html" and meta.get("date_basis") in (None, "archive capture"):
+        # A web page saved before the tool read its own published date (fetch.page_date, sweep round 3) is
+        # dated from it now: an archive capture says only that the page existed by then.
+        from .fetch import page_date
+        captured = meta.get("date") if meta.get("date_basis") == "archive capture" else None
+        said = page_date(path.read_bytes(), captured or str(meta.get("fetched") or "")[:10] or None)
+        if said:
+            if captured:
+                meta["archived_on"] = captured
+            meta["date"], meta["date_basis"] = said, "page text"
+    date_from_url(meta)          # the page's own words first, then a full date in its address, else unknown
     write_json(folder / "meta.json", meta)
     return {"doc": doc, "kind": kind, "pages": len(pages),
             "empty_pages": sum(1 for t in texts if not t.strip()),

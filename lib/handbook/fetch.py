@@ -206,6 +206,8 @@ def describe_failure(result: FetchResult) -> str:
         return "the site answered 202 (it often means a check for robots, with no page sent)"
     if result.failure == "http-429":
         return "the site answered 429 (too many requests) each time, even after waiting"
+    if result.failure == "robot-check":
+        return "the site sent a robot check (a page asking to prove a person is visiting), not the document"
     if result.failure and result.failure.startswith("http-"):
         return f"the site answered {result.failure[5:]}"
     if result.failure:
@@ -296,6 +298,64 @@ def html_title(content: str | bytes) -> str:
     return re.sub(r"\s+", " ", html.unescape(m.group(1))).strip()[:200] if m else ""
 
 
+MONTHS = {m: i for i, m in enumerate(["january", "february", "march", "april", "may", "june", "july", "august",
+                                      "september", "october", "november", "december"], 1)}
+MONTHS.update({m[:3]: i for m, i in list(MONTHS.items())})
+MONTHS["sept"] = 9
+_MON = (r"(january|february|march|april|may|june|july|august|september|sept|october|november|december"
+        r"|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\.?")
+# Where a page says when it was published or last changed: meta tags and structured data first, then the words
+# a page prints ("Published: 21 June 2024"). Only these: a bare date on a page is as often today's or an event's.
+_META_DATE = re.compile(r"(?is)<meta[^>]+(?:property|name|itemprop)\s*=\s*[\"'](?:article:published_time|"
+                        r"article:modified_time|og:updated_time|datePublished|dateModified|date|dc\.date(?:\.issued|"
+                        r"\.modified)?|dcterms\.(?:issued|modified|date)|publish[-_]?date|last[-_]modified)[\"'][^>]*>")
+_CONTENT = re.compile(r"(?is)content\s*=\s*[\"']([^\"']+)[\"']")
+_LD_DATE = re.compile(r"(?is)\"(?:datePublished|dateModified)\"\s*:\s*\"([^\"]+)\"")
+_WORDS_DATE = re.compile(r"(?i)\b(?:published|posted|first published|date published|last updated|updated|last modified)"
+                         r"(?:\s+on)?\s*:?\s*(\d{1,2}(?:st|nd|rd|th)?\s+" + _MON + r",?\s+\d{4}|" + _MON
+                         + r"\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{4}-\d{2}-\d{2})")
+
+
+def _as_date(text: str) -> str | None:
+    """"2024-06-21T09:00:00Z", "21 June 2024", "June 21st, 2024" -> "2024-06-21"; None otherwise."""
+    text = (text or "").strip().lower()
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m = re.match(r"(\d{1,2})(?:st|nd|rd|th)?\s+" + _MON + r",?\s+(\d{4})", text)
+        if m:
+            d, mo, y = int(m.group(1)), MONTHS[m.group(2)], int(m.group(3))
+        else:
+            m = re.match(_MON + r"\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})", text)
+            if not m:
+                return None
+            mo, d, y = MONTHS[m.group(1)], int(m.group(2)), int(m.group(3))
+    if not (1990 <= y <= 2100 and 1 <= mo <= 12 and 1 <= d <= 31):
+        return None
+    return f"{y:04d}-{mo:02d}-{d:02d}"
+
+
+def page_date(content: str | bytes, latest: str | None = None) -> str | None:
+    """The date an HTML page says it was published or last changed (the later of the two when it gives both),
+    from its meta tags, structured data or printed words; None when it says neither. A date after `latest`
+    (the day the copy was taken) is ignored. InfluenceMap, sweep round 3: Unilever news pages printed
+    "Published: 21 June 2024" and were dated by their archive capture, 2026-07-12."""
+    if isinstance(content, bytes):
+        content = decode_html(content)
+    content = content or ""
+    found = []
+    for tag in _META_DATE.findall(content):
+        m = _CONTENT.search(tag)
+        if m:
+            found.append(_as_date(m.group(1)))
+    found += [_as_date(v) for v in _LD_DATE.findall(content)]
+    if not any(found):
+        found += [_as_date(m.group(1)) for m in _WORDS_DATE.finditer(html_text(content)[:20000])]
+    dates = sorted(d for d in found if d and (latest is None or d <= latest))
+    return dates[-1] if dates else None
+
+
 def title_from_name(name: str) -> str:
     """A readable title from a file name or address ending: no extension, separators as spaces."""
     stem = re.sub(r"\.[A-Za-z0-9]{1,5}$", "", urllib.parse.unquote(name).strip())
@@ -378,10 +438,12 @@ def resolve_rows(project, rows=None, group=None) -> list[str]:
     return [i for i in ids if i in chosen]
 
 
-def add_to_found(project, rows, doc_id: str) -> list[str]:
+def add_to_found(project, rows, doc_id: str, named=None) -> list[str]:
     """Put `doc_id` in `found/<row>.json` for each row; returns the rows it was newly added to. A row it
     was taken off (`found --remove`) is skipped: re-fetching the page must not put it back (ACES re-test,
-    15 Oct 2026: a page giving the camp's ACES level came back on the next fetch)."""
+    15 Oct 2026: a page giving the camp's ACES level came back on the next fetch). When `named` is given
+    (the rows a search was for), a row it reaches only through a group also lists it under `shared`: a
+    search for another row of its group found it, so the row's own documents are still to look for."""
     added = []
     for row in rows:
         found = project.found(row)
@@ -391,6 +453,8 @@ def add_to_found(project, rows, doc_id: str) -> list[str]:
         docs = found.setdefault("documents", [])
         if doc_id not in docs:
             docs.append(doc_id)
+            if named is not None and row not in named:
+                found.setdefault("shared", []).append(doc_id)
             project.write_found(row, found)
             added.append(row)
     return added
@@ -480,6 +544,14 @@ def set_as_at(project, doc_id: str, when: str, basis: str = "owner") -> None:
     meta = read_json(path)
     meta["date"], meta["date_basis"] = when, basis
     write_json(path, meta)
+
+
+def same_content(project, digest: str) -> Optional[str]:
+    """The id of a document on file whose saved bytes have this SHA-1, or None."""
+    if not digest:
+        return None
+    return next((d for d, meta in sorted(project.documents().items())
+                 if isinstance(meta, dict) and meta.get("sha1") == digest and not meta.get("not_kept_why")), None)
 
 
 def has_document(project, doc_id: str) -> bool:

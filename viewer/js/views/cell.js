@@ -31,7 +31,9 @@
 
    Correct this, under the answer: the owner gives evidence (a quote, and where
    it is: a document already saved for the row and its page, a link, or a file
-   uploaded through HB.supply's upload), the answer it should be, or both. One
+   uploaded through HB.supply's upload), the answer it should be, or both. On a
+   question whose answer is a figure, the answer is typed in a number box with
+   its unit, beside any other answers it takes such as ND. One
    doc per round goes to the `corrections` collection; Claude checks it with
    `hb apply-corrections` and a blind re-read of that one question. The panel
    then says "Your correction, waiting for Claude", "Your answer, confirmed by
@@ -43,9 +45,11 @@
      submit(spec)        Promise of the saved doc. spec {row, qid, value, reason,
                          evidence: {quote, doc, page, link, asset, file},
                          upload (a File, uploaded first), keep}; value is one of
-                         the question's level values or null; a plain sentence
-                         is thrown for anything missing
+                         the question's level values, a figure a number question
+                         takes (a number, or text such as "1,250.5"), or null; a
+                         plain sentence is thrown for anything missing
      keep(row, qid)      keep an answer Claude disagreed with: submit({keep: true})
+     open(row, qid)      the Correct this dialog for that answer
      forCell(row, qid)   every round, oldest first: the doc's fields plus state
                          "waiting" | "agreed" | "disagreed" | "kept" | "reread"
                          (evidence only: Claude's re-read is the answer) |
@@ -73,8 +77,10 @@
     after_cutoff: "After cut-off",
     todays_version: "Only today's copy",
     reads_disagree: "Second read differs",
-    weak_source: "Not from the company",
+    weak_source: "Not from its own source",
     owner_changed: "Changed by the owner",
+    holds_back: "Holds the row below its next level",
+    needs_document: "Needs a document you can add",
   };
   // Glyphs for when the grid's HB.flagGlyph is not there; the words beside them
   // carry the meaning.
@@ -87,8 +93,9 @@
     reads_disagree: () => [svg("circle", { cx: 6, cy: 6, r: 4.4 }), svg("path", { class: "is-fill", d: "M6 1.6a4.4 4.4 0 0 1 0 8.8z" })],
     weak_source: () => [svg("path", { d: "M3 10V7.4" }), svg("path", { d: "M6 10V5M9 10V2.6", opacity: "0.4" })],
     owner_changed: () => [svg("path", { d: "M3.6 8.4 8.8 3.2" }), svg("path", { class: "is-fill", d: "M2.4 9.6l.7-2.3 1.6 1.6z" })],
+    needs_document: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M6 4v4M4 6h4" })],
   };
-  const HOST_WORDS = { issuer: "the company's own site", third_party: "another organisation's site", repository: "a document library" };
+  const HOST_WORDS = { issuer: "its own site", third_party: "another organisation's site", repository: "a document library" };
   const NOT_KEPT = "Saved copy not kept.";
   const FLAGGED_KEY = "panel-flagged-only";
   let languageNames = null;
@@ -145,6 +152,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
 .cellp-fixset { display: grid; gap: var(--s3); min-width: 0; margin: 0; padding: var(--s3); border: 1px solid var(--rule); border-radius: var(--radius); }
 .cellp-fixset > legend { padding-inline: var(--s1); font-size: var(--fs-14); font-weight: 600; }
 .cellp-fixwhere { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s4); }
+.cellp-fix-figurebox { display: inline-flex; align-items: center; gap: var(--s2); }
+.cellp-fix-figurebox .input { max-width: 12rem; }
 .cellp-nav { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); color: var(--ink-2); font-size: var(--fs-12); }
 .cellp-nav .btn { gap: var(--s1); }
 .cellp-nav__pos { margin-right: auto; font-variant-numeric: tabular-nums; }
@@ -799,7 +808,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       if (e.quote && !onPage(e.quote, pageText)) {
         verdict = { agree: false, value: null, why: "Those words aren't on page " + e.page + " of " + title + " as saved. Check the page number, or copy the words exactly." };
       } else if (meta && meta.weak) {
-        verdict = { agree: false, value: null, why: title + " isn't the company's own document, so it can't decide the answer." };
+        verdict = { agree: false, value: null, why: title + " isn't its own document, so it can't decide the answer." };
       } else if (meta && cutoff && typeof meta.date === "string" && meta.date > cutoff) {
         verdict = { agree: false, value: null, why: title + " is dated after the cut-off (" + cutoff + ")." };
       } else if (!ask) {
@@ -843,8 +852,16 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     let value = null;
     if (s.value != null && s.value !== "") {
       const level = levelFor(q, s.value);
-      if (!level) throw new Error("That is not one of the answers to question " + qid + ".");
-      value = level.value;
+      if (level) {
+        value = level.value;
+      } else if (HB.isFigureQuestion(q)) {
+        // A figure (hpc-pay, 21 Oct 2026: a pay ratio could not be corrected, only evidence pasted).
+        const n = typeof s.value === "number" ? s.value : Number(String(s.value).replace(/[,\s]/g, ""));
+        if (!figureOk(q, n)) throw new Error("That is not a figure question " + qid + " takes. " + HB.figureWords(q) + ".");
+        value = n;
+      } else {
+        throw new Error("That is not one of the answers to question " + qid + ".");
+      }
     }
     const e = s.evidence || {};
     const page = e.page == null || e.page === "" ? null : Number(e.page);
@@ -866,6 +883,12 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     return save({ row, qid, value, reason: clean(s.reason), evidence: ev });
   }
 
+  // Whether n is a figure this number question takes: inside its min and max (answers.py figure_ok).
+  function figureOk(q, n) {
+    const a = (q && q.answer) || {};
+    return typeof n === "number" && Number.isFinite(n) && (!isNum(a.min) || n >= a.min) && (!isNum(a.max) || n <= a.max);
+  }
+
   async function save(body) {
     // What the page showed, so a colleague's newer change is not overwritten unseen (team.py).
     const shown = HB.data && typeof HB.data.cell === "function" ? HB.data.cell(body.row, body.qid) : null;
@@ -884,6 +907,11 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     },
     submit: submitFix,
     keep: (row, qid) => submitFix({ row, qid, keep: true }),
+    open: (row, qid) => {
+      const q = HB.data.questionFor(row, qid);
+      if (!q || !HB.data.cell(row, qid)) return Promise.resolve(false);
+      return correctDialog({ bundle: HB.data.bundle() || {}, data: HB.data }, row, qid, q, null);
+    },
     /** Check the latest waiting correction on an answer in the page now (the chat's "check it"). */
     check: (row, qid) => {
       const r = forCell(row, qid).filter((x) => x.state === "waiting").pop();
@@ -911,6 +939,14 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     if (!cell) {
       return section(null, h("p", { class: "cellp-ans" }, h("strong", null, "Does not apply"), " to this " + unitWord + "."));
     }
+    if (cell.waiting) {
+      // Only the owner holds the data this answer rests on (needs.py): it is scored once they send it.
+      const need = HB.data.need(cell.waiting);
+      return section(null,
+        h("p", { class: "cellp-ans" }, h("strong", null, "Waiting for your data")),
+        need && need.what ? h("p", { class: "cellp-sub" }, need.what) : null,
+        h("p", { class: "cellp-sub" }, "Only you hold this, so Claude does not look for it on the web. Drop the file on the chat and say what it is for; this answer is then scored from it."));
+    }
     if (cell.state !== "answered" && cell.state !== "no_evidence") {
       return section(null, h("p", { class: "cellp-ans" }, h("strong", null, STATE_WORDS[cell.state] || String(cell.state || "Not recorded"))));
     }
@@ -925,6 +961,10 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       sub.push("Second read: " + valueWord(q, cell.second_read.value) + (cell.second_read.agrees ? ", agrees" : ", differs"));
     }
     out.push(h("p", { class: "cellp-sub" }, sub.filter(Boolean).join(" · ")));
+    if (cell.proposal) {
+      // The method leaves this rating to the owner's experts: whatever Claude's confidence, it is their call.
+      out.push(h("p", { class: "cellp-sub" }, h("strong", null, "A proposal for your experts"), " to confirm, since your method leaves this rating to them."));
+    }
     if (rest) {
       out.push(h("details", { class: "cellp-more" },
         h("summary", null, "What this level means"),
@@ -1103,14 +1143,35 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     showPlace();
     const levels = q && q.answer && Array.isArray(q.answer.levels) ? q.answer.levels : [];
     const top = topPoints(q);
+    const figure = HB.isFigureQuestion(q);
     const answer = h("select", { class: "input", id: "cellp-fix-value" },
-      h("option", { value: "" }, "No answer, just the evidence"),
+      h("option", { value: "" }, figure ? "None of these" : "No answer, just the evidence"),
       levels.map((l, i) => {
         const name = meaningParts(q, l)[0];
         return h("option", { value: String(i) }, valueWord(q, l.value) + " (" + pointsWords(l.points, top) + ")" + (name ? ": " + name.slice(0, 80) : ""));
       }));
     const pre = prefill && prefill.value != null ? levels.findIndex((l) => sameValue(l.value, prefill.value)) : -1;
     answer.value = pre >= 0 ? String(pre) : "";
+    // A figure is typed, with its unit, beside the answers that are not figures such as ND (hpc-pay, 21 Oct
+    // 2026: "It should be" offered only No answer and ND, so a pay ratio could not be corrected).
+    let box = null;
+    let answerFields;
+    if (figure) {
+      const a = q.answer || {};
+      box = h("input", { type: "number", class: "input", id: "cellp-fix-figure", step: "any", inputmode: "decimal",
+        min: isNum(a.min) ? String(a.min) : null, max: isNum(a.max) ? String(a.max) : null, "aria-describedby": "cellp-fix-figure-hint" });
+      if (prefill && isNum(prefill.value)) box.value = String(prefill.value);
+      answerFields = [
+        h("div", { class: "field" },
+          h("label", { class: "field__label", for: "cellp-fix-figure" }, "It should be"),
+          h("span", { class: "cellp-fix-figurebox" }, box, a.unit ? h("span", { class: "cellp-fix-unit" }, String(a.unit)) : null),
+          h("p", { class: "hb-hint", id: "cellp-fix-figure-hint" }, HB.figureWords(q) + ". Leave it empty to give only the evidence"
+            + (levels.length ? ", or choose another answer below." : "."))),
+        levels.length ? HB.edits.field("cellp-fix-value", "Or instead", answer) : null,
+      ];
+    } else {
+      answerFields = [HB.edits.field("cellp-fix-value", "It should be", answer)];
+    }
     const reason = HB.edits.textControl("cellp-fix-reason", "", true);
     reason.rows = 3;
     const body = [
@@ -1119,7 +1180,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
         h("div", { class: "cellp-fixwhere", role: "radiogroup", "aria-label": "Where the words are" }, radios.map((r) => r.node)),
         groups.doc && kept.length ? groups.doc : null, groups.link, groups.asset),
       h("fieldset", { class: "cellp-fixset", id: "cellp-fix-answer" }, h("legend", null, "The answer"),
-        HB.edits.field("cellp-fix-value", "It should be", answer),
+        answerFields,
         HB.edits.field("cellp-fix-reason", "Why (optional)", reason)),
     ];
     return HB.edits.dialog({
@@ -1132,6 +1193,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
         const place = (radios.find((r) => r.input.checked) || radios[0]).k;
         const words = quote.value.trim();
         const level = answer.value === "" ? null : levels[Number(answer.value)];
+        const typed = box ? box.value.trim() : "";
+        if (typed && level) throw new Error("Give a figure or one of the other answers, not both.");
         const evidence = { quote: words || null, doc: null, page: null, link: null, asset: null, file: null };
         let upload = null;
         if (words && place === "doc") {
@@ -1143,7 +1206,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
           upload = file && file.files && file.files[0] ? file.files[0] : null;
           if (!upload) throw new Error("Choose the file the words are in.");
         }
-        await submitFix({ row, qid, value: level ? level.value : null, reason: reason.value, evidence, upload });
+        await submitFix({ row, qid, value: typed || (level ? level.value : null), reason: reason.value, evidence, upload });
       },
     });
   }
@@ -1218,7 +1281,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       const whys = Array.from(new Set(cited.map((d) => docs[d].weak && docs[d].weak.why).filter(Boolean)));
       const why = whys.length ? " (" + whys.join("; ").replace(/^./, (c) => c.toLowerCase()) + ")" : "";
       return ["Every document behind this answer is a weak source" + why +
-        ". The answer may still be right, but look for the company's own statement before relying on it."];
+        ". The answer may still be right, but look for its own statement before relying on it."];
     }
     if (kind === "after_cutoff") {
       const cut = typeof p.cutoff === "string" ? p.cutoff.slice(0, 10) : null;
@@ -1238,6 +1301,14 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       const why = one && one.todays_version.why ? " (" + one.todays_version.why + ")" : "";
       return [what + ", not as it stood at the cut-off" + (cut ? " (" + dateText(cut) + ")" : "") +
         ", because no older copy could be got" + why + ". The page may have changed since: check it, or send a copy from before the cut-off."];
+    }
+    if (kind === "needs_document") {
+      // what the scorer named, from the row's missing list (found/ROW.json, a scorer's entry for this question)
+      const named = ((HB.data && HB.data.gaps ? HB.data.gaps(unit.id).missing : []) || [])
+        .filter((m) => m.by === "scorer" && m.questions.includes(String(q.id))).map((m) => "‘" + m.what + "’");
+      return ["Claude needed " + (named.length ? named.join(" and ") : "a document") + " for this answer and could not get it, " +
+        "so it is scored as if there were nothing (" + valueWord(q, cell.value) + "), which may not be right. If you have it, " +
+        "add it from this " + (p.unit_word || "row") + "'s missing documents on the Grid and the answer is scored again."];
     }
     if (kind === "owner_changed") {
       const o = cell.owner || {};
@@ -1337,10 +1408,11 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
   function evidenceParts(ctx, row, cell) {
     const evidence = (Array.isArray(cell.evidence) ? cell.evidence : []).filter((e) => e && typeof e === "object");
     if (!evidence.length) {
-      const empty = cell.state === "answered" ? "No evidence recorded for this answer."
-        : cell.state === "no_evidence" ? "Nothing was found for this question."
-          : cell.state === "not_run" ? "Not scored yet, so there is no evidence."
-            : "No evidence recorded.";
+      const empty = cell.waiting ? "Waits for data you need to supply, so there is no evidence yet."
+        : cell.state === "answered" ? "No evidence recorded for this answer."
+          : cell.state === "no_evidence" ? "Nothing was found for this question."
+            : cell.state === "not_run" ? "Not scored yet, so there is no evidence."
+              : "No evidence recorded.";
       return { sections: [section("cellp-quotesec", heading("Quote"), h("p", { class: "cellp-none" }, empty))], show: () => {} };
     }
     const docs = ctx.bundle.documents || {};
@@ -1386,7 +1458,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       sourceBody.replaceChildren(...[
         h("p", { class: "cellp-doc" }, doc.title ? String(doc.title) : "Untitled document"),
         h("p", { class: "cellp-meta" }, meta.join(" · ")),
-        doc.weak && doc.weak.why ? h("p", { class: "cellp-meta" }, h("strong", null, "Not from the company: "), String(doc.weak.why)) : null,
+        doc.weak && doc.weak.why ? h("p", { class: "cellp-meta" }, h("strong", null, "Not from its own source: "), String(doc.weak.why)) : null,
         links.length ? h("div", { class: "cellp-links" }, links) : null,
       ].filter(Boolean));
 

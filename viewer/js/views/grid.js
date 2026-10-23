@@ -68,6 +68,8 @@
     reads_disagree: "a second, independent read gave a different answer",
     weak_source: "every document cited is a weak source, such as a copy on another site",
     owner_changed: "the owner corrected this answer; open it to see whether Claude agreed",
+    holds_back: "this answer keeps the {unit} below its next level, which needs every question below it met, so it is worth a second look",
+    needs_document: "scored as if there were nothing, because Claude needed a document it could not get; you can add it",
   };
   let lastHighlight = "";          // the highlight last scrolled into view
 
@@ -178,6 +180,7 @@
 .hbg-mk.is-na::after { display: none; }
 .hbg-mk.is-wait { background: transparent; box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .hbg-mk.is-wait::after { display: none; }
+.hbg-mk.is-owner { box-shadow: none; outline: 1px dashed var(--ink-2); outline-offset: -1px; }
 /* A flag is a red corner on the mark itself, so it can only belong to that answer (a line between rows read as the row above). */
 .hbg-mk.is-flag::before { content: ""; position: absolute; z-index: 1; top: 0; right: 0; border-style: solid; border-width: 0 8px 8px 0; border-color: transparent var(--critical) transparent transparent; border-top-right-radius: 2px; }
 .hbg-mk__stale { position: absolute; top: 0; left: 0; z-index: 1; border-style: solid; border-width: 6px 6px 0 0; border-color: var(--ink) transparent transparent transparent; }
@@ -210,6 +213,8 @@
 .hbg-cell:focus-visible { z-index: 2; outline: 2px solid var(--focus); outline-offset: 1px; }
 .hbg-cell.is-muted { color: var(--ink-2); font-weight: 400; }
 .hbg-cell.is-wait::after { content: ""; position: absolute; inset: 4px 5px; border: 1px solid var(--rule-strong); border-radius: 2px; }
+.hbg-cell.is-owner { color: var(--ink-2); font-size: var(--fs-12); font-weight: 400; }
+.hbg-cell.is-owner::after { border-style: dashed; border-color: var(--ink-2); }
 .hbg-s1 { background: var(--shade-1); }
 .hbg-s2 { background: var(--shade-2); }
 .hbg-s3 { background: var(--shade-3); }
@@ -394,8 +399,15 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       b.word ? h("span", { class: "hbg-tier__word" }, " · " + b.word) : null);
   }
 
+  // A partial total (answers waiting for the owner's data, or not scored yet) is never printed as a
+  // figure: 100.0 from the one section scored so far reads as complete (22 Oct 2026). Its words say why.
   function overallText(cols, t) {
+    if (t && t.partial) return DASH;
     return t && isNum(t.overall) ? fmtNum(t.overall, 1) + (cols && cols.overallPct ? "%" : "") : DASH;
+  }
+
+  function partialWords(t) {
+    return t && t.waiting && t.waiting.length ? "incomplete, waits for your data" : "partial";
   }
 
   // The short number of a question inside its section: "1.4" in a section whose
@@ -445,7 +457,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         const c = cells[qid];
         if (c.state === "answered") answered += 1;
         else if (c.state === "no_evidence") ne += 1;
-        else if (c.state !== "not_applicable") left += 1;
+        else if (c.state !== "not_applicable" && !c.waiting) left += 1;     // waiting for the owner is not left to run
       }
       waiting += left;
       if (!left) done += 1;
@@ -505,7 +517,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const sections = sectionsFor(bundle, qidsAll);
 
     // Counts over the rows in view.
-    const counts = { answered: 0, ne: 0, waiting: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
+    const counts = { answered: 0, ne: 0, waiting: 0, owner: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
     for (const k of HB.flagKinds.factual) counts.kinds[k] = 0;
     const restsByQ = new Map();
     const cellInfo = new Map();
@@ -515,6 +527,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         if (!c) continue;
         if (c.state === "answered") counts.answered += 1;
         else if (c.state === "no_evidence") counts.ne += 1;
+        else if (c.waiting) counts.owner += 1;
         else if (c.state !== "not_applicable") counts.waiting += 1;
         const kinds = HB.factualFlags(c);
         if (kinds.length) counts.flagged += 1;
@@ -579,11 +592,20 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       } else if (c.state === "not_applicable") {
         out.text = "n/a";
         words = "does not apply";
+      } else if (c.waiting) {
+        // Only the owner holds the data this answer rests on (needs.py): not "no evidence", and not left to run.
+        const need = ctx.data.need ? ctx.data.need(c.waiting) : null;
+        out.state = "not_run";
+        out.owner = c.waiting;
+        out.text = "data";
+        const what = need && need.what ? String(need.what) : "";
+        words = "waits for data you need to supply" + (what ? ": " + (what.length > 90 ? what.slice(0, 89) + "…" : what) : "");
       } else {
         out.state = "not_run";
         out.text = "";
         words = "not scored yet";
       }
+      if (c.proposal) words += ", a proposal for your experts";          // the method leaves this rating to them
       if (out.kinds.length) words += ", flagged: " + out.kinds.map((k) => HB.flagKinds.words[k]).join(", ");
       if (out.stale) words += ", the question changed since";
       if (c.checked) {
@@ -613,9 +635,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     };
     m.bandName = (unit) => {
       const t = m.totals(unit);
-      return m.cols && m.cols.band && t && t.bands ? t.bands[m.cols.band] || null : null;
+      return m.cols && m.cols.band && t && !t.partial && t.bands ? t.bands[m.cols.band] || null : null;   // no tier until complete
     };
     m.overallText = (t) => overallText(m.cols, t);
+    m.partialWords = partialWords;
     m.bandText = bandText;
     m.bandNode = bandNode;
     m.shortIds = shortIds;
@@ -626,6 +649,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const cls = [base];
     if (x.state === "no_evidence") cls.push("is-ne");
     if (x.state === "not_run") cls.push("is-wait");
+    if (x.owner) cls.push("is-owner");
     if (x.kinds.length) cls.push("is-flag");
     if (x.stale) cls.push("is-stale");
     if (x.hl) cls.push("is-hl");
@@ -696,6 +720,9 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   function tierCell(ctx, m, unit, t) {
     const scored = ctx.bundle.cells && ctx.bundle.cells[unit.id]
       ? Object.values(ctx.bundle.cells[unit.id]).some((c) => ctx.data.isScored(c)) : false;
+    if (t && t.partial && t.waiting && t.waiting.length) {
+      return h("span", { class: "hbg-tier", title: "Some answers wait for data you need to supply, so this total is incomplete" }, "Waits for your data");
+    }
     if (t && t.partial) {
       return scored ? h("span", { class: "hbg-tier", title: "Not every question is scored yet" }, "Partial score") : h("span", { class: "hbg-tier" }, "");
     }
@@ -778,10 +805,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const partial = Boolean(t && t.partial);
     const out = cols.sections.map((s, i) => h("td", {
       class: "hbg-tot" + (i === 0 ? " hbg-start" : ""),
-      title: t && t.bands && t.bands[s.id] ? String(s.id) + ": " + bandText(t.bands[s.id]) : null,
+      title: t && !partial && t.bands && t.bands[s.id] ? String(s.id) + ": " + bandText(t.bands[s.id]) : null,
     }, sectionText(s, t && t.sections ? t.sections[s.id] : null, partial)));
     out.push(h("td", { class: "hbg-tot hbg-overall hbg-pin-n" + (cols.sections.length ? "" : " hbg-start") },
-      m.overallText(t), partial ? h("span", { class: "hbg-partial" }, "partial") : null));
+      m.overallText(t), partial ? h("span", { class: "hbg-partial" }, partialWords(t))
+        : t && isNum(t.rank) ? h("span", { class: "hbg-partial" }, "rank " + t.rank) : null));       // the score sheet ranks the rows
     if (cols.band) out.push(h("td", { class: "hbg-tot hbg-band hbg-pin-r" }, m.bandNode(m.bandName(unit))));
     return out;
   }
@@ -977,6 +1005,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         li(wide, sample("hbg-mk is-ne"), "Hatched: no evidence found", n(c.ne)),
         li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner, top right: something to check on this answer, one of the kinds below. Hover over it to see which; click it and the panel says why at the top", n(c.flagged)),
         li(wide, sample("hbg-mk is-wait"), "Not scored yet", n(c.waiting)),
+        c.owner ? li(wide, sample("hbg-mk is-wait is-owner"), "Dashed: waits for data you need to supply", n(c.owner)) : null,
         li(wide, sample("hbg-mk is-na"), "A gap: the question does not apply"),
       );
     } else {
@@ -984,6 +1013,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         li(wide, ramp("hbg-cell", "border: 1px solid var(--rule)"), "Shade: share of the question's top points, none to all", n(c.answered)),
         li(wide, sample("hbg-cell", box, "0", h("span", { class: "hbg-ne" }, "∅")), "No evidence found", n(c.ne)),
         li(wide, sample("hbg-cell is-wait", box), "Not scored yet", n(c.waiting)),
+        c.owner ? li(wide, sample("hbg-cell is-wait is-owner", box, "data"), "Waits for data you need to supply", n(c.owner)) : null,
         li(wide, sample("hbg-cell is-muted", box, "n/a"), "Does not apply"),
       );
     }
@@ -991,6 +1021,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       li(phone, ramp("hbg-sq", sq), "Shade: share of the question's top points, none to all", n(c.answered)),
       li(phone, sample("hbg-sq is-ne", sq, "0"), "No evidence found", n(c.ne)),
       li(phone, sample("hbg-sq is-wait", sq), "Not scored yet", n(c.waiting)),
+      c.owner ? li(phone, sample("hbg-sq is-wait is-owner", sq), "Dashed: waits for data you need to supply", n(c.owner)) : null,
       li(phone, sample("hbg-sq is-na", sq), "A gap: the question does not apply"),
       li(null, view === "strips" ? sample("hbg-mk", "--v: 0", h("i", { class: "hbg-mk__stale" })) : sample("hbg-cell is-stale", box),
         "Dark corner, top left: the question changed since it was scored", n(c.stale)),

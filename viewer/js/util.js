@@ -379,6 +379,57 @@
     return Boolean(HB.local) ? localText : laterText;
   }
 
+  /* ---- A check's problems in the owner's words --------------------------------
+     The folder check (shapes.py) names the file and the place in it: 'scoresheet.json: score sheet:
+     section "CO" has no questions'. Owners never see code (21 Oct 2026: a card's Confirm failed with that
+     line, raw and in English, to a Portuguese owner), so it reads 'In the score sheet, section CO has no
+     questions.', a row by its name as written. plainProblems(text) gives {plain, technical, count}:
+     technical is the text as it came (for a Details fold, and for Claude), or null when the text named
+     no file and is plain already. */
+
+  const FILE_PROBLEM = /^((?:[\w.-]+\/)*[\w.-]+\.json): /;
+  const FILE_WORDS = { "questions.json": "the questions", "units.json": "the list", "scoresheet.json": "the score sheet",
+    "rules.json": "the rules", "needs.json": "the data needed", "where_to_look.json": "where to look", "project.json": "the basics" };
+
+  function rowWords(id) {
+    const u = HB.data && typeof HB.data.unit === "function" ? HB.data.unit(id) : null;
+    if (u && u.name) return String(u.name);
+    const b = HB.data && typeof HB.data.bundle === "function" ? HB.data.bundle() : null;
+    return ((b && b.project && b.project.unit_word) || "row") + " " + id;
+  }
+
+  function plainLine(line) {
+    const m = FILE_PROBLEM.exec(line);
+    const file = m ? m[1] : "";
+    const rest = (m ? line.slice(m[0].length) : line).trim().replace(/"([^"\n]{1,60})"/g, "$1");
+    const bits = rest.split(": ");
+    const what = bits.pop();
+    let where = bits.map((b) => b.replace(/^cell /, "question "));
+    const row = /^(?:answers|checks)\/([\w-]+)\.json$/.exec(file);
+    let lead = row ? "For " + rowWords(row[1]) : null;
+    if (where[0] === "score sheet") {
+      lead = lead ? lead + ", in the score sheet" : "In the score sheet";
+      where = where.slice(1);
+    } else if (where.length) {
+      const u = /^unit (.+)$/.exec(where[0]);
+      lead = (lead ? lead + ", " : "For ") + (u ? rowWords(u[1]) : where[0]);
+      where = where.slice(1);
+    } else if (!lead && FILE_WORDS[file]) {
+      lead = "In " + FILE_WORDS[file];
+    }
+    const said = [lead].concat(where, [what]).filter(Boolean).join(", ").trim();
+    return said.charAt(0).toUpperCase() + said.slice(1) + (/[.!?]$/.test(said) ? "" : ".");
+  }
+
+  function plainProblems(text) {
+    const raw = String(text == null ? "" : text).trim();
+    if (!/(?:^|\s)(?:[\w.-]+\/)*[\w.-]+\.json: /.test(raw)) return { plain: raw, technical: null, count: 0 };
+    const parts = raw.split(/\s+(?=(?:[\w.-]+\/)*[\w.-]+\.json: )/).filter(Boolean);
+    const lines = parts.map(plainLine);
+    return { plain: lines.slice(0, 3).join(" ") + (lines.length > 3 ? " And " + fmtInt(lines.length - 3) + " more." : ""),
+      technical: parts.join("\n"), count: lines.length };
+  }
+
   function cantSave() {
     return when("The page can't reach its server just now, so changes can't be saved. Reload the page and try again.",
       "This view can't save changes. Open the project's own page to make them.");
@@ -400,6 +451,7 @@
     isFigureQuestion,
     figureText,
     figureWords,
+    plainProblems,
     store,
     copyText,
   });
@@ -418,7 +470,9 @@
      todays_version   an empty calendar "Only today's copy" (a web page kept as it is today, with no
                                       archive copy from before a cut-off long past)
      reads_disagree   a half disc     "Reads disagree"
-     weak_source      one bar of three "Not from the company" (every document cited is weak)
+     weak_source      one bar of three "Not from its own source" (every document cited is weak)
+     needs_document   a page with a plus "Needs a document" (scored as if there were nothing, for want
+                                      of a document Claude needed and could not get)
    "judgement" (the answer rests on Claude's reading of an open rule) is not
    factual: the grid counts it on the question's header, never on a cell.
 
@@ -434,7 +488,7 @@
 (function (HB) {
   "use strict";
 
-  const FACTUAL = ["quote_not_found", "document_changed", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed"];
+  const FACTUAL = ["needs_document", "quote_not_found", "document_changed", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed", "holds_back"];
   const WORDS = {
     quote_not_found: "Quote not on saved page",
     document_changed: "Document changed since scored",
@@ -442,9 +496,11 @@
     after_cutoff: "After the cut-off",
     todays_version: "Only today's copy",
     reads_disagree: "Second read differs",
-    weak_source: "Not from the company",
+    weak_source: "Not from its own source",
     owner_changed: "Changed by the owner",
+    needs_document: "Needs a document",
     judgement: "Rests on an open rule",
+    holds_back: "Holds the row below its next level",
   };
   const LINE = { fill: "none", stroke: "currentColor", "stroke-width": "1.5", "stroke-linecap": "round" };
 
@@ -464,6 +520,9 @@
       HB.svg("path", Object.assign({ d: "M6 9V4.8M8.6 9V3", opacity: "0.4" }, LINE, { "stroke-width": "1.8" }))],
     owner_changed: () => [HB.svg("path", Object.assign({ d: "M4 8 8.4 3.6" }, LINE, { "stroke-width": "1.8" })),
       HB.svg("path", { d: "M2.8 9.2l.6-2 1.4 1.4z", fill: "currentColor" })],
+    holds_back: () => [HB.svg("path", Object.assign({ d: "M3 4.2h6M6 9.4V5.6M4.2 7.4 6 5.6l1.8 1.8" }, LINE))],
+    needs_document: () => [HB.svg("rect", Object.assign({ x: 3.2, y: 2.6, width: 5.6, height: 6.8, rx: 0.8 }, LINE)),
+      HB.svg("path", Object.assign({ d: "M6 4.4v3.2M4.4 6h3.2" }, LINE))],
   };
 
   function factualFlags(cell) {

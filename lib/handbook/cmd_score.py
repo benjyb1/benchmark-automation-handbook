@@ -1,10 +1,14 @@
 """hb score --kit KIT [--mode auto|one-read|full] [--model M] [--effort E] [--max-turns N] [--budget TOKENS]:
 score a kit and save its receipt.
 
-By default (`auto`) a kit small enough is read in one go (oneread.py): one Claude call with no tools and
-the row's pages in the message, about a fifth to a tenth of the tokens (21 Oct 2026). A bigger kit, a reply
-that is not an answers file, and any question the reading left out go to the full scorer below, and the
-receipt adds both up. `--mode full` always runs the full scorer; `--mode one-read` never falls back.
+By default (`auto`) a kit is read with no tools (oneread.py): in one Claude call when it is small enough,
+about a fifth to a tenth of the tokens (21 Oct 2026), and in parts when it is not (sweep round 3, 21 Oct
+2026: a kit just over the one-read limit used to fall into the full scorer and cost 0.7 to 3.4 million
+tokens a row, 11 to 26 times the estimate). A reply that is not an answers file, and any question the
+reading left out, go to the full scorer below for a kit that fits one message, and the receipt adds both
+up; a kit read in parts is never handed on (the row waits instead). `--mode full` always runs the full
+scorer; `--mode one-read` never falls back. Before it starts, `hb score` prints how it will read the kit
+and about how many tokens that takes (`oneread.plan`).
 
 The full scorer:
 
@@ -218,6 +222,8 @@ def _full_for(kit: Path, qids: list[str], model, effort, max_turns, budget) -> d
     data = json.loads(whole)
     data["questions"] = [q for q in data.get("questions") or [] if str(q.get("id")) in qids]
     data["rulings"] = [r for r in data.get("rulings") or [] if set(qids) & set(r.get("questions") or [])]
+    if data.get("guidance"):
+        data["guidance"] = [g for g in data["guidance"] if set(qids) & set(g.get("questions") or [])]
     qfile.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     afile.unlink(missing_ok=True)
     try:
@@ -238,18 +244,26 @@ def score(kit: Path, mode: str = "auto", model=None, effort=None, max_turns=None
         raise HandbookError(f"--mode is one of {', '.join(MODES)}, not {mode!r}.")
     if not (kit / "brief.md").is_file():
         raise HandbookError(f"{kit} is not a kit: there is no brief.md in it. Build it with hb kit first.")
-    if mode == "full" or (mode == "auto" and not oneread.fits(kit)):
+    if mode == "full" or not (kit / oneread.BRIEF).is_file() or (mode == "auto" and oneread.needs_pictures(kit)):
+        # A kit with pictures of pages read poorly goes to the scorer that can look at them: one read, whole or
+        # in parts, sends words only (the two overnight branches, merged 22 Oct 2026, would otherwise have
+        # read such a kit in parts and lost its pictures).
         return run_scorer(kit, model, effort, max_turns, budget=budget)
+    whole = oneread.fits(kit)
     try:
         result = oneread.run(kit, model, effort)
     except HandbookError as e:
-        if mode == "one-read":
-            raise
+        if mode == "one-read" or not whole:
+            # A kit too long for one message is not handed to the full scorer: that is the cliff sweep round 3
+            # met (0.7 to 3.4 million tokens a row). The owner can still ask for it with --mode full.
+            raise HandbookError(f"{e} The reading was not handed to the full scorer"
+                                + ("" if mode == "one-read" else ", which would cost several times more for a kit "
+                                   "this long") + ". Score the row again, or use --mode full.")
         result = run_scorer(kit, model, effort, max_turns, budget=budget)
         result["one_read"] = f"fell back to the full scorer: {e}"
         return result
     left = left_questions(kit)
-    if left and mode == "auto":
+    if left and mode == "auto" and whole:
         full = _full_for(kit, left, model, effort, max_turns, budget)
         result.update({"usage": _add(result["usage"], full.get("usage") or {}),
                        "num_turns": result["num_turns"] + int(full.get("num_turns") or 0),
@@ -266,6 +280,24 @@ def score(kit: Path, mode: str = "auto", model=None, effort=None, max_turns=None
     return result
 
 
+def plan_words(kit: Path, mode: str = "auto", budget: int | None = None) -> str:
+    """One line before scoring starts: how the kit will be read and about what it takes (TI, ChemScore and
+    the fashion index, sweep round 3: hb score said nothing, and a kit 1% over the limit ran to 693,000)."""
+    lim = limits(kit, budget)
+    full = (f"the full scorer, stopped at {lim['budget']:,} tokens" if lim["budget"] else "the full scorer")
+    if mode == "full":
+        return f"Reading {kit.name} with {full} (--mode full)."
+    got = oneread.plan(kit)
+    if got["mode"] == "full scorer":
+        return f"Reading {kit.name} with {full} (" + ("it holds pictures of pages read poorly, which only the full "
+                                                     "scorer can look at" if got.get("why") == "pictures"
+                                                     else "the project scores carefully") + ")."
+    size = f"about {round(got['estimate'], -3):,} tokens"
+    if got["mode"] == "one read":
+        return f"Reading {kit.name} in one go: {size}."
+    return f"Reading {kit.name} in {got['parts']} parts, as its documents are too long for one message: {size} in all."
+
+
 STOP_WORDS = {"budget": "its token budget", "turns": "its turn limit", "time": "the time limit"}
 
 
@@ -275,6 +307,12 @@ def stop_words(result: dict) -> str | None:
     if not why:
         return None
     left = result.get("left") or []
+    if not left:
+        # UK university league, sweep round 3: "stopped at its token budget with 0 questions left" read as a
+        # failure though answers.json held all 67 answers.
+        limit = f" ({result['budget']:,})" if why == "budget" and result.get("budget") else ""
+        return (f"Every question has an answer. The session reached {STOP_WORDS.get(why, why)}{limit} before it could "
+                "write its one-line reply, so nothing is left to do.")
     limit = f" ({result['budget']:,})" if why == "budget" and result.get("budget") else ""
     return (f"Stopped at {STOP_WORDS.get(why, why)}{limit} with {len(left)} question{'s' if len(left) != 1 else ''} left"
             + (": " + ", ".join(left) if left else "") + ".")
@@ -284,7 +322,7 @@ def describe(result: dict) -> str:
     usage = result.get("usage") or {}
     fresh = (usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
     read, out = usage.get("cache_read_input_tokens") or 0, usage.get("output_tokens") or 0
-    calls = "call" if result.get("mode") == "one read" else "turn"
+    calls = "call" if str(result.get("mode") or "").startswith("one read") and "full" not in str(result.get("mode")) else "turn"
     n = result.get("num_turns") or 0
     return (f"{fresh + read + out:,} tokens processed ({read:,} cache reads, {fresh:,} fresh input, {out:,} output) "
             f"over {n} {calls}{'s' if n != 1 else ''}.")
@@ -304,9 +342,14 @@ def main(argv) -> int:
                         help="stop the scorer once it has processed this many tokens (default: the kit's limits.json)")
     args = parser.parse_args(argv)
     kit = Path(args.kit).expanduser()
+    if (kit / "brief.md").is_file():
+        print(plan_words(kit, args.mode, args.budget), flush=True)
     result = score(kit, args.mode, args.model, args.effort, args.max_turns, budget=args.budget)
     reply = " ".join(str(result.get("result") or "").split())
-    print(f"Scorer for {kit.name}: {reply or '(no reply)'}")
+    if not reply:
+        got = len((read_json(kit / "answers.json", {}) or {}).get("cells") or {}) if (kit / "answers.json").is_file() else 0
+        reply = f"(no reply line; answers.json holds {got} answer{'s' if got != 1 else ''})"
+    print(f"Scorer for {kit.name}: {reply}")
     print(describe(result))
     stop = stop_words(result)
     if stop:
