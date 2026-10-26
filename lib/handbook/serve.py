@@ -1521,7 +1521,7 @@ class Worker:
     # Commands the chat may not run behind the page: they start another server, make another
     # project or open windows. Everything else in hb is the chat's, with Confirm, a copy and Undo.
     CHAT_HB_BLOCKED = ("serve", "launcher", "init")
-    CHAT_HB_READ_ONLY = ("help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text")
+    CHAT_HB_READ_ONLY = ("help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text", "names")
     CHAT_HB_SLOW = ("find", "score", "draft-setup", "job", "fetch", "prepare", "second-finds", "second-reads", "compare")
 
     def changed_by_chat(self, title: str, run, hold: bool = True) -> dict:
@@ -1563,7 +1563,8 @@ class Worker:
         if args[0] in self.CHAT_HB_READ_ONLY:
             code, out = self.cmd.run(*args, timeout=300)
             return {"code": code, "out": out[-6000:]}
-        if args[0] in self.CHAT_HB_SLOW:
+        if args[0] in self.CHAT_HB_SLOW or (args[0] == "recheck" and ("--row" in args or "--all" in args)):
+            # A re-check of a row's or every saved page fetches each one politely: behind the page, with the run bar.
             title = "hb " + " ".join(args)[:80]
 
             def slow(job, a=list(args)):
@@ -1980,6 +1981,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._feedback(method, parts[1:])
         if path == "page-claude" and method == "GET":
             return self.json({"text": page_claude_text()})
+        if path == "layout":                                     # the page's check of its own text (layout.py)
+            from . import layout
+            if method == "POST":
+                return self.json(layout.record(srv.project, self.body_json()))
+            if method == "GET":
+                return self.json({"problems": layout.problems(srv.project)})
         if path == "user" and method == "POST":
             me = srv.team.rename((self.body_json() or {}).get("name"))
             return self.json({"name": me.get("name"), "id": me["id"]})

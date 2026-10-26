@@ -23,6 +23,9 @@
   /* ---- The checklist: the plan's thirteen keys, must-haves first --------------- */
 
   const MUST_HAVES = ["questions", "units", "scoresheet", "group_labels", "cutoff", "where_to_look", "needs", "rules"];
+
+  const SEG_ORDER = ["done", "draft", "missing"];
+  const TOKENS_TIP = "Tokens are how Claude counts what your plan has used. Every word it reads or writes is a few.";
   const EXTRAS = ["last_results", "methodology", "source_list", "held_documents", "last_report"];
 
   function checklistItems(plural) {
@@ -294,7 +297,11 @@
         h(
           "div",
           { class: "su-segs", "aria-hidden": "true" },
-          MUST_HAVES.map((key) => h("span", { class: "su-seg", "data-state": settled(key) ? "done" : stateOf(key) === "draft" ? "draft" : "missing" })),
+          // Settled first, then drafts: a bar that filled its last segment for "1 of 8" read as counting
+          // backwards (design read, 23 Oct 2026).
+          MUST_HAVES.map((key) => (settled(key) ? "done" : stateOf(key) === "draft" ? "draft" : "missing"))
+            .sort((a, b) => SEG_ORDER.indexOf(a) - SEG_ORDER.indexOf(b))
+            .map((state) => h("span", { class: "su-seg", "data-state": state })),
         ),
       ),
       h("div", { class: "su-narrow stack" },
@@ -805,12 +812,12 @@
             (f.chars == null ? ": can't be read" : "")))) : null,
       files && files.length && !job ? (redraft()
         // Some parts are confirmed already: a new draft writes over them, so the button is quiet and says so.
-        ? h("p", null, h("button", { type: "button", class: "btn btn--small",
+        ? h("p", { class: "su-act" }, h("button", { type: "button", class: "btn btn--small",
           disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft it again from these files"),
-          h("span", { class: "small muted" }, " This replaces the parts you have confirmed with a new draft, for you to check again. " + draftCost(files)))
-        : h("p", null, h("button", { type: "button", class: "btn btn--small btn--primary",
+          h("span", { class: "small muted", title: TOKENS_TIP }, " This replaces the parts you have confirmed with a new draft, for you to check again. " + draftCost(files)))
+        : h("p", { class: "su-act" }, h("button", { type: "button", class: "btn btn--small btn--primary",
           disabled: material.busy || !editsReady(), onclick: () => draftSetup(box) }, "Draft my set-up"),
-          h("span", { class: "small muted" }, " Claude reads every file and drafts the questions, the list, the score sheet " +
+          h("span", { class: "small muted", title: TOKENS_TIP }, " Claude reads every file and drafts the questions, the list, the score sheet " +
             "and the groups for you to check. " + draftCost(files)))) : null,
       job ? draftingNow(job) : null,
       material.line ? h("p", { class: "small" }, material.line) : null,
@@ -930,6 +937,11 @@
 .su-list-title { color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 
 .su-progress { display: grid; gap: var(--s2); }
+/* A button with its note beside it; the note drops below as a block on a narrow screen, never wrapping
+   back under the button (design read, 23 Oct 2026). */
+.su-act { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s2); }
+.su-act > .btn { flex: none; }
+.su-act > span { flex: 1 1 16rem; min-width: 0; }
 .su-progress__text { font-size: var(--fs-14); }
 .su-segs { display: flex; gap: 3px; }
 .su-seg { flex: 1 1 0; height: 0.375rem; border-radius: 2px; background: var(--rule); }
@@ -977,14 +989,19 @@
 .su-edit__body { flex: 1 1 auto; min-width: 0; }
 .su-edit__button { flex: none; }
 
-.su-levels { display: grid; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
-.su-level { display: grid; grid-template-columns: 3.5rem 5rem minmax(0, 1fr); gap: var(--s2); align-items: baseline; padding-block: 2px; border-bottom: 1px dotted var(--rule); }
+/* The rows share the list's columns (subgrid), so the value column is as wide as the widest value's
+   longest word, up to 12rem, and stays lined up: a fixed 3.5rem broke "Withdrawn" and "A figure from
+   0 to 100" mid-word (ChickenTrack and RSF, design sweep 23 Oct 2026). */
+.su-levels { display: grid; grid-template-columns: fit-content(12rem) fit-content(6rem) minmax(0, 1fr); gap: var(--s1) var(--s2); margin: 0; padding: 0; list-style: none; }
+.su-level { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; align-items: baseline; padding-block: 2px; border-bottom: 1px dotted var(--rule); }
+.su-level > * { min-width: 3.5rem; }
+.su-level > .su-level__meaning { min-width: 0; }
 .su-level:last-child { border-bottom: 0; }
 .su-level__value { font-family: var(--mono); font-weight: 600; }
 .su-level__points { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .su-level__meaning { display: grid; gap: 2px; min-width: 0; }
 .su-level__tag { color: var(--ink-2); font-size: var(--fs-12); }
-@media (width < 30rem) { .su-level { grid-template-columns: 3rem 4.25rem minmax(0, 1fr); } }
+@media (width < 30rem) { .su-levels { grid-template-columns: fit-content(7rem) fit-content(4.25rem) minmax(0, 1fr); } .su-level > * { min-width: 3rem; } }
 
 .su-variants { display: grid; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
 .su-variants li { display: grid; gap: 2px; padding-left: var(--s3); border-left: 2px solid var(--rule-strong); }

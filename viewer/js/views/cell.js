@@ -76,6 +76,7 @@
     group_differs: "Differs across countries",
     after_cutoff: "After cut-off",
     todays_version: "Only today's copy",
+    page_gone: "Most of the page has gone",
     reads_disagree: "Second read differs",
     weak_source: "Not from its own source",
     owner_changed: "Changed by the owner",
@@ -94,6 +95,7 @@
     weak_source: () => [svg("path", { d: "M3 10V7.4" }), svg("path", { d: "M6 10V5M9 10V2.6", opacity: "0.4" })],
     owner_changed: () => [svg("path", { d: "M3.6 8.4 8.8 3.2" }), svg("path", { class: "is-fill", d: "M2.4 9.6l.7-2.3 1.6 1.6z" })],
     needs_document: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M6 4v4M4 6h4" })],
+    page_gone: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M4.2 4.2h3.6" }), svg("path", { d: "M4.2 6.4h1.6M4.2 8.2h0.8", opacity: "0.45" })],
   };
   const HOST_WORDS = { issuer: "its own site", third_party: "another organisation's site", repository: "a document library" };
   const NOT_KEPT = "Saved copy not kept.";
@@ -145,6 +147,18 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
 .cellp-page:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 .cellp-page mark { padding: 0 1px; border-radius: 2px; background: color-mix(in oklab, var(--warning) 45%, var(--surface)); color: var(--ink); box-shadow: 0 0 0 1px var(--warning); }
 .cellp-none { padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--paper); color: var(--ink-2); }
+.cellp-copies { display: grid; gap: var(--s1); min-width: 0; }
+.cellp-diff { display: grid; gap: 2px; max-height: 16rem; margin: 0; padding: var(--s1); overflow: auto; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--paper); list-style: none; font-size: var(--fs-12); line-height: 1.5; }
+.cellp-diff > li { display: grid; grid-template-columns: 4.75rem minmax(0, 1fr); align-items: start; gap: var(--s2); padding: 2px var(--s2); border-radius: 2px; overflow-wrap: anywhere; }
+.cellp-diff > li.is-removed { background: color-mix(in oklab, var(--critical) 12%, var(--surface)); }
+.cellp-diff > li.is-added { background: color-mix(in oklab, var(--good) 13%, var(--surface)); }
+.cellp-diff__op { color: var(--ink-2); font-weight: 650; white-space: nowrap; }
+.cellp-diff__text { min-width: 0; color: var(--ink); }
+.cellp-diff__mark { padding: 0 1px; border-radius: 2px; background: color-mix(in oklab, var(--warning) 40%, var(--surface)); color: var(--ink); box-shadow: 0 0 0 1px var(--warning); }
+.cellp-earlier { display: grid; gap: var(--s3); margin: 0; padding: 0; list-style: none; }
+.cellp-earlier > li { display: grid; gap: var(--s1); min-width: 0; padding-bottom: var(--s2); border-bottom: 1px solid var(--rule); overflow-wrap: anywhere; }
+.cellp-earlier > li:last-child { padding-bottom: 0; border-bottom: 0; }
+.cellp-earlier .cellp-quote { padding: var(--s1) var(--s2); font-size: var(--fs-14); }
 .cellp-fix { gap: var(--s2); }
 .cellp-fix__acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
 .cellp-fix__sent { display: grid; gap: var(--s1); margin: 0; color: var(--ink-2); font-size: var(--fs-12); overflow-wrap: anywhere; }
@@ -170,11 +184,12 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
 @media (width < 40rem) {
   .cellp { font-size: var(--fs-16); }
   .cellp-page { font-size: var(--fs-14); }
-  .cellp-sub, .cellp-line, .cellp-check, .cellp-meta, .cellp-more > summary { font-size: var(--fs-14); }
+  .cellp-sub, .cellp-line, .cellp-check, .cellp-meta, .cellp-more > summary, .cellp-diff { font-size: var(--fs-14); }
+  .cellp-diff > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .drawer[open]:not(.drawer--inflow):has(.cellp) { height: min(85vh, 100% - 3rem); height: min(85dvh, 100% - 3rem); }
 }
 @media (forced-colors: active) {
-  .cellp-page mark { background: Mark; color: MarkText; }
+  .cellp-page mark, .cellp-diff__mark { background: Mark; color: MarkText; }
   .cellp-switch__track, .cellp-switch__track::after { forced-color-adjust: none; border-color: CanvasText; background: Canvas; }
   .cellp-switch[aria-checked="true"] .cellp-switch__track::after { background: Highlight; }
 }`;
@@ -953,10 +968,18 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const top = topPoints(q);
     const level = cell.value == null ? null : levelFor(q, cell.value);
     const [name, rest, full] = meaningParts(q, level);
+    // A question that earns no points (a measured figure) leads with its value, not "0 of 0 points"; a
+    // figure with nothing found shows no stand-in code such as "ND". The level's name follows a dot, not
+    // a colon: "0 of 3 points: No data shared: scored zero" read like a log line (design read, 23 Oct 2026).
+    const noPoints = !isNum(top) || top === 0;
+    const bareCode = cell.state === "no_evidence" && HB.isFigureQuestion(q) && !isNum(cell.value);
+    const lead = noPoints ? (bareCode || cell.value == null ? STATE_WORDS[cell.state] : valueWord(q, cell.value)) : pointsWords(cell.points, top);
+    const named = name || (noPoints ? "" : valueWord(q, cell.value));
     const out = [h("p", { class: "cellp-ans" },
-      h("strong", null, pointsWords(cell.points, top)),
-      cell.value == null ? ". Answer not recorded." : ": " + (name || valueWord(q, cell.value)))];
-    const sub = [cell.value == null ? null : valueWord(q, cell.value), STATE_WORDS[cell.state]];
+      h("strong", null, lead),
+      cell.value == null && !noPoints ? ". Answer not recorded." : named && named !== lead ? " \u00b7 " + named : "")];
+    const sub = [cell.value == null || bareCode || (noPoints && !name) ? null : valueWord(q, cell.value),
+      noPoints && lead === STATE_WORDS[cell.state] ? null : STATE_WORDS[cell.state]];
     if (cell.second_read && cell.second_read.value != null) {
       sub.push("Second read: " + valueWord(q, cell.second_read.value) + (cell.second_read.agrees ? ", agrees" : ", differs"));
     }
@@ -1302,6 +1325,13 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       return [what + ", not as it stood at the cut-off" + (cut ? " (" + dateText(cut) + ")" : "") +
         ", because no older copy could be got" + why + ". The page may have changed since: check it, or send a copy from before the cut-off."];
     }
+    if (kind === "page_gone") {
+      const gone = cited.filter((d) => heldCopy(docs, d));
+      const one = gone.length === 1 ? docs[gone[0]] : null;
+      return [(one && one.title ? "Most of the text of ‘" + one.title + "’" : "Most of the text of a page this answer cites") +
+        " has gone from the live site since it was saved, perhaps because the site was redesigned or the text moved to another page." +
+        " This answer still reads the earlier copy. Under Source below, choose whether to have the text looked for where it went, or to use the new copy."];
+    }
     if (kind === "needs_document") {
       // what the scorer named, from the row's missing list (found/ROW.json, a scorer's entry for this question)
       const named = ((HB.data && HB.data.gaps ? HB.data.gaps(unit.id).missing : []) || [])
@@ -1403,6 +1433,236 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     });
   }
 
+  /* ---- Copies of a page, and earlier answers ------------------------------------- */
+
+  function changeWords(c) {
+    const lines = (n) => fmtInt(n) + (n === 1 ? " line" : " lines");
+    const added = (c && c.added) || 0, removed = (c && c.removed) || 0;
+    if (added && removed) return lines(added) + " added and " + fmtInt(removed) + " removed";
+    return added ? lines(added) + " added" : removed ? lines(removed) + " removed" : "no lines changed";
+  }
+
+  // A line that was replaced, with the words that differ from its partner marked: the words of `a` not in the
+  // longest run of words the two share. Long lines are left unmarked.
+  function markedWords(a, b) {
+    const x = a.split(/(\s+)/), y = b.split(/(\s+)/);
+    if (x.length * y.length > 250000) return [a];
+    const n = x.length, m = y.length;
+    const best = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+    for (let i = n - 1; i >= 0; i -= 1) {
+      for (let j = m - 1; j >= 0; j -= 1) best[i][j] = x[i] === y[j] ? best[i + 1][j + 1] + 1 : Math.max(best[i + 1][j], best[i][j + 1]);
+    }
+    const out = [];
+    let i = 0, j = 0, run = "", marked = "";
+    const flush = () => {
+      if (run) out.push(run);
+      if (marked) out.push(h("mark", { class: "cellp-diff__mark" }, marked));
+      run = marked = "";
+    };
+    while (i < n) {
+      if (j < m && x[i] === y[j]) { if (marked) flush(); run += x[i]; i += 1; j += 1; }
+      else if (j < m && best[i][j + 1] >= best[i + 1][j]) j += 1;
+      else { if (run) { out.push(run); run = ""; } marked += x[i]; i += 1; }
+    }
+    flush();
+    return out;
+  }
+
+  // The lines that changed between two copies of a page, in page order, removed before added; where lines
+  // were replaced, the words that differ are marked.
+  function changeList(change) {
+    const lines = (Array.isArray(change && change.lines) ? change.lines : []).filter((l) => l && typeof l === "object");
+    if (!lines.length) return [h("p", { class: "cellp-none" }, "The lines that changed are not in this view.")];
+    const partner = new Map();
+    for (let i = 0; i < lines.length;) {
+      let r = i;
+      while (r < lines.length && lines[r].op === "-") r += 1;
+      let a = r;
+      while (a < lines.length && lines[a].op === "+") a += 1;
+      for (let k = 0; k < Math.min(r - i, a - r); k += 1) {
+        partner.set(i + k, lines[r + k]);
+        partner.set(r + k, lines[i + k]);
+      }
+      i = a > i ? a : i + 1;
+    }
+    return [
+      h("ol", { class: "cellp-diff", tabindex: "0", "aria-label": "Lines that changed" }, lines.map((l, i) => {
+        const added = l.op === "+";
+        const text = String(l.text || "");
+        const other = partner.get(i);
+        return h("li", { class: added ? "is-added" : "is-removed" },
+          h("span", { class: "cellp-diff__op" }, added ? "Added" : "Removed"),
+          h("span", { class: "cellp-diff__text" }, other ? markedWords(text, String(other.text || "")) : text));
+      })),
+      change.cut ? h("p", { class: "cellp-sub" }, "The first " + fmtInt(lines.length) + " changed lines are shown here.") : null,
+    ].filter(Boolean);
+  }
+
+  // The newest copy of a page saved after `id`, or `id` itself.
+  function newestOf(docs, id) {
+    let cur = id;
+    const seen = new Set([id]);
+    while (docs[cur] && docs[cur].later && docs[docs[cur].later] && !seen.has(docs[cur].later)) {
+      cur = docs[cur].later;
+      seen.add(cur);
+    }
+    return cur;
+  }
+
+  // The newer copy of `id`'s page that rows have not switched to, because most of the page's text had gone
+  // (recheck.py, earlier.held), or null.
+  function heldCopy(docs, id) {
+    const newest = newestOf(docs, id);
+    const e = newest !== id && docs[newest] ? docs[newest].earlier : null;
+    return e && typeof e === "object" && e.held === true ? newest : null;
+  }
+
+  // A button that runs hb recheck with `args` behind the page, says what came back and redraws.
+  function recheckButton(label, args, msg, quiet) {
+    const btn = h("button", { type: "button", class: "btn btn--small" + (quiet ? " btn--quiet" : "") }, label);
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      msg.replaceChildren(h("p", { class: "cellp-sub" }, "Working on it…"));
+      try {
+        const got = await HB.local.post("chat/hb", { args });
+        const said = String(got.out || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || "Done.";
+        msg.replaceChildren(HB.notice(got.code === 0 ? "good" : "warning", said));
+        if (typeof HB.local.refresh === "function") await HB.local.refresh();
+      } catch (err) {
+        msg.replaceChildren(HB.notice("warning", err && err.message ? err.message : "That could not be done."));
+      }
+      btn.disabled = false;
+    });
+    return btn;
+  }
+
+  // When this copy of a page was saved, the copy before or after it and what changed, the last look at the
+  // live page, and (on this computer) a button to look again. When most of the page's text has gone, the
+  // owner's two choices: look for where the text went, or use the new copy.
+  function copiesPart(ctx, row, id, doc) {
+    const docs = ctx.bundle.documents || {};
+    const lines = [];
+    const onHere = HB.local && typeof HB.local.post === "function";
+    const held = heldCopy(docs, id);
+    const saved = dateText(doc.fetched);
+    const before = doc.earlier && typeof doc.earlier === "object" ? doc.earlier : null;
+    const after = doc.later && docs[doc.later] ? docs[doc.later] : null;
+    let change = null;            // the later copy's id, whose changes.json lines the row's evidence file holds
+    if (held) {
+      change = doc.later;
+      const waiting = docs[held].earlier || {};
+      const msg = h("div", { role: "status" });
+      lines.push(HB.notice("warning", h("span", null, h("strong", null, "Most of this page's text has gone from the live site. "),
+        "A copy saved on " + (dateText(docs[held].fetched) || "a later date") + " keeps little of it (" + changeWords(waiting) +
+        "). This answer still reads the copy saved on " + (saved || "an earlier date") + " until you choose. " +
+        (waiting.looking ? "The text will be looked for the next time you score this answer, which uses some of your Claude plan."
+          : "The site may have moved the text to another page, so it can be looked for there, or you can use the new page as it is."))));
+      if (onHere) {
+        lines.push(h("div", { class: "cellp-links" },
+          waiting.looking ? null : recheckButton("Look for where the text went", ["recheck", "--look", String(held)], msg),
+          recheckButton("Use the new copy", ["recheck", "--accept", String(held)], msg, true)), msg);
+      }
+    } else if (after) {
+      change = doc.later;
+      lines.push(h("p", { class: "cellp-meta" }, h("strong", null, "The page has changed since this copy. "),
+        "This copy was saved on " + (saved || "an unknown date") + ", and a later copy on " + (dateText(after.fetched) || "a later date") +
+        ", with " + changeWords(after.earlier) + "."));
+    } else if (before) {
+      change = id;
+      const first = docs[before.doc];
+      lines.push(h("p", { class: "cellp-meta" }, h("strong", null, "A later copy of the page. "),
+        "Saved on " + (saved || "an unknown date") + ", after the page changed. The earlier copy was saved on " +
+        (dateText(first && first.fetched) || "an earlier date") + ", and " + changeWords(before) + " since."));
+    } else if (saved && doc.url) {
+      lines.push(h("p", { class: "cellp-meta" }, "Saved on " + saved + "."));
+    }
+    const checks = Array.isArray(doc.rechecks) ? doc.rechecks : [];
+    const last = checks.length ? checks[checks.length - 1] : null;
+    if (last && !after) {
+      lines.push(h("p", { class: "cellp-meta" }, last.result === "same"
+        ? "Checked against the live page on " + dateText(last.at) + " and found the same."
+        : "Last checked on " + dateText(last.at) + ", when the live page could not be read" + (last.why ? " (" + String(last.why) + ")" : "") + "."));
+    }
+    if (change) {
+      const body = h("div", { class: "cellp-more__body" }, h("p", { class: "cellp-none" }, "Loading what changed…"));
+      const more = h("details", { class: "cellp-more" }, h("summary", null, "What changed"), body);
+      more.addEventListener("toggle", () => {
+        if (!more.open || more.dataset.drawn) return;
+        more.dataset.drawn = "1";
+        HB.data.evidence(row).then((ev) => {
+          const got = ev && ev.changes ? ev.changes[change] : null;
+          body.replaceChildren(...(got ? changeList(got) : [h("p", { class: "cellp-none" }, "The lines that changed are not in this view.")]));
+        });
+      });
+      lines.push(more);
+    }
+    if (doc.url && doc.kept !== false && onHere && !held) {
+      const msg = h("div", { role: "status" });
+      const btn = h("button", { type: "button", class: "btn btn--small btn--quiet" }, "Check the live page for changes");
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        msg.replaceChildren(h("p", { class: "cellp-sub" }, "Looking at the live page…"));
+        try {
+          const got = await HB.local.post("chat/hb", { args: ["recheck", "--doc", String(id)] });
+          const said = String(got.out || "").split("\n").map((x) => x.trim()).filter(Boolean)[0] || "Checked.";
+          msg.replaceChildren(HB.notice(got.code === 0 ? "good" : "warning", said));
+          if (typeof HB.local.refresh === "function") await HB.local.refresh();
+        } catch (err) {
+          msg.replaceChildren(HB.notice("warning", err && err.message ? err.message : "The page could not be checked."));
+        }
+        btn.disabled = false;
+      });
+      lines.push(h("div", { class: "cellp-links" }, btn), msg);
+    }
+    return lines.length ? h("div", { class: "cellp-copies" }, lines) : null;
+  }
+
+  const RUN_KINDS = { trial: "the trial", full: "the full run", rerun: "a re-score" };   // a run id ends in its kind
+
+  // "the trial of 7 October 2026", from a run id such as 2026-10-07-0930-trial.
+  function runWords(id) {
+    const m = String(id || "").match(/^(\d{4}-\d{2}-\d{2})-\d{4}-([a-z]+)/);
+    if (!m) return id ? "run " + String(id) : null;
+    return (RUN_KINDS[m[2]] || "the run") + " of " + dateText(m[1]);
+  }
+
+  // What the answer said before later runs, or a correction, replaced it: newest first, each with its
+  // evidence and the copy of the page it cited. Folded under the answer; drawn once the row's evidence is in.
+  function earlierPart(ctx, row, qid, q) {
+    const sec = h("section", { class: "cellp-sec" });
+    sec.hidden = true;
+    HB.data.evidence(row).then((ev) => {
+      const list = ev && ev.earlier && Array.isArray(ev.earlier[qid]) ? ev.earlier[qid].filter((v) => v && typeof v === "object") : [];
+      if (!list.length) return;
+      const docs = ctx.bundle.documents || {};
+      const top = topPoints(q);
+      const items = list.slice().reverse().map((v) => {
+        const name = v.value == null ? null : meaningParts(q, levelFor(q, v.value))[0];
+        const said = v.state === "answered" ? (isNum(v.points) ? pointsWords(v.points, top) + ", " : "") + (name || valueWord(q, v.value))
+          : STATE_WORDS[v.state] || String(v.state || "Not recorded");
+        const from = v.owner ? "Your correction" : runWords(v.run);
+        const by = v.replaced_by === "owner" ? "your correction" : RUN_KINDS[(String(v.replaced_by || "").match(/-(trial|full|rerun)(?:-\d+)?$/) || [])[1]] || null;
+        const when = (from ? from.charAt(0).toUpperCase() + from.slice(1) + ". " : "") +
+          "Replaced " + (by ? "by " + by + " " : "") + "on " + (dateText(v.replaced) || "a later date");
+        const cites = (Array.isArray(v.evidence) ? v.evidence : []).filter((e) => e && e.doc).map((e) => {
+          const d = docs[e.doc];
+          const what = d ? "‘" + String(d.title || e.doc) + "’, the copy saved on " + (dateText(d.fetched) || "an unknown date") : "Document " + String(e.doc);
+          return h("div", { class: "cellp-sec" },
+            h("p", { class: "cellp-meta" }, "Cited " + what + (isNum(e.page) ? ", page " + fmtInt(e.page) : "") + "." +
+              (d && d.later ? " The page has changed since that copy." : "")),
+            e.quote ? h("blockquote", { class: "cellp-quote" }, String(e.quote)) : null);
+        });
+        return h("li", null, h("p", null, h("strong", null, said), v.checked ? " (a person had checked it)" : ""),
+          h("p", { class: "cellp-sub" }, when + "."), ...cites);
+      });
+      sec.replaceChildren(h("details", { class: "cellp-more" },
+        h("summary", null, "Earlier answers (" + fmtInt(list.length) + ")"),
+        h("div", { class: "cellp-more__body" }, h("ol", { class: "cellp-earlier" }, items))));
+      sec.hidden = false;
+    });
+    return sec;
+  }
+
   // The quote, its source and the saved page, for one evidence item at a time.
   // Returns {sections, show(i)}; show brings quote i into view.
   function evidenceParts(ctx, row, cell) {
@@ -1459,6 +1719,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
         h("p", { class: "cellp-doc" }, doc.title ? String(doc.title) : "Untitled document"),
         h("p", { class: "cellp-meta" }, meta.join(" · ")),
         doc.weak && doc.weak.why ? h("p", { class: "cellp-meta" }, h("strong", null, "Not from its own source: "), String(doc.weak.why)) : null,
+        copiesPart(ctx, row, item.doc, doc),
         links.length ? h("div", { class: "cellp-links" }, links) : null,
       ].filter(Boolean));
 
@@ -1588,9 +1849,13 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
   // listed after the rules.
   function changePart(ctx, q, cell, note, decision) {
     const all = Array.isArray(ctx.bundle.rules) ? ctx.bundle.rules : [];
-    const ids = Array.isArray(cell.rules) ? cell.rules : [];
+    const cited = Array.isArray(cell.rules) ? cell.rules : [];
     const calls = note ? note.calls : [];
     const keyed = calls.filter((c) => c.key);
+    // Only rules about this question: a scorer's note named R4 and R5 on an answer neither touches,
+    // which made a careful reader doubt the rest (design read, 23 Oct 2026).
+    const covers = (r) => !r || !Array.isArray(r.question_ids) || !r.question_ids.length || r.question_ids.map(String).includes(String(q.id));
+    const ids = cited.filter((id) => covers(all.find((x) => x && x.id === id)));
     const known = ids.map((id) => all.find((x) => x && x.id === id)).filter(Boolean);
     const paired = ids.length === 1 && known.length === 1 && keyed.length === 1 ? keyed[0] : null;
     const blocks = ids.map((id) => {
@@ -1658,6 +1923,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const quotes = cell ? evidenceParts(ctx, row, cell) : null;
     // Why the grid marked it comes straight under the answer: that is what the owner clicked to find out.
     if (cell) content.push(flagsPart(ctx, unit, qv, cell, quotes));
+    if (cell) content.push(earlierPart(ctx, row, qid, qv));
     if (cell && qv) content.push(fixPart(ctx, row, qid, qv));
     if (cell) {
       content.push(...reasonParts(ctx, row, qid, qv, cell));

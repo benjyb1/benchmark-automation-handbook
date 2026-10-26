@@ -45,6 +45,10 @@
 .hbg-li__strip--many { flex-wrap: wrap; gap: 4px 8px; }
 .hbg-li__strip--many .hbg-li__sec { flex: 0 0 auto; flex-wrap: wrap; }
 .hbg-li__strip--many .hbg-sq { flex: 0 0 1rem; width: 1rem; height: 1rem; font-size: 0; }
+.hbg-pl__key { position: sticky; top: 0; z-index: 5; padding: var(--s1) var(--gutter-end) 2px var(--gutter-start); border-bottom: 1px solid var(--rule); background: var(--paper); }
+.hbg-pl__key .hbg-li__strip { margin-top: 0; }
+.hbg-sq.hbg-sq--num { height: auto; box-shadow: none; color: var(--ink-2); font-size: 0.625rem; font-weight: 500; }
+.hbg-pl__key ~ .hbg-pl__g .hbg-pl__gh { top: 1.25rem; }
 .hbg-sq .flag-glyph { position: absolute; top: -4px; right: -4px; z-index: 1; width: 0.6875rem; height: 0.6875rem; color: var(--critical); }
 `;
 
@@ -77,7 +81,17 @@
       "data-q": q.id,
       "aria-label": x.label,
       title: x.label,
-    }, x.owner ? "" : x.text, x.kinds.length ? HB.flagGlyph(x.kinds[0]) : null);     // a waiting square is dashed, with no word
+    }, x.owner ? "" : fits(x.text), x.kinds.length ? HB.flagGlyph(x.kinds[0]) : null);     // a waiting square is dashed, with no word
+  }
+
+  // A square is at most 22px and narrower when a benchmark has many questions: "yes", "no", a grade or
+  // a number of two figures fit, a figure such as "54,440 £" or "48%" ran over its neighbours (High Pay
+  // Centre and ChickenTrack, design sweep 23 Oct 2026). A longer answer shows as "…" (a figure's
+  // square has no shade, so an empty one looked still to score), and in full on hover and when read out
+  // (title, aria-label).
+  function fits(text) {
+    const t = String(text == null ? "" : text);
+    return t.length <= 2 || /^(yes|no)$/i.test(t) ? t : "\u2026";
   }
 
   function card(ctx, m, unit) {
@@ -88,14 +102,29 @@
       h("span", { class: "hbg-li__tot" }, m.overallText(t),
         t && t.partial ? h("span", { class: "hbg-partial" }, m.partialWords(t)) : null),     // never a bare figure
       docs ? h("span", { class: "hbg-docnote" }, docs) : flagSummary(m, unit),
-      m.bandNode(m.bandName(unit)),
-      docs ? null : h("span", { class: "hbg-li__strip" + (m.sections.reduce((n, sec) => n + sec.qs.length, 0) > 16 ? " hbg-li__strip--many" : "") }, m.sections.map((sec) =>
+      m.cols && m.cols.band ? m.bandNode(m.bandName(unit)) : null,      // no bands: no second dash under the score (design read, 23 Oct 2026)
+      docs ? null : h("span", { class: stripClass(m) }, m.sections.map((sec) =>
         h("span", { class: "hbg-li__sec" }, sec.qs.map((q) => square(ctx, m, unit, q))))));
+  }
+
+  const stripClass = (m) => "hbg-li__strip" + (m.sections.reduce((n, sec) => n + sec.qs.length, 0) > 16 ? " hbg-li__strip--many" : "");
+
+  // The question numbers once, over the first card's squares, laid out as the squares are: without them
+  // nobody could tell which square was which question (design read, 23 Oct 2026). Not with many
+  // questions, whose squares wrap differently on each card.
+  function key(m) {
+    if (stripClass(m).includes("--many")) return null;
+    return h("div", { class: "hbg-pl__key", "aria-hidden": "true" },
+      h("span", { class: "hbg-li__strip" }, m.sections.map((sec) => {
+        const nums = m.shortIds(sec);
+        return h("span", { class: "hbg-li__sec", title: sec.name || sec.id || "" },
+          sec.qs.map((q, i) => h("span", { class: "hbg-sq hbg-sq--num", title: String(q.short || q.id) }, String(nums[i]))));
+      })));
   }
 
   function gridPhone(ctx, m) {
     HB.addStyles("grid-phone", STYLE);
-    return h("div", { class: "hbg-pl" }, m.groups.map((g) => {
+    return h("div", { class: "hbg-pl" }, key(m), m.groups.map((g) => {
       const head = [];
       if (m.grouped) {
         const mean = m.groupMean(g.rows);

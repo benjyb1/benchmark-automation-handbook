@@ -200,6 +200,16 @@ as an open rule, run `python3 "<lib>/hb.py" stakes --project "<project>"`, and p
 owner in rounds of about five, most points at stake first, the cut-off date always in the first
 round. Push to settle every rule; accept a skip. Refresh after every round.
 
+### 7. The names, once more
+
+Before handing over, read every name the owner will see on the page: question short names, section
+names, label names and values, row names, the benchmark's own name. Nobody looks over them after
+you. Run `python3 "<lib>/hb.py" names --project "<project>"` and fix what it lists (a code such as
+D22, a file name, one value spelled two ways, mixed capitals, a name too long for its place). Then
+read them yourself: plain words in the benchmark's own language, one style throughout (Sentence case
+unless the owner's material uses Title Case), short names of 2 to 4 words that tell the questions
+apart. Fix the names you drafted; put a change to the owner's own wording or list to them.
+
 ## Hand-off
 
 When `status` says the next step is the trial, set-up is complete.

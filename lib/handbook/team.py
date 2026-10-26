@@ -652,6 +652,14 @@ def _merge_one(project: Project, person: dict, copy: Path, base: Path, service: 
                                 copy.read_text(encoding="utf-8", errors="replace"), "b")]}, person)["id"])
     elif a == b:
         pass
+    elif rel.startswith("answers/earlier/") and isinstance(a, dict) and isinstance(b, dict):
+        # What answers said before a run replaced them (ingest.keep_earlier): both computers' records, oldest first.
+        cells_a, cells_b = a.get("cells") or {}, b.get("cells") or {}
+        for qid in set(cells_a) | set(cells_b):
+            both = _union(cells_a.get(qid) or [], cells_b.get(qid) or [])
+            cells_a[qid] = sorted(both, key=lambda v: str((v or {}).get("replaced") or "") if isinstance(v, dict) else "")
+        a["cells"] = cells_a
+        write_json(base, a)
     elif top == "answers" and isinstance(a, dict) and isinstance(b, dict):
         cells_a, cells_b = a.get("cells") or {}, b.get("cells") or {}
         row = a.get("row") or base.stem

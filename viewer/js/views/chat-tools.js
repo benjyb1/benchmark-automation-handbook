@@ -208,6 +208,51 @@
     });
   }
 
+  /* ---- run_command ["recheck", ...]: a saved page against the live site ------------------
+     Free and without Claude (hb recheck, recheck.py): a page that changed is saved as a new copy beside the
+     earlier one, which is kept exactly as it was, with the lines added and removed. Its own Confirm line in
+     plain words; no tool of its own, as the chat's tools are capped at 40. */
+
+  function recheckCard(args, api) {
+    const b = api.bundle();
+    const decide = args.indexOf("--accept") >= 0 ? "--accept" : args.indexOf("--look") >= 0 ? "--look" : null;
+    if (decide) {
+      // Most of a page's text went at a re-check: its rows wait on the earlier copy until the owner chooses.
+      const id = String(args[args.indexOf(decide) + 1] || "");
+      const d = (b.documents || {})[id];
+      if (!d) throw new Error((id || "That") + " is not a document of this project. read_documents lists a row's documents with their ids.");
+      const name = "‘" + String(d.title || id) + "’";
+      const line = decide === "--accept"
+        ? "Use the new copy of " + name + ", saved after most of its text had gone. The rows that read the earlier copy switch to it, and the answers that cite the earlier copy are marked out of date to score again (never one a person checked). One click undoes it."
+        : "Look for where the text of " + name + " went. The answers that cite it are marked to score again, and the next scoring run looks for the text before scoring them, which uses some of your Claude plan. The rows keep reading the earlier copy until then. One click undoes it.";
+      return api.propose(line, async () => {
+        const got = await HB.local.post("chat/hb", { args: ["recheck", decide, id] });
+        return { __result: true, applied: true, note: got.code === 0 ? "Done." : "It stopped with a problem.",
+          told: "Its output, to tell the owner in plain words: " + api.cut(got.out || "", 2000) +
+            (decide === "--accept" ? " Offer to score the out-of-date answers again (propose_rescore).)" : " Offer to score them now (start_scoring), which looks for the text as part of the run.)") };
+      });
+    }
+    const docs = [], rows = [];
+    for (let i = 1; i < args.length; i += 1) {
+      if (args[i] === "--doc" && args[i + 1]) docs.push(args[++i]);
+      else if (args[i] === "--row" && args[i + 1]) rows.push(api.rowOf(args[++i]));
+    }
+    const unknown = docs.filter((d) => !(b.documents || {})[d]);
+    if (unknown.length) throw new Error(unknown.join(", ") + (unknown.length === 1 ? " is not a document" : " are not documents") + " of this project. read_documents lists a row's documents with their ids.");
+    const run = ["recheck"].concat(...docs.map((d) => ["--doc", d]), ...rows.map((r) => ["--row", r]));
+    if (run.length === 1) run.push("--all");
+    const what = docs.length ? (docs.length === 1 ? "‘" + String((b.documents[docs[0]] || {}).title || docs[0]) + "’" : docs.length + " saved pages")
+      : rows.length ? "the saved pages of " + rows.map((r) => api.unitName(r)).join(", ") : "every saved web page";
+    return api.propose("Check " + what + " against the live site. It is free and uses no Claude. A page that changed is saved as a new copy beside the earlier one, which is kept as it was, and answers that cite the earlier copy are marked out of date (never one a person checked). One click undoes it.", async () => {
+      const got = await HB.local.post("chat/hb", { args: run });
+      return { __result: true, applied: true,
+        note: got.queued ? "Started behind the page. The run bar shows when it is done." : got.code === 0 ? "Done." : "It stopped with a problem.",
+        told: (got.queued ? "The re-check started behind the page and is not done yet; a note says what changed when it ends."
+          : "The re-check finished. Its output, to tell the owner in plain words: " + api.cut(got.out || "", 3000)) +
+          " If answers went out of date, offer to score them again (propose_rescore).)" };
+    });
+  }
+
   async function proposeSections(input, api) {
     if (!local()) throw new Error(ONLY_HERE);
     api.canSave();
@@ -499,6 +544,7 @@
       throw new Error("That command on its own scores nothing here. To score, use start_scoring (rows, questions); to score answers again, propose_rescore.");
     }
     api.canSave();
+    if (args[0] === "recheck") return recheckCard(args, api);
     const why = String(input.why || "").trim();
     if (!why) throw new Error("Give why: what this does for the owner, in plain words.");
     return api.propose(api.cut(why, 200).replace(/\.$/, "") + ". The tool does it behind the page; a copy is taken first, so one click undoes it.", async () => {
@@ -578,7 +624,7 @@
     const routes = "Pick the cheapest route that does what the owner asked, in this order: the Grid's view (set_grid_view: free and at once), an edit or a set-up change (propose_edit" + (local() ? ", propose_setup_change" : "") + ": one Confirm, no Claude), " +
       "scoring again (propose_rescore: tokens), and only then a background job (" + (local() ? "propose_job" : "saved for Claude's next session") + ": tokens). Everyday asks: \"remove the groupings\" or \"group by X\": set_grid_view; \"remove the X label\": propose_setup_change remove_labels; " +
       "\"rename Kenya\" or \"Kenya's region is wrong\": propose_edit on the row; \"reword question 5\", its coding instructions, its points: propose_edit on the question, then offer propose_rescore; \"change the cut-off\": propose_setup_change cutoff, then offer propose_rescore; " +
-      "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; a file, a list of documents or an Excel of coding instructions: the owner drops them on this chat or uses Add documents or instructions above the Grid (it files them for their rows, and instructions under their questions, after a Confirm); \"export everything for Kenya\": make_file with rows [kenya]; " +
+      "\"make the page blue\": propose_setup_change accent; \"add this link for Zambia\": propose_document; \"has this page changed?\", \"check their website again\" or \"did it change since the last round?\": run_command [\"recheck\", \"--doc\", ID] (or \"--row\", ROW, or \"--all\"), free, with no Claude; a page that lost most of its text (flag page_gone): run_command [\"recheck\", \"--accept\", ID] to use the new copy, or [\"recheck\", \"--look\", ID] to look for where the text went; a file, a list of documents or an Excel of coding instructions: the owner drops them on this chat or uses Add documents or instructions above the Grid (it files them for their rows, and instructions under their questions, after a Confirm); \"export everything for Kenya\": make_file with rows [kenya]; " +
       "\"score Liberia\", \"start the run\", \"carry on\": start_scoring (answers already scored: propose_rescore); \"pause\", \"stop\": propose_run_control; " +
       "add, remove, rename or merge rows, add, remove or change questions and their levels or points, remove rules: propose_change; the score sheet and bands, where to look, data needed, new rules: propose_change set_part (get_setup with formats first); " +
       "changes that only make sense together, such as a new section with its question and the data it rests on, or a category's questions removed with its place in the score sheet, go in ONE propose_change as a list: proposed one by one, each is checked alone and refused; " +

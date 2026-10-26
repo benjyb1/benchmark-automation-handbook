@@ -36,6 +36,7 @@ from .cli import command_parser, open_project
 from . import fetch, needs
 from .cmd_score import OFF_LIMITS
 from .folder import HandbookError, _matches, write_json
+from .hosts import on_results_site, site_parts
 
 HB = Path(__file__).resolve().parents[1] / "hb.py"
 CAP = 120_000                # what the brief tells a finder session it may use; BUDGET is what stops it
@@ -74,7 +75,7 @@ never proof of anything), and the documents already saved, which you do not need
 5. Do not stop at the first hit. Stop when every question has a place it would be answered from,
    listed or recorded as not found.
 6. Never list the benchmark's own published results, scorecards, rankings or reports about these
-   {plural}, or news and write-ups of them. They would reach the scorer.
+   {plural}, or news and write-ups of them. They would reach the scorer.{sites_rule}
 7. Prefer an address that is the document itself (a PDF, or the page with the full text) to one
    that needs a script or a login to show it. When a page you open links to a file a question needs
    (a spreadsheet, a list, a PDF), list the file's own address too, from an archived copy as well.
@@ -189,6 +190,7 @@ def context_for(project, row: str | None, group: tuple[str, str] | None, missing
         "already_saved": [{"title": docs.get(d, {}).get("title"), "url": docs.get(d, {}).get("url")} for d in sorted(have)
                           if not (docs.get(d) or {}).get("not_kept_why")],
         "what_was_missing": missing or None,
+        "never_open": [site for site, _, _ in site_parts(meta.get("results_sites"))],
     }
 
 
@@ -225,14 +227,32 @@ def brief_for(context: dict, unit_word: str, plural: str) -> str:
                       f"{unit_word} sharing this one's value of that label (for example a company's own policy that "
                       f"covers all its products), not for this {unit_word} alone: it is then saved for each of them, "
                       "and their searches do not look for it again. ")
+    sites = context.get("never_open") or []
+    sites_rule = ("\n   Never open, search inside or list anything on these sites, or archived copies of their pages: "
+                  + ", ".join(sites) + ". They hold the benchmark's results, or the owner has ruled them out. Your "
+                  "fetch tool refuses them; pass them as blocked_domains on every web search." if sites else "")
     return BRIEF.format(who=who, plural=plural, missing_note=note.strip(), round_note=round_note,
-                        cap=min(CAP, context.get("cap") or CAP), max_save=MAX_SAVE, group_note=group_note)
+                        cap=min(CAP, context.get("cap") or CAP), max_save=MAX_SAVE, group_note=group_note,
+                        sites_rule=sites_rule)
 
 
-def command(folder: Path, model: str = FINDER_MODEL) -> list[str]:
+def deny_rules(sites) -> list[str]:
+    """The fetch rules that stop the finder opening a results site at all, not only saving from it: a
+    whole host and every subdomain (a rule for the host alone let handbook.globaldatabarometer.org
+    through, 20 Oct 2026). A site that names a path leaves the rest of its host open, so it is left to
+    the brief and to the check on what the finder opened. An archived copy cannot be refused this way
+    without refusing the whole archive; that check catches it."""
+    rules = []
+    for _, host, path in site_parts(sites):
+        if not path:
+            rules += [f"WebFetch(domain:{host})", f"WebFetch(domain:*.{host})"]
+    return rules
+
+
+def command(folder: Path, model: str = FINDER_MODEL, sites=()) -> list[str]:
     settings = {"disableAllHooks": True,
                 "permissions": {"deny": [f"{tool}(/{root}/**)" for root in OFF_LIMITS
-                                         for tool in ("Read", "Grep", "Glob", "Edit", "Write")]}}
+                                         for tool in ("Read", "Grep", "Glob", "Edit", "Write")] + deny_rules(sites)}}
     prompt = (f"Find documents for one benchmark row. Your folder is {folder}. Read {folder}/brief.md and follow it "
               f"exactly: read {folder}/context.json, search and read the web, and write {folder}/finds.json. Work only "
               "inside that folder.")
@@ -240,6 +260,34 @@ def command(folder: Path, model: str = FINDER_MODEL) -> list[str]:
             "--settings", json.dumps(settings), "--disable-slash-commands", "--no-session-persistence",
             "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--tools", TOOLS,
             "--allowed-tools", TOOLS, "--disallowed-tools", "Bash,Edit", "--model", model]
+
+
+def read_stream(text: str) -> tuple[dict | None, dict]:
+    """The run's result event, and its trail: each address the finder opened, each it was refused, and
+    each search, read from the stream of events (the plain json output keeps only the result)."""
+    result, calls = None, []
+    for line in (text or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "result":
+            result = event
+        elif event.get("type") == "assistant":
+            for block in (event.get("message") or {}).get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "tool_use" and block.get("name") in ("WebFetch", "WebSearch"):
+                    calls.append(block)
+    refused_ids = {d.get("tool_use_id") for d in (result or {}).get("permission_denials") or [] if isinstance(d, dict)}
+    trail = {"opened": [], "refused": [], "searched": []}
+    for call in calls:
+        given = call.get("input") or {}
+        if call.get("name") == "WebSearch":
+            trail["searched"].append(str(given.get("query") or ""))
+        else:
+            trail["refused" if call.get("id") in refused_ids else "opened"].append(str(given.get("url") or ""))
+    return result, trail
 
 
 def hb(project, *args, timeout: int = 300) -> tuple[int, str]:
@@ -367,7 +415,10 @@ def wider_search(project, row: str) -> dict | None:
     doubts = {q: c["unsure"] for q, c in cells.items() if isinstance(c.get("unsure"), dict)
               and c["unsure"].get("why") == "document" and not c["unsure"].get("handled")}
     empty = [q for q, c in cells.items() if c["state"] == "no_evidence"]
-    if not cells or (len(doubts) < WIDER_DOUBTS and len(empty) * 2 <= len(cells)):
+    # Text that went from a saved page at a re-check, which the owner asked to have looked for (recheck.look).
+    moved = [str(q) for e in found.get("expected_not_found") or [] if isinstance(e, dict) and e.get("by") == "recheck"
+             for q in e.get("questions") or [] if q in cells]
+    if not cells or (len(doubts) < WIDER_DOUBTS and len(empty) * 2 <= len(cells) and not moved):
         return None
     lines = []
     if len(empty) * 2 > len(cells):
@@ -380,7 +431,7 @@ def wider_search(project, row: str) -> dict | None:
     for e in found.get("expected_not_found") or []:
         if isinstance(e, dict) and e.get("what") and e.get("by") != "scorer":
             lines.append(f"Expected but not found: {e['what']} (looked: {str(e.get('where_looked') or '')[:200]}).")
-    return {"questions": [q for q in cells if q in doubts or q in empty], "missing": "\n".join(lines)[:6000]}
+    return {"questions": [q for q in cells if q in doubts or q in empty or q in moved], "missing": "\n".join(lines)[:6000]}
 
 
 def run_finder(project, row: str | None = None, group: tuple[str, str] | None = None, missing: str | None = None,
@@ -409,13 +460,13 @@ def run_finder(project, row: str | None = None, group: tuple[str, str] | None = 
     rounds = max(1, min(rounds, 2))
     stopped = None
     for n in range(1, rounds + 1):
-        result, finds = _session(context, meta, timeout_s, budget=budget - tokens)
+        result, finds, trail = _session(context, meta, timeout_s, budget=budget - tokens)
         usage = result.get("usage") or {}
         tokens += sum(int(usage.get(k) or 0) for k in ("input_tokens", "cache_creation_input_tokens",
                                                         "cache_read_input_tokens", "output_tokens"))
         stopped = result.get("stopped") or stopped
         replies.append(str(result.get("result") or "").strip())
-        results.append(dict(result, finds=finds))
+        results.append(dict(result, finds=finds, trail=trail))
         got = save_finds(project, finds, row, group)
         done.append(got)
         if n >= rounds or budget - tokens < MIN_ROUND:
@@ -439,16 +490,23 @@ def run_finder(project, row: str | None = None, group: tuple[str, str] | None = 
     name = (f"find-{row}" if row else f"find-{group[0]}-{group[1]}") + ("-second.json" if missing else ".json")
     receipt = project.path.joinpath(*RECEIPTS, name)
     receipt.parent.mkdir(parents=True, exist_ok=True)
-    write_json(receipt, {"rounds": results, "saved": done})
+    # What the finder read on a results site despite the rules (an archived copy, or a page on a site
+    # that names a path): its finds may echo the benchmark's own evidence, so the run says so.
+    sites = meta.get("results_sites")
+    read_blocked = sorted({u for r in results for u in (r.get("trail") or {}).get("opened") or []
+                           if on_results_site(u, sites)})
+    refused = sum(len((r.get("trail") or {}).get("refused") or []) for r in results)
+    write_json(receipt, {"rounds": results, "saved": done, "read_blocked": read_blocked})
     saved = sum(len(r["saved"]) for r in done)
     return {"saved": saved, "failed": len(done[-1]["failed"]), "not_found": not_found, "rounds": len(done),
             "tokens": tokens, "ok": any(r.get("finds") for r in results), "reply": replies[-1], "budget": budget,
             "stopped": stopped, "over_limit": sum(r.get("over_limit") or 0 for r in done),
+            "read_blocked": read_blocked, "refused": refused,
             # every session ended in an error (stopped, timed out, signed out) with nothing listed: no search happened
             "broke": all(r.get("is_error") for r in results) and not any(r.get("finds") for r in results)}
 
 
-def _session(context: dict, meta: dict, timeout_s: int, budget: int | None = None) -> tuple[dict, dict]:
+def _session(context: dict, meta: dict, timeout_s: int, budget: int | None = None) -> tuple[dict, dict, dict]:
     """One finder session, watched as it runs (as cmd_score watches a scorer) and stopped once it has
     processed more than `budget` tokens; finds.json as it stands is read either way."""
     from .cmd_score import watch
@@ -456,7 +514,7 @@ def _session(context: dict, meta: dict, timeout_s: int, budget: int | None = Non
     write_json(folder / "context.json", {k: v for k, v in context.items() if k != "cap"})
     (folder / "brief.md").write_text(brief_for(context, meta.get("unit_word") or "row", meta.get("unit_word_plural") or "rows"),
                                      encoding="utf-8")
-    proc = subprocess.Popen(command(folder), cwd=folder, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    proc = subprocess.Popen(command(folder, sites=meta.get("results_sites")), cwd=folder, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
     fired: list[bool] = []
 
@@ -469,11 +527,13 @@ def _session(context: dict, meta: dict, timeout_s: int, budget: int | None = Non
     drain = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
     drain.start()
     try:
-        seen = watch(proc.stdout, budget, proc.terminate)
+        lines: list[str] = []   # kept for the trail of what the finder opened (read_stream)
+        seen = watch((lines.append(line) or line for line in proc.stdout), budget, proc.terminate)
         proc.wait()
     finally:
         timer.cancel()
     result = seen["result"]
+    trail = read_stream("".join(lines))[1]
     if result is None:
         if fired:
             why = f"The finder ran for more than {timeout_s // 60} minutes and was stopped."
@@ -490,7 +550,7 @@ def _session(context: dict, meta: dict, timeout_s: int, budget: int | None = Non
     except (OSError, json.JSONDecodeError):
         finds = {}
     shutil.rmtree(folder, ignore_errors=True)
-    return result, finds
+    return result, finds, trail
 
 
 def _group(text: str) -> tuple[str, str]:
@@ -521,4 +581,7 @@ def main(argv) -> int:
               f"round{'s' if got['rounds'] != 1 else ''}. {got['tokens']:,} tokens processed"
               + (f", stopped at its budget of {got['budget']:,}" if got.get("stopped") else "") + "."
               + (f" {got['over_limit']} more addresses were listed than the {MAX_SAVE} a round saves." if got.get("over_limit") else ""))
+        if got["read_blocked"]:
+            print(f"Warning: the finder read {len(got['read_blocked'])} page(s) on a results site, so its finds may "
+                  "echo the benchmark's own evidence: " + ", ".join(got["read_blocked"]))
     return 0 if got["ok"] else 1

@@ -160,7 +160,15 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
   const edits = () => (HB.edits && HB.edits.ready ? HB.edits : null);
   const slugOf = (id) => String(id).replace(/[^A-Za-z0-9_-]/g, "_");
   const narrow = () => typeof window.matchMedia === "function" && window.matchMedia(NARROW).matches;
-  const pointsOf = (rule) => (rule.stakes && HB.isNum(rule.stakes.points) ? rule.stakes.points : null);
+  // A benchmark whose questions earn no points (Consumer Reports' measured figures) has no points at
+  // stake: its rules show none and sort by answers instead of a row of "0 points at stake" with empty
+  // bars (design read, 23 Oct 2026).
+  function hasPoints() {
+    const qs = (HB.data.bundle() || {}).questions || [];
+    return qs.some((q) => ((q.answer && q.answer.levels) || []).some((l) => HB.isNum(l.points) && l.points > 0));
+  }
+  const pointsOf = (rule) => (rule.stakes && HB.isNum(rule.stakes.points) && (rule.stakes.points > 0 || hasPoints())
+    ? rule.stakes.points : null);
 
   /* The latest saved entry for a rule that Claude has not applied yet: a decision
      (pendingOf) or a skip (skipPendingOf), never both. */
@@ -304,7 +312,7 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
 
   function whenWhere(decision) {
     const when = dateOf(decision.at);
-    const where = decision.via === "viewer" ? "in this viewer" : decision.via === "chat" ? "with Claude" : null;
+    const where = decision.via === "viewer" ? "on this page" : decision.via === "chat" ? "with Claude" : null;
     if (!when && !where) return "When and where it was decided is not recorded.";
     return "Decided" + (when ? " on " + when : "") + (where ? ", " + where : "") + (when ? "" : " (date not recorded)") + ".";
   }
@@ -700,7 +708,7 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
     }, word);
     return h("div", { class: "rl-sort" }, h("span", { id: "rules-sort-label" }, "Sort by"),
       h("div", { class: "segmented", role: "group", "aria-labelledby": "rules-sort-label" },
-        button("stakes", "Points at stake"), button("question", "Question order")));
+        button("stakes", hasPoints() ? "Points at stake" : "Answers at stake"), button("question", "Question order")));
   }
 
   /* ---- The tray: what waits for Claude ------------------------------------------------ */

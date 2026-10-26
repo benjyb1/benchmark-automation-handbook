@@ -473,6 +473,15 @@
         console.error("HB.chat.start failed:", err);
       }
     }
+    // The page checks its own text after each redraw and tells hb serve what came out badly
+    // (views/layoutcheck.js), so Claude can fix a name that doesn't fit.
+    if (HB.layoutCheck) {
+      try {
+        HB.layoutCheck.watch();
+      } catch (err) {
+        console.error("HB.layoutCheck.watch failed:", err);
+      }
+    }
   }
 
   /* After HB.data.replace() (hb serve's local.js, once the page is rebuilt): draw the head, the tab

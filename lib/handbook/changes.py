@@ -75,6 +75,7 @@ class _State:
         self.checks: dict[str, dict] = {}
         self.found: dict[str, dict] = {}
         self.drop_files: set[str] = set()       # rows whose answers, checks and found go
+        self.drop_earlier: set[str] = set()     # questions whose earlier answers go (answers/earlier/)
         self.dirty: set[str] = set()
         self.out_of_date: list = []
         self.removed: list = []
@@ -135,6 +136,7 @@ def _remove_rows(s: _State, ids: list) -> None:
 
 def _remove_questions(s: _State, ids: list) -> None:
     ids = list(dict.fromkeys(ids))
+    s.drop_earlier.update(ids)
     s.questions["questions"] = [q for q in s.questions.get("questions", []) if q.get("id") not in ids]
     for row, a in s.answers.items():
         cells = a.get("cells") or {}
@@ -478,9 +480,17 @@ def _change_all(project: Project, ops: list[dict], dry: bool) -> dict:
         elif kind == "found":
             keep(project.path / "found" / f"{row}.json")
             project.write_found(row, s.found[row])
+    earlier_dir = project.path / "answers" / "earlier"
+    for path in sorted(earlier_dir.glob("*.json")) if s.drop_earlier and earlier_dir.is_dir() else []:
+        data = project.earlier_answers(path.stem)
+        cells = data.get("cells") or {}
+        if set(cells) & s.drop_earlier:
+            keep(path)
+            data["cells"] = {q: v for q, v in cells.items() if q not in s.drop_earlier}
+            project.write_earlier_answers(path.stem, data)
     for row in s.drop_files:
-        for folder in ("answers", "checks", "found"):
-            path = project.path / folder / f"{row}.json"
+        for folder in ("answers", "answers/earlier", "checks", "found"):
+            path = project.path.joinpath(*folder.split("/"), f"{row}.json")
             if path.is_file():
                 keep(path)
                 path.unlink()

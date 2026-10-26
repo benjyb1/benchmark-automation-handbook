@@ -128,7 +128,7 @@
 
   function tiers(scored, figure) {
     const sets = parts().bandSets ? parts().bandSets() : [];
-    if (!sets.length) return { reason: "The score sheet has no bands, so there is no count for each." };
+    if (!sets.length) return { reason: "The score sheet has no bands, so there is no count for each.", noBands: true };
     const set = (figure && sets.find((s) => s.of === figure.key)) || sets.find((s) => s.of === "overall") || sets[0];
     const word = parts().bandWord(set);
     if (!scored.length) return { word, of: set.of, reason: `No ${nouns().one} has every question scored yet, so there is no count for each ${word}.` };
@@ -151,10 +151,14 @@
     if (!c || !Array.isArray(c.rows)) return null;
     const p = bundle().project || {};
     const name = c.edition != null ? String(c.edition).trim() : "";
-    const since = name && name !== String(p.edition || "").trim() ? `the ${name} edition` : "last edition";
+    const mine = String(p.edition || "").trim();
+    // "since the 2026 edition" read wrong beside "April to June 2026", and "since 2022" for a re-score of
+    // the published 2022 scores (design read, 23 Oct 2026).
+    const since = !name || mine.includes(name) || name.includes(mine) ? "last edition" : `the ${name} edition`;
+    const rescore = Boolean(name) && name === mine;
     const keys = [figure ? figure.key : null, "overall"].concat(sectionIds).filter((k, i, all) => k && all.indexOf(k) === i);
     const key = keys.find((k) => c.rows.some((r) => isNum((r.ours || {})[k]) && isNum((r.theirs || {})[k])));
-    if (!key) return { since, key: null, rises: [], falls: [], reason: "No figure is in both editions yet, so there are no movers to show." };
+    if (!key) return { since, rescore, name, key: null, rises: [], falls: [], reason: "No figure is in both editions yet, so there are no movers to show." };
     const pct = key === "overall" ? overallIsPercent(sheet) : true;
     const suffix = pct ? "%" : "";
     const all = c.rows
@@ -174,7 +178,7 @@
     const falls = all.filter((m) => m.gap < 0).sort(order).slice(0, SHOWN);
     const reason = !rises.length && !falls.length
       ? `Nothing moved: every ${nouns().one} scored the same as in ${since}.` : null;
-    return { since, key, label: figureName(sheet, key), rises, falls, reason };
+    return { since, rescore, name, key, label: figureName(sheet, key), rises, falls, reason };
   }
 
   /* ---- The model ----------------------------------------------------------------------------------- */
@@ -223,6 +227,7 @@
 
   function tiersBlock(m) {
     const t = m.tiers;
+    if (t.noBands) return null;          // a heading with only "no bands" under it looked unfinished (design read, 23 Oct 2026)
     const n = m.nouns;
     const title = `${capital(n.many)} in each ${t.word || "band"}`;
     if (!t.rows) {
@@ -271,7 +276,8 @@
 
   function moversBlock(m, ctx) {
     const mv = m.movers;
-    const title = "Biggest movers since " + (mv ? mv.since : "last edition");
+    const title = mv && mv.rescore ? "Biggest differences from the published " + mv.name + " scores"
+      : "Biggest movers since " + (mv ? mv.since : "last edition");
     if (!mv) {
       return h("div", { class: "rsum__movers" }, h("h4", { class: "rsum__sub" }, title),
         h("p", { class: "rsum__quiet" }, "Movers appear once this edition is compared with last edition's results."));
@@ -303,7 +309,7 @@
       h("header", { class: "rsum__head" },
         h("p", { class: "eyebrow" }, "Results at a glance"),
         h("h3", { class: "rsum__title", id: titleId }, m.title || "Results")),
-      h("div", { class: "rsum__body" }, headlineBlock(m), tiersBlock(m)),
+      h("div", { class: "rsum__body" + (m.tiers.noBands ? " rsum__body--one" : "") }, headlineBlock(m), tiersBlock(m)),
       moversBlock(m, ctx));
   }
 
@@ -315,7 +321,7 @@
     .rsum__head > * { margin: 0; }
     .rsum__title { font-size: var(--fs-26); line-height: 1.2; }
     .rsum__body { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s5) var(--s7); align-items: start; }
-    @media (min-width: 56rem) { .rsum__body { grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr); } }
+    @media (min-width: 56rem) { .rsum__body { grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr); } .rsum__body--one { grid-template-columns: minmax(0, 1fr); } }
 
     .rsum__headline { display: grid; gap: var(--s1); align-content: start; }
     .rsum__headline > * { margin: 0; }

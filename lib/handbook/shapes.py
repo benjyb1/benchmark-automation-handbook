@@ -38,11 +38,12 @@ HOW = ("plan", "search", "last_year", "provided")
 DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture", "url")
 HOST_TYPES = ("issuer", "repository", "third_party", "test_server", "none")
 TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr")
+RECHECK_RESULTS = ("same", "unreachable")      # a change is a new copy of its own, not a check on this one
 CELL_STATES = ("answered", "no_evidence", "not_applicable", "not_run")
 UNSURE_WHY = ("rule", "document")
 FLAGS = ("quote_not_found", "after_cutoff", "reads_disagree", "group_differs", "judgement",
          "weak_source", "document_changed", "owner_changed", "todays_version", "holds_back",
-         "needs_document")
+         "needs_document", "page_gone")
 RUN_KINDS = ("trial", "full", "rerun")
 USAGE_STEPS = ("find", "second_find", "score", "second")
 RECEIPT_KEYS = ("fresh", "cache_read", "output", "turns")
@@ -855,6 +856,48 @@ def check_meta(d) -> list[str]:
     weak = d.get("weak")              # absent or null: no mark; false: cleared; {"why"}: weak
     if weak is not None and weak is not False and not (isinstance(weak, dict) and _text(weak.get("why"))):
         out.append(f"{w}: weak must be null, false or {{\"why\": text}}, found {_show(weak)}")
+    earlier = d.get("earlier")        # absent: the first copy; {"doc", "added", "removed"}: a later copy (recheck.py)
+    if earlier is not None and not (isinstance(earlier, dict) and isinstance(earlier.get("doc"), str)
+                                    and _DOC_RE.match(earlier["doc"]) and earlier["doc"] != doc
+                                    and _is_int(earlier.get("added")) and earlier["added"] >= 0
+                                    and _is_int(earlier.get("removed")) and earlier["removed"] >= 0):
+        out.append(f"{w}: earlier must be {{\"doc\": another document id, \"added\": lines, \"removed\": lines}}, "
+                   f"found {_show(earlier)}")
+    elif isinstance(earlier, dict):
+        # held: rows kept on the earlier copy as most of the text had gone; accepted, looking: the owner's choice
+        if earlier.get("held") is not None and not isinstance(earlier["held"], bool):
+            out.append(f"{w}: earlier held must be true or false, found {_show(earlier['held'])}")
+        for key in ("accepted", "looking"):
+            if earlier.get(key) is not None and not is_stamp(earlier[key]):
+                out.append(f"{w}: earlier {key} must be a timestamp, found {_show(earlier[key])}")
+    checks = d.get("rechecks")        # each look at the live page since: {"at", "result" same|unreachable, "why"?}
+    if checks is not None:
+        if not isinstance(checks, list):
+            out.append(f"{w}: rechecks must be a list, found {_show(checks)}")
+        for i, c in enumerate(_list(checks)):
+            if not (isinstance(c, dict) and is_stamp(c.get("at")) and c.get("result") in RECHECK_RESULTS
+                    and (c.get("why") is None or _text(c.get("why")))):
+                out.append(f"{w}: rechecks {i + 1} must be {{\"at\": timestamp, \"result\": "
+                           f"{' or '.join(RECHECK_RESULTS)}, \"why\": text or absent}}, found {_show(c)}")
+    return out
+
+
+def check_changes(d, doc: str) -> list[str]:
+    """documents/<doc>/changes.json: the lines that changed from the copy before (recheck.py)."""
+    out = _Out()
+    if not out.obj(d, "changes.json"):
+        return out
+    w = f"changes of {_show(doc)}"
+    if d.get("later") != doc:
+        out.append(f"{w}: later must be this document's own id")
+    if not (isinstance(d.get("earlier"), str) and _DOC_RE.match(d["earlier"])):
+        out.append(f"{w}: earlier must be a document id")
+    for key in ("added", "removed"):
+        if not (_is_int(d.get(key)) and d[key] >= 0):
+            out.append(f"{w}: {key} must be a whole number of lines")
+    for i, line in enumerate(out.list_of(d, "lines", w)):
+        if not (isinstance(line, dict) and line.get("op") in ("+", "-") and isinstance(line.get("text"), str)):
+            out.append(f"{w}: line {i + 1} must be {{\"op\": \"+\" or \"-\", \"text\": text}}")
     return out
 
 
@@ -1008,6 +1051,34 @@ def _check_feedback(out, f, w, value):
             out.obj(f.get(key), f"{w}: {key}")
     if f.get("kept") is False and "from" not in f:
         out.append(f"{w}: from is missing")
+
+
+def check_earlier_answers(d) -> list[str]:
+    """answers/earlier/<row>.json: {"row", "cells": {question: [an answer as it was before a run replaced it,
+    oldest first, with "replaced" (when) and "replaced_by" (the run, or null)]}} (ingest.keep_earlier)."""
+    out = _Out()
+    if not out.obj(d, "earlier answers file"):
+        return out
+    w = f"earlier answers {_show(d.get('row'))}"
+    out.text(d, "row", w)
+    cells = d.get("cells")
+    if not isinstance(cells, dict):
+        out.append(f"{w}: cells must be an object of question id to a list of earlier answers")
+        return out
+    for qid, versions in cells.items():
+        if not isinstance(versions, list):
+            out.append(f"{w}: cell {_show(qid)} must be a list of earlier answers")
+            continue
+        for i, v in enumerate(versions):
+            wi = f"{w}: cell {_show(qid)} version {i + 1}"
+            if not out.obj(v, wi):
+                continue
+            out.enum(v, "state", CELL_STATES, wi)
+            out.stamp(v, "replaced", wi, nullable=False)
+            out.text(v, "replaced_by", wi, required=False, nullable=True)
+            if not isinstance(v.get("evidence", []), list):
+                out.append(f"{wi}: evidence must be a list")
+    return out
 
 
 def check_answers(d, questions) -> list[str]:
@@ -1574,6 +1645,10 @@ def check_folder(project: Project) -> list[str]:
                 probs.append(f"{rel}: the document is not kept but has a pages.json")
             if isinstance(meta.get("file"), str) and meta["file"] and not (d / meta["file"]).is_file():
                 probs.append(f"{rel}/meta.json: file {_show(meta['file'])} is not in the folder")
+            if (d / "changes.json").is_file():
+                got = _load(d / "changes.json", f"{rel}/changes.json", probs)
+                if got is not None:
+                    _add(probs, f"{rel}/changes.json", check_changes(got, d.name))
             if has_pages:
                 pages = _load(d / "pages.json", f"{rel}/pages.json", probs)
                 if pages is not None:
@@ -1657,6 +1732,14 @@ def check_folder(project: Project) -> list[str]:
                 if not _member(rid, rule_ids):
                     probs.append(f"{rel}: cell {_show(qid)} rests on rule {_show(rid)}, "
                                  "which is not in rules.json")
+    for rel, data in per_row("answers/earlier", check_earlier_answers):
+        for qid, versions in (data.get("cells") or {}).items() if isinstance(data.get("cells"), dict) else []:
+            for v in _list(versions):
+                for ev in _list(v.get("evidence")) if isinstance(v, dict) else []:
+                    doc = ev.get("doc") if isinstance(ev, dict) else None
+                    if _text(doc) and doc not in docs:
+                        probs.append(f"{rel}: an earlier answer to {_show(qid)} cites document {_show(doc)}, "
+                                     "which has no meta.json")
     for rel, data in per_row("checks", check_checks):
         cells = data.get("cells") if isinstance(data.get("cells"), dict) else {}
         for qid in cells:

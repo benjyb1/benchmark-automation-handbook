@@ -97,6 +97,7 @@
       scope: { rows: Array.isArray(scope.rows) ? scope.rows : null, questions: Array.isArray(scope.questions) ? scope.questions : null },
       stop_after: c.stop_after === "find" || c.stop_after === "score" ? c.stop_after : null,
       applied: new Set(arr(c.applied)),
+      updated: typeof c.updated === "string" ? c.updated : "",
     };
   }
 
@@ -556,8 +557,15 @@
     // Under hb serve: a run left open with nothing scoring here is not running, whatever its last row says.
     const idleHere = Boolean(run && !theirs && !halted && scoringHere() === false && (run.kind === "trial" || run.kind === "full"));
     const said = [];
+    // A scoring job running here is the truth, ahead of the bundle's copy of the run and its control, which
+    // only refresh when a row ends (23 Oct 2026: "Paused" while a chat start scored Kefalonia).
+    const live = headerPause && s.job.status === "running" ? s.job : null;
+    const pausing = live && halted && String(ctl.updated || "") >= String(live.started || "");
     if (theirs) {
       said.push(h("b", null, (HB.team.nameOf(run.by) || "A colleague") + " is running this"));
+    } else if (live) {
+      said.push(h("b", null, live.line || live.title || "Running"));
+      if (pausing) said.push(" \u00b7 pausing after this " + (HB.data.unitWords(1).replace(/^1 /, "")));
     } else if (halted) {
       said.push(h("b", null, ctl.paused ? "Paused" : "Stopped"));
     } else if (idleHere) {
@@ -569,10 +577,11 @@
     } else {
       said.push(h("b", null, "Next run"), " " + scopeWords(ctl.scope.rows, ctl.scope.questions, b));
     }
-    if (run) said.push(" \u00b7 " + fmtInt(prog.done) + " of " + HB.data.unitWords(prog.rows) + " done");
+    if (live && live.total) said.push(" \u00b7 " + fmtInt(Math.min(live.done || 0, live.total)) + " of " + fmtInt(live.total) + " steps done");
+    else if (run) said.push(" \u00b7 " + fmtInt(prog.done) + " of " + HB.data.unitWords(prog.rows) + " done");
     if (run && HB.cost && HB.cost.part()) said.push(" \u00b7 " + HB.cost.tokens(spentOn(run)) + " tokens so far");
     let main = null;
-    if (ready && !theirs && halted) {
+    if (ready && !theirs && halted && !live) {
       main = button("rb-resume", wants("resume") ? "Resume asked" : "Resume", () => resume(b, "rb-resume"), { primary: true, disabled: wants("resume") });
     } else if (ready && !theirs && run && idleHere) {
       main = button("rb-carry", "Carry on", () => resume(b, "rb-carry"), { primary: true, title: "Carry on the run from where it stopped" });

@@ -35,7 +35,7 @@ from .cmd_add_document import add_file
 from .cmd_fetch import save_url
 from .folder import HandbookError, Project
 from .ingest import (_is_english, _problem_list, _same, _stored_cell, kit_captures, merge_owner,
-                     owner_cell, validate_answers)
+                     keep_earlier, owner_cell, validate_answers)
 from .kit import rules_for, unit
 from .prepare import prepare_document
 from .quotecheck import is_grounded, longest_run, normalise, source_join
@@ -206,6 +206,7 @@ def _handle(project: Project, c: dict, stamp: str, rounds: list) -> dict:
         problems = check_answers({"row": row, "cells": {qid: cell}}, project.read("questions"))
         if problems:
             raise _Skip("The answer could not be stored: " + "; ".join(problems))
+        keep_earlier(project, row, cells, {qid: cell}, "owner", stamp)     # Claude's answer, as it was
         cells[qid] = cell
         answers["row"] = row
         project.write_answers(row, answers)
@@ -347,6 +348,7 @@ def record(project: Project, cid: str, run: str, data, captures, now: datetime,
     problems = check_answers({"row": row, "cells": {qid: new}}, project.read("questions"))
     if problems:
         raise _problem_list(f"Nothing was stored for {row} {qid}: the stored cell would have", problems)
+    keep_earlier(project, row, cells, {qid: new}, run)
     cells[qid] = new
     answers["row"] = row
     project.write_answers(row, answers)

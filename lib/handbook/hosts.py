@@ -137,12 +137,22 @@ def on_results_site(url, sites) -> str | None:
     if not host:
         return None
     path = urllib.parse.urlsplit(page if "://" in page else "https://" + page).path.lower()
-    for site in sites or []:
-        # A site may name a path ("aldf.org/us-state-rankings"): only that part of the host holds the
-        # results, so the owner's own other documents there stay usable (ALDF re-test, 15 Oct 2026).
-        site = str(site).strip().lower().removeprefix("https://").removeprefix("http://").removeprefix("www.")
-        site_host, _, site_path = site.partition("/")
-        if site_host and (host == site_host or host.endswith("." + site_host)) \
-                and (not site_path or path.startswith("/" + site_path.rstrip("/"))):
+    for site, site_host, site_path in site_parts(sites):
+        if (host == site_host or host.endswith("." + site_host)) \
+                and (not site_path or path.startswith("/" + site_path)):
             return site
     return None
+
+
+def site_parts(sites) -> list[tuple[str, str, str]]:
+    """(site, host, path) for each of a project's results sites, tidied: no scheme, no www., lower
+    case; path is "" for a whole host. A site may name a path ("aldf.org/us-state-rankings"): only
+    that part of the host holds the results, so the owner's own other documents there stay usable
+    (ALDF re-test, 15 Oct 2026)."""
+    parts = []
+    for site in sites or []:
+        site = str(site).strip().lower().removeprefix("https://").removeprefix("http://").removeprefix("www.")
+        site_host, _, site_path = site.partition("/")
+        if site_host:
+            parts.append((site, site_host, site_path.rstrip("/")))
+    return parts

@@ -84,7 +84,11 @@
   function sectionName(id) {
     const sheet = bundle().scoresheet || {};
     const s = (sheet.sections || []).find((x) => x && x.id === id);
-    return s && s.name ? `${s.name} (${id})` : String(id);
+    // The name alone: "Contact waiting time (Ease of Contact) (EC)" read as a code (design read, 23 Oct 2026);
+    // the id only tells apart two sections with one name.
+    if (!s || !s.name) return String(id);
+    const twin = (sheet.sections || []).filter((x) => x && x.name === s.name).length > 1;
+    return twin ? `${s.name} (${id})` : String(s.name);
   }
 
   function keyName(key) {
@@ -429,10 +433,12 @@
         const i = levels.findIndex((l) => String(l.value) === String(c.value));
         if (i >= 0) counts[i] += 1;
       });
+      // A question that earns no points shows no "(0 points)" (Consumer Reports' "ND", design read, 23 Oct 2026).
+      const scoresPoints = levels.some((l) => HB.isNum(l.points) && l.points > 0);
       const parts = levels.map((l, i) => {
         const tone = step(i, levels.length);
         const meaning = l.meaning ? `: ${l.meaning}` : "";
-        return { label: `${String(l.value).replace(/^./, (c) => c.toUpperCase())} (${plural(l.points || 0, "point", "points")})${meaning}`,
+        return { label: `${String(l.value).replace(/^./, (c) => c.toUpperCase())}${scoresPoints ? ` (${plural(l.points || 0, "point", "points")})` : ""}${meaning}`,
           value: counts[i], tone: tone.fill, ink: tone.ink };
       }).reverse();
       if (figureQ) parts.unshift({ label: HB.figureWords(q), value: figures, tone: "var(--step-2)", ink: undefined });

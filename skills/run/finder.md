@@ -35,7 +35,7 @@ Read nothing else in the project folder.
 3. Find the version that was current on the cut-off date. A document dated after the cut-off is no use. If the live page has changed since, try an archived copy from before the cut-off (web.archive.org).
 4. A site in several parts is several documents: save each part that matters.
 5. Do not stop at the first hit. Stop when every question has a place it would be answered from, saved or recorded as not found.
-6. Never save the benchmark's own published results, scorecards, rankings or reports about these rows (the benchmark is called NAME), or news and write-ups of them. They would reach the scorer.
+6. Never save the benchmark's own published results, scorecards, rankings or reports about these rows (the benchmark is called NAME), or news and write-ups of them. They would reach the scorer. Never open, search inside or save anything on the sites in `results_sites` in project.json, or archived copies of their pages: they hold the benchmark's results, or the owner has ruled them out. Pass them as blocked_domains on every web search.
 
 ## Saving
 

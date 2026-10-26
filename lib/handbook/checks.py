@@ -222,6 +222,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
 
     cells = {row: _scored_cells(project, row) for row in scored_rows(project)}
     flags: dict[str, dict[str, set]] = {row: {qid: set() for qid in cs} for row, cs in cells.items()}
+    from .recheck import held_pages
+    gone = held_pages(docs.meta)          # pages most of whose text went at a re-check, waiting for the owner
 
     for row, row_cells in cells.items():
         for qid, c in row_cells.items():
@@ -238,6 +240,8 @@ def compute_checks(project: Project) -> dict[str, dict]:
                     mine.add("after_cutoff")
                 elif _todays_version(docs.meta.get(doc), row_cutoff):
                     mine.add("todays_version")    # no second search for it: the finder cannot reach the archive either
+            if any(doc in gone for doc in _cited(c)):
+                mine.add("page_gone")
             if _cited(c) and all(is_weak(docs.meta.get(doc)) for doc in _cited(c)):
                 mine.add("weak_source")
             doubt = c.get("unsure")

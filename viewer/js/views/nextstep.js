@@ -42,6 +42,9 @@
 .hb-next { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin-left: auto; }
 .hb-next__go { min-height: 2.75rem; padding-inline: var(--s5, 1.5rem); font-size: var(--fs-16); }
 .hb-next__hint { color: var(--ink-2); font-size: var(--fs-12); }
+.hb-next__prog { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; }
+.hb-next__prog progress { width: 9rem; height: 0.375rem; accent-color: var(--accent); }
+.hb-next__time { color: var(--ink-2); font-size: var(--fs-12); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hb-next__try { min-height: 2.75rem; }
 .hb-score__choices { display: grid; gap: var(--s2); margin: 0; padding: 0; border: 0; }
 .hb-score__choice { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--s1) var(--s2); align-items: start;
@@ -118,12 +121,33 @@
     const job = busyJob();
     let box;
     if (job) {
-      const parts = [HB.working(job.line && job.line !== "Waiting to start" ? job.line : job.title || "Claude is working on it", { large: true })];
-      if (job.kind === "scoring") {
+      const s = HB.local.state() || {};
+      const running = job.status === "running";
+      const parts = [HB.working(job.line && job.line !== "Waiting to start" ? job.line
+        : running ? job.title || "Claude is working on it" : "Starting: " + (job.title || "Claude's job"), { large: true })];
+      // How far it is, moving every second (local.js), and how long this step has taken: a step is one long
+      // Claude call that says nothing until it ends (23 Oct 2026).
+      if (running && typeof HB.local.progress === "function") {
+        const pct = HB.local.progress(job);
+        parts.push(h("span", { class: "hb-next__prog" },
+          h("progress", { max: "100", value: String(pct), "data-hb-progress": "", "aria-label": "Progress" }),
+          h("span", { class: "hb-next__time" }, h("span", { "data-hb-pct": "" }, pct + "%"), " \u00b7 ",
+            h("span", { "data-hb-elapsed": "" }, HB.local.elapsed(job)), " on this step")));
+      }
+      // A start waiting behind this job says so, rather than nothing until this one ends.
+      const next = running ? arr(s.queued).filter((q) => q.kind === "scoring" || q.kind === "setup") : [];
+      if (next.length) {
+        parts.push(h("span", { class: "hb-next__hint" }, "Then " + (next.length === 1 ? next[0].title.toLowerCase()
+          : fmtInt(next.length) + " more jobs") + ", once this " + (job.kind === "scoring" ? words().one : "job") + " is done"));
+      }
+      if (job.kind === "scoring" && running) {
         // Once pressed it keeps saying so until the run stops (20 Oct 2026: it went back to "Pause" at the next
-        // redraw, so the owner could not tell it had worked).
+        // redraw, so the owner could not tell it had worked). A pause set before this job started is not this
+        // job's: the job clears it when it starts, but the page's copy of the control can lag a few seconds
+        // (23 Oct 2026: a chat start read "Pausing" while it scored).
         const ctl = bundle().control || {};
-        const asked = pausedJob === job.key || ctl.paused === true || ctl.stop_now === true;
+        const halted = (ctl.paused === true || ctl.stop_now === true) && String(ctl.updated || "") >= String(job.started || "");
+        const asked = pausedJob === job.key || halted;
         const pause = h("button", { type: "button", class: "btn btn--small", id: "hb-next-pause", disabled: asked },
           asked ? "Pausing after this " + words().one : "Pause");
         pause.addEventListener("click", async () => {
@@ -139,6 +163,9 @@
         parts.push(pause);
       }
       box = h("div", { class: "hb-next", id: "hb-next" }, parts);
+      // What the header says, leaving out the parts that tick every second (they move in place).
+      box.dataset.sig = [job.key, job.status, job.line, job.done, job.total, next.map((q) => q.key).join(","),
+        box.querySelector("#hb-next-pause") ? box.querySelector("#hb-next-pause").textContent : ""].join("|");
       // Look again in 2 s, but only swap the header when what it says has changed: swapping it every time
       // restarted the dots and jolted the top of the page (Benjy, 20 Oct 2026).
       timer = setTimeout(function again() {
@@ -146,7 +173,7 @@
         if (!old) return;
         const fresh = node();
         if (!fresh) old.remove();
-        else if (fresh.textContent !== old.textContent) old.replaceWith(fresh);
+        else if (fresh.dataset.sig !== old.dataset.sig) old.replaceWith(fresh);
         else { clearTimeout(timer); timer = setTimeout(again, 2000); }
       }, 2000);
     } else {

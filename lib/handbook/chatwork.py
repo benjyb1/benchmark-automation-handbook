@@ -2,7 +2,8 @@
 read and search them), files it makes for the owner (CSV or Excel, in exports/), and the copies of
 the project taken before a background job, so one Undo puts everything back.
 
-    row_documents(project, row) -> [{doc, title, publisher, date, url, pages, kept}]
+    row_documents(project, row) -> [{doc, title, publisher, date, url, pages, kept, saved, earlier_copy?,
+                                     later_copy?, last_checked?}]
     read_pages(project, doc, page, count=1) -> {doc, title, pages: [{page, text}], last_page}
     search(project, words, rows=None, limit=25) -> [{row, doc, title, page, snippet}]
     make_file(project, name, columns, rows, fmt) -> Path         # exports/<name>.csv or .xlsx
@@ -40,12 +41,23 @@ def _rows_of(project: Project, rows=None) -> list[str]:
 def row_documents(project: Project, row: str) -> list[dict]:
     """The documents found for `row`, in the order the finder kept them."""
     _rows_of(project, [row])
+    from .recheck import later_map
     docs = project.documents()
+    later = later_map(docs)
     out = []
     for doc in project.found(row).get("documents") or []:
         m = docs.get(doc) or {}
-        out.append({"doc": doc, "title": m.get("title"), "publisher": m.get("publisher"), "date": m.get("date"),
-                    "url": m.get("url"), "pages": len(project.pages(doc)), "kept": m.get("kept") is not False})
+        item = {"doc": doc, "title": m.get("title"), "publisher": m.get("publisher"), "date": m.get("date"),
+                "url": m.get("url"), "pages": len(project.pages(doc)), "kept": m.get("kept") is not False,
+                "saved": str(m.get("fetched") or "")[:10] or None}
+        # Copies of the same page over time (hb recheck): the one before this, the one after, the last look.
+        if isinstance(m.get("earlier"), dict):
+            item["earlier_copy"] = m["earlier"]
+        if later.get(doc):
+            item["later_copy"] = later[doc]
+        if m.get("rechecks"):
+            item["last_checked"] = m["rechecks"][-1]
+        out.append(item)
     return out
 
 
@@ -218,7 +230,7 @@ def restore(project_path: Path, snap: Path, keep_current: Path) -> None:
 
 # Not part of any change's Undo: files made for the owner, the record of tokens used, the team's shared
 # files, and what `check` and `build` make again straight after.
-NOT_UNDONE = (EXPORTS, "page-data/_log", "team", "team.json", "viewer", "checks")
+NOT_UNDONE = (EXPORTS, "page-data/_log", "page-data/layout.json", "team", "team.json", "viewer", "checks")
 
 
 def _undone(rel: str) -> bool:

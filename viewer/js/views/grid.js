@@ -65,6 +65,7 @@
     group_differs: "another {unit} in the same group cited the same document and got a different answer",
     after_cutoff: "a document cited is dated after the cut-off",
     todays_version: "a web page cited was saved as it is today, with no copy from before the cut-off",
+    page_gone: "most of the text of a web page cited has gone from the live site; the answer still reads the earlier copy until you choose what to do",
     reads_disagree: "a second, independent read gave a different answer",
     weak_source: "every document cited is a weak source, such as a copy on another site",
     owner_changed: "the owner corrected this answer; open it to see whether Claude agreed",
@@ -151,15 +152,20 @@
 .hbg-ov__gh > .hbg-ov__pin-l { align-self: center; }
 .hbg-ov__gh > .hbg-ov__pin-r { justify-content: flex-end; }
 .hbg-ov__secs, .hbg-ov__mk { display: flex; gap: var(--sec-gap); }
-.hbg-ov__sec { display: grid; gap: 2px; min-width: 0; }
-.hbg-ov__secname { width: 0; min-width: 100%; color: var(--ink); line-height: 1.2; hyphens: auto; overflow-wrap: anywhere; }   /* wraps as far as it needs: never cut (22 Oct 2026) */
+.hbg-ov__sec { display: grid; grid-template-rows: 1fr auto; gap: 2px; min-width: 0; }   /* the numbers sit on one line under names of any height */
+.hbg-ov__sec > .hbg-ov__secname { align-self: end; }
+.hbg-ov__secname { width: 0; min-width: 100%; color: var(--ink); line-height: 1.2; overflow-wrap: anywhere; }   /* wraps as far as it needs: never cut (22 Oct 2026); no hyphens: the section is as wide as its longest word, and "hyphens: auto" still broke "com-mitment" to fill a line (GLAAD, 23 Oct) */
+/* A section is as wide as its marks or its name's longest word, whichever is wider, so a two-mark
+   section called "Vegetarian diets" wraps between words, not inside one (BFCI, 23 Oct 2026). The
+   rows' mark groups take the same width, so the marks stay under their numbers. */
+.hbg-ov__sec, .hbg-ov__mks { flex: none; width: var(--sw); }
 .hbg-ov__qs, .hbg-ov__mks { display: flex; gap: var(--mk-gap); }
 .hbg-ov__q { display: grid; justify-items: center; width: var(--mk-w); font-size: 0.6875rem; font-weight: 500; }
 .hbg-ov__q .hbg-qid { padding: 0; }
 .hbg-ov__g + .hbg-ov__g { border-top: 1px solid var(--rule); }
 .hbg-ov__gh { min-height: 2.375rem; padding-block: var(--s1); background: color-mix(in srgb, var(--paper) 70%, var(--surface)); border-bottom: 1px solid var(--rule); }
 .hbg-ov__gname { overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.hbg-ov__gmeta { color: var(--ink-2); font-size: var(--fs-12); white-space: nowrap; }
+.hbg-ov__gmeta { min-width: 0; color: var(--ink-2); font-size: var(--fs-12); }
 .hbg-ov__gh .hbg-num { font-weight: 600; }
 .hbg-ov__open { justify-self: end; white-space: nowrap; }
 .hbg-ov__rows { padding-block: 2px; }
@@ -198,7 +204,7 @@
 .hbg-table thead tr:first-child th { border-bottom-color: transparent; vertical-align: bottom; }
 .hbg-table thead tr:last-child th { border-bottom-color: var(--rule-strong); }
 .hbg-table .hbg-sec { text-align: left; padding-inline: var(--s2); }
-.hbg-secname { width: 0; min-width: 100%; line-height: 1.25; hyphens: auto; overflow-wrap: anywhere; }   /* wraps, never cut (22 Oct 2026) */
+.hbg-secname { width: 0; min-width: max(100%, var(--word-w, 0px)); line-height: 1.25; overflow-wrap: anywhere; white-space: normal; }   /* wraps between words, never cut: at least as wide as its longest word (--word-w, measured), so the columns widen rather than the word breaking (23 Oct 2026) */
 .hbg-table .hbg-start { border-left: 1px solid var(--rule-strong); }
 .hbg-table .hbg-corner { left: 0; z-index: 4; text-align: left; vertical-align: bottom; padding-inline: var(--s2); border-right: 1px solid var(--rule); border-bottom-color: var(--rule-strong); }
 .hbg-table .hbg-rh { position: sticky; left: 0; z-index: 1; min-width: 9rem; max-width: 15rem; padding: var(--s1) var(--s3) var(--s1) var(--s2); border-right: 1px solid var(--rule); color: var(--ink); font-weight: 500; text-align: left; overflow-wrap: anywhere; }
@@ -722,7 +728,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         short !== (unit.name || unit.id) ? h("span", { class: "visually-hidden" }, " (" + (unit.name || unit.id) + ")") : null),
       HB.gridGaps.marker(unit));
     if (docs) return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" }, who, h("span", { class: "hbg-docnote" }, docs));
-    const marks = m.sections.map((sec) => h("span", { class: "hbg-ov__mks" }, sec.qs.map((q) => mark(ctx, m, unit, q))));
+    const marks = m.sections.map((sec, i) => h("span", { class: "hbg-ov__mks", style: { "--sw": "var(--sw-" + i + ")" } },
+      sec.qs.map((q) => mark(ctx, m, unit, q))));
     return h("div", { class: "hbg-ov__r", "data-row": unit.id, role: "listitem" },
       who,
       h("span", { class: "hbg-ov__mk" }, marks),
@@ -750,10 +757,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const total = m.sections.reduce((n, s) => n + s.qs.length, 0);
     return h("div", { class: "hbg-ov__head" },
       h("span", { class: "hbg-ov__pin-l" }, unitWord),
-      h("span", { class: "hbg-ov__secs" }, m.sections.map((sec) => {
+      h("span", { class: "hbg-ov__secs" }, m.sections.map((sec, si) => {
         const nums = m.shortIds(sec);
         const full = sec.name ? sec.id + " " + sec.name : sec.id;
-        return h("span", { class: "hbg-ov__sec" },
+        return h("span", { class: "hbg-ov__sec", style: { "--sw": "var(--sw-" + si + ")" } },
           h("span", { class: "hbg-ov__secname", title: full }, sec.name || sec.id || "No section"),
           h("span", { class: "hbg-ov__qs" }, sec.qs.map((q, i) => {
             col += 1;
@@ -767,7 +774,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 
   function strips(ctx, m) {
     const nq = m.sections.reduce((n, sec) => n + sec.qs.length, 0);
-    const root = h("div", { class: "hbg-ov", style: { "--nq": String(nq), "--ns": String(m.sections.length) } }, stripsHead(m));
+    const root = h("div", { class: "hbg-ov", style: Object.assign({ "--nq": String(nq), "--ns": String(m.sections.length) }, sectionWidths(m)) },
+      stripsHead(m));
     const open = ctx.state.openGroups || (ctx.state.openGroups = {});
     m.groups.forEach((g, index) => {
       const sec = h("section", { class: "hbg-ov__g", "aria-label": g.title });
@@ -802,7 +810,85 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     });
     if (nameFit) root.style.setProperty("--name-max", nameFit);
     requestAnimationFrame(fitNames);
+    fitSectionsWhenShown(root, m, 0);
     return root;
+  }
+
+  // Each section's width: its marks, or its name's longest word once measured (wordFit, kept across
+  // redraws so the strips don't jump). The strips column is the sum of them, so the rows' grid and
+  // the header's agree.
+  const wordFit = {};
+  function sectionWidths(m) {
+    const out = {};
+    const widths = m.sections.map((sec, i) => {
+      const n = Math.max(1, sec.qs.length);
+      const marks = "calc(" + n + " * var(--mk-w) + " + (n - 1) + " * var(--mk-gap))";
+      const word = wordFit[sec.name || sec.id || ""] || longestWord(sec.name || sec.id || "No section");
+      out["--sw-" + i] = word ? "max(" + marks + ", " + word + "px)" : marks;
+      return "var(--sw-" + i + ")";
+    });
+    // At least 10rem, so a group's line ("26 chocolate bars · 3 flagged") fits over a benchmark with two
+    // questions instead of running under Overall (Consumer Reports, design sweep 23 Oct 2026).
+    out["--strip-w"] = "max(10rem, calc(" + widths.join(" + ") + " + " + Math.max(0, m.sections.length - 1) + " * var(--sec-gap)))";
+    return out;
+  }
+
+  // Measure once the overview is on the page (just after it is built), and again when the page's
+  // fonts have loaded, since the words are wider in the real font than in the fallback. A timer, not
+  // a frame: a tab in the background gets no frames, and its strips stayed narrow.
+  function fitSectionsWhenShown(root, m, tries) {
+    setTimeout(() => {
+      if (!root.isConnected) {
+        if (tries < 60) fitSectionsWhenShown(root, m, tries + 1);
+        return;
+      }
+      fitSections(root, m);
+      if (document.fonts && document.fonts.status !== "loaded") document.fonts.ready.then(() => fitSections(root, m));
+    }, tries ? 50 : 0);
+  }
+
+  // The widest word of a header's text, in px, in the headers' font (600 at --fs-12) as the page
+  // sets it; before anything is on screen this is the best guess, and fitSections corrects the strips.
+  let wordCanvas = null;
+  function longestWord(text) {
+    wordCanvas = wordCanvas || document.createElement("canvas");
+    const pen = wordCanvas.getContext("2d");
+    const rootStyle = getComputedStyle(document.documentElement);
+    const raw = rootStyle.getPropertyValue("--fs-12").trim();
+    const size = raw.endsWith("rem") ? parseFloat(raw) * parseFloat(rootStyle.fontSize) : parseFloat(raw) || 12;
+    pen.font = "600 " + size + "px " + getComputedStyle(document.body).fontFamily;
+    return headerFit(pen, text);
+  }
+
+  // A header's width: its longest word, and room enough that the name takes at most about three lines,
+  // up to 120px: "Contact waiting time (Ease of Contact)" ran to five lines over three marks while half
+  // the grid stood empty (design read, 23 Oct 2026).
+  function headerFit(pen, text) {
+    const t = String(text || "");
+    const words = t.split(/\s+|(?<=-)/).filter(Boolean);
+    const word = Math.max(0, ...words.map((w) => pen.measureText(w).width));
+    return Math.ceil(Math.max(word, Math.min(pen.measureText(t).width / 3, 120)) + 2);
+  }
+
+  // Measure each section name's longest word in the header's own font; when one is new, set the
+  // widths again on the overview.
+  function fitSections(live, m) {
+    const name = live && live.isConnected && live.querySelector(".hbg-ov__secname");
+    if (!name) return;
+    const style = getComputedStyle(name);
+    wordCanvas = wordCanvas || document.createElement("canvas");
+    const pen = wordCanvas.getContext("2d");
+    pen.font = style.font || (style.fontWeight + " " + style.fontSize + " " + style.fontFamily);
+    let changed = false;
+    m.sections.forEach((sec) => {
+      const text = String(sec.name || sec.id || "No section");
+      const widest = headerFit(pen, text);
+      const key = sec.name || sec.id || "";
+      if (wordFit[key] !== widest) { wordFit[key] = widest; changed = true; }
+    });
+    if (!changed) return;
+    const widths = sectionWidths(m);
+    Object.keys(widths).forEach((k) => live.style.setProperty(k, widths[k]));
   }
 
   // Every row is its own grid, so the name column can't size itself to its content: measure the
@@ -876,7 +962,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     for (const g of sections) {
       const full = g.name && g.id ? g.id + " " + g.name : g.name || g.id;
       secRow.push(h("th", { class: "hbg-sec hbg-start", scope: "colgroup", colspan: String(g.qs.length), title: full },
-        h("div", { class: "hbg-secname" }, full)));
+        h("div", { class: "hbg-secname", style: { "--word-w": longestWord(full) + "px" } }, full)));
       // An id too long for a column header (GDB's G.GOVERNANCE.DATASHARING.a.EXISTS) shows its short
       // label, as over the strips; the tip keeps the full id.
       const long = g.qs.some((q) => String(q.id).length > TABLE_ID_MAX);

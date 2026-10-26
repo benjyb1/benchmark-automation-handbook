@@ -86,6 +86,7 @@ PATTERNS = {
         "needs_document": ("Answers scored as if there were nothing, for want of a document I couldn't get", "grid"),
         "reads_disagree": ("A second read came out differently", "grid"),
         "document_changed": ("Saved documents that changed after the answer was scored", "grid"),
+        "page_gone": ("Web pages that lost most of their text since they were saved", "grid"),
     },
     "results": {
         "big_change": ("Big changes since last edition", "results"),
@@ -115,6 +116,8 @@ HELP = {
     "reads_disagree": ("check", "Can you open these and say which reading is right?"),
     "document_changed": ("check", "Nothing to send: I'll score these again from the new copy. Say if "
                                   "you would rather I kept the answers from the old one."),
+    "page_gone": ("check", "Should I look for where the text went, or use the new page as it is? Open one of "
+                           "these answers and choose under its source."),
     "big_change": ("check", "Can you check a few against what you know of these {plural}?"),
     "band_jump": ("check", "Can you check a few against what you know of these {plural}?"),
     "nothing_found": ("send", "Did they publish something I missed? Upload it or paste a link."),

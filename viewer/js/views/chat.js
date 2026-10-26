@@ -1088,8 +1088,10 @@
         "They can change all three later from the Feedback tab's chat.",
       ]),
 
-      "6. When the must-haves are settled, say the set-up is done and offer the next step: scoring a few " + ((bundle().project || {}).unit_word_plural || "rows") + " first as a trial. On a yes, start it yourself with start_scoring (kind trial); the green button at the top of the page does the same.",
+      "6. The names, once more (when the must-haves are settled, before you say set-up is done). The owner reads the question short names, section names, label names and group headings on every tab, and nobody looks over them after you. Fix the plain faults get_setup lists under names (a code such as D22, a file name, one value spelled two ways, mixed capitals, a name too long for its place) and any TEXT THAT DOESN'T FIT ON THE PAGE, then read every name yourself: plain words in the benchmark's own language, one style throughout (Sentence case unless the owner's material uses Title Case), short names of 2 to 4 words that tell the questions apart. Fix the names you drafted without asking; a change to the owner's own wording or list (a row's name, a value from their file) goes to them in one message with the rest. Don't list what you changed unless they ask.",
+      "7. When the must-haves are settled and the names read, say the set-up is done and offer the next step: scoring a few " + ((bundle().project || {}).unit_word_plural || "rows") + " first as a trial. On a yes, start it yourself with start_scoring (kind trial); the green button at the top of the page does the same.",
       "Hard rules: last edition's results are held back: use them only for a rule's last_year_note, never in questions, options or reasons. Transcribe the methodology word for word; your own reading goes into a rule the owner decides. Never fill a gap with a plausible guess (points for a level, rounding, a row's country): ask. Keep the owner's own answer scale (A to G, 0 to 3, a percentage) even when only part of it is written down, because their published results are on it: never collapse it into fewer levels; propose meanings for the unwritten levels and say they are yours. Never decide a rule for the owner. Never state confidence or a probability. Never call information public or private: say what data is missing and ask the owner to supply it. " +
+        "Everything the owner reads (rule questions, notes, labels) is in their words: their word for a row (\"Which suppliers are included?\", never \"Which suppliers are rows?\"), and never a step of the tool (a rebuild check, holding back, validate): say what it means for them. " +
         "When you need the owner, put every question in one message, numbered, each with your recommendation and a one-line reason. On this tab replies may be longer, but keep them tight: the right-hand side shows the detail, so never repeat whole lists.",
       "If a save comes back with problems, fix them and save again without troubling the owner, unless the fix needs their answer.",
       "=== SET-UP FILE FORMATS (follow exactly) ===",
@@ -1910,7 +1912,9 @@
       const list = await toolList();
       await compact(ctl.signal);
       if (setupMode()) await loadGuide();
-      const res = await st.sample([{ role: "user", content: instructions() + (setupMode() ? setupInstructions() : "") }].concat(recentTurns()), {
+      // Names the page found don't fit where they are shown (views/layoutcheck.js), for Claude to offer shorter ones.
+      const layout = HB.layoutCheck ? await HB.layoutCheck.promptBlock().catch(() => "") : "";
+      const res = await st.sample([{ role: "user", content: instructions() + (layout ? "\n" + layout : "") + (setupMode() ? setupInstructions() : "") }].concat(recentTurns()), {
         signal: ctl.signal,
         modelTier: tierFor(words),
         tools: list,
@@ -2211,6 +2215,16 @@
         text: "I " + bits.join(", and ") + (rows.length ? ", for " + HB.data.unitWords(rows.length) : "") +
           ". If you have them, adding them improves the scores." });
     }
+    // Names the page found don't fit where they are shown (views/layoutcheck.js): the owner can ask for shorter ones.
+    const tight = HB.layoutCheck ? HB.layoutCheck.cached().filter((p) => p.source) : [];
+    if (tight.length) {
+      const names = [...new Set(tight.map((p) => p.text))];
+      out.push({ id: "layout:" + names.join("|").slice(0, 200),
+        show: () => draft("Some names don't fit where the page shows them, such as \"" + clipText(names[0], 60) + "\". Suggest shorter ones I can choose from."),
+        text: (names.length === 1 ? "The name \"" + clipText(names[0], 60) + "\" doesn't fit"
+          : fmtInt(names.length) + " names, such as \"" + clipText(names[0], 60) + "\", don't fit") +
+          " where the page shows them. I can suggest shorter ones." });
+    }
     const seen = new Set(arr(HB.store.get(seenKey(), [])));
     return out.filter((n) => !seen.has(n.id));
   }
@@ -2469,6 +2483,9 @@
 .hbc-fab:hover { transform: scale(1.06); }
 .hbc-fab:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
 .hbc-fab[hidden] { display: none; }
+/* Room under the page for the button, so the last lines of a tab can scroll clear of it instead of
+   staying under it ("+6.3 points" read "+6.3 poi", design read 23 Oct 2026). */
+body:has(.hbc-fab:not([hidden])) .hb-main { padding-bottom: calc(3.25rem + 2.5rem + env(safe-area-inset-bottom, 0px)); }
 .hbc-fab__glyph { width: 1.75rem; height: 1.75rem; }
 .hbc-fab__badge { position: absolute; top: -0.2rem; right: -0.2rem; min-width: 1.25rem; height: 1.25rem; padding: 0 0.3rem; border-radius: 999px; background: #b42318; color: #ffffff; font-size: 0.75rem; font-weight: 600; line-height: 1.25rem; text-align: center; box-shadow: 0 0 0 2px var(--bg, #ffffff); }
 .hbc-fab__badge[hidden] { display: none; }

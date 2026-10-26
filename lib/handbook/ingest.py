@@ -10,6 +10,7 @@ document's pages as the scorer saw them, so the quote check can read that text e
 copy changes. A kit whose copy of a document is not one the project has on file is refused.
 """
 from __future__ import annotations
+import json
 import re
 from datetime import datetime, timezone
 
@@ -333,11 +334,64 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
     problems = check_answers({"row": row, "cells": new}, project.read("questions"))
     if problems:
         raise _problem_list(f"Nothing was stored for {row}: the stored cells would have", problems)
+    keep_earlier(project, row, answers.get("cells") or {}, new, run)
     answers["row"] = row
     answers.setdefault("cells", {}).update(new)
     project.write_answers(row, answers)
     record_missing(project, row, new)
     return list(data["cells"])
+
+
+# --- earlier answers -----------------------------------------------------------------------------
+# A run used to overwrite what the run before it stored (CIWF, 23 Oct 2026: the owner could not see what an
+# answer had said in the first round, nor which copy of a page it rested on). Before a cell is replaced, the
+# answer it held goes on `answers/earlier/<row>.json`, with the run that replaced it and when. Its evidence keeps
+# the document and the capture it was scored from, so the copy it cited stays known after a page is saved again.
+
+KEEP_EARLIER = 20           # earlier answers kept per cell, the newest
+EARLIER_KEYS = ("state", "value", "points", "evidence", "note", "run", "rules", "judgement", "unsure",
+                "out_of_date", "owner", "checked", "rescored", "feedback")
+
+
+def _gist(cell) -> str:
+    """What an answer says, for telling whether a later one says something else: its state, value and evidence
+    (document, page, quote), the note, and what a run read for an answer a person checked."""
+    if not isinstance(cell, dict):
+        return ""
+    ev = [[e.get("doc"), e.get("page"), e.get("quote")] for e in cell.get("evidence") or [] if isinstance(e, dict)]
+    return json.dumps([cell.get("state"), cell.get("value"), ev, cell.get("note") or "",
+                       (cell.get("rescored") or {}).get("value") if isinstance(cell.get("rescored"), dict) else None,
+                       (cell.get("owner") or {}).get("claude") if isinstance(cell.get("owner"), dict) else None],
+                      sort_keys=True, default=str)
+
+
+def keep_earlier(project: Project, row: str, old_cells: dict, new_cells: dict, run: str | None,
+                 at: str | None = None) -> list[str]:
+    """File each answer in `old_cells` that a cell of `new_cells` replaces with something different on
+    `answers/earlier/<row>.json`; returns the questions filed. A cell that was never scored (not_run) has
+    nothing to keep."""
+    from .folder import now_stamp
+    filed = []
+    for qid, cell in new_cells.items():
+        old = old_cells.get(qid)
+        if not (isinstance(old, dict) and old.get("state") in SCORER_STATES + ("not_applicable",)):
+            continue
+        if _gist(old) == _gist(cell):
+            continue
+        filed.append(qid)
+    if not filed:
+        return []
+    earlier = project.earlier_answers(row)
+    earlier["row"] = row
+    cells = earlier.setdefault("cells", {})
+    when = at or now_stamp()
+    for qid in filed:
+        old = old_cells[qid]
+        version = {k: old[k] for k in EARLIER_KEYS if k in old}
+        version.update({"replaced": when, "replaced_by": run})
+        cells[qid] = (list(cells.get(qid) or []) + [version])[-KEEP_EARLIER:]
+    project.write_earlier_answers(row, earlier)
+    return filed
 
 
 def _top_minus_lowest(question: dict) -> float:

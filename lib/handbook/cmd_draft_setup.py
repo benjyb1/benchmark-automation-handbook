@@ -96,6 +96,11 @@ def prompt_for(project: Path, python: str) -> str:
         "when a published value averages many dated items by weights the material does not give: those cells may "
         "not be reproducible from public documents (sweep round 3, 21 Oct 2026: UK university league, the fashion "
         "index, InfluenceMap).",
+        f"- Last, run {hb} names --project \"{project}\" and fix what it lists in the names you drafted (a code such as "
+        "D22, a file name, mixed capitals, a short name that is long or the same as another's); a fault in the owner's "
+        "own list (a value spelled two ways) becomes an open question. Nobody looks over the names after you. "
+        "Every rule's question and note is in the owner's words: their word for a row, and never a step of the tool "
+        "(a rebuild check, holding back, validate); say what it means for them.",
         f"Token cap: {CAP:,}. If you get near it, save the drafts you have, validate, build and stop.",
         "Reply in two lines: what you drafted, and how many open questions you left for the owner.",
     ])

@@ -477,7 +477,11 @@
   let state = null;
   let reloadWanted = false;
   let jobKey = null;
+  let queueKey = "";
   let lineShown = false;        // whether the run bar holds the job's line (redrawn only when that changes)
+  // Where the job's current step began (on this page) and the furthest the bar has shown, per job.
+  let step = { key: null, since: 0 };
+  const shownPct = new Map();
   let flagText = null;
   const lineEl = document.createElement("div");
   lineEl.className = "hbl-run";
@@ -506,9 +510,50 @@
 
   function jobWords(job) {
     if (!job) return null;
-    const pct = job.total ? Math.round((100 * (job.done || 0)) / job.total) : null;
-    return { title: job.title, line: job.line, pct, status: job.status };
+    return { title: job.title, line: job.line, pct: progressOf(job), status: job.status };
   }
+
+  /** How far a job is, as a percent that moves while a step runs. A step is one long Claude call (finding a
+      row's documents, or scoring it) that reports nothing until it ends, so counting finished steps alone left
+      the bar at 0% for minutes and then jumped (Benjy, 23 Oct 2026: "it would make charity workers quite scared
+      that it's not working"). Within a step the bar eases towards most of that step's share, it never goes
+      backwards, and it stops short of 100% until the job is over. */
+  const STEP_S = 75;            // a typical step: most of its share is shown by then
+  function progressOf(job) {
+    if (!job) return null;
+    if (job.status !== "running") return job.finished ? 100 : 0;
+    const total = Math.max(1, Number(job.total) || 1);
+    const done = Math.min(Number(job.done) || 0, total);
+    const ease = 1 - Math.exp(-stepSeconds(job) / STEP_S);
+    // Every step counted but the job still working (a wider search, the page rebuild): the last stretch.
+    const raw = done >= total ? 90 + 8 * ease : (100 * (done + 0.9 * ease)) / total;
+    const pct = Math.min(98, Math.max(shownPct.get(job.key) || 0, raw));
+    shownPct.set(job.key, pct);
+    return Math.round(pct);
+  }
+
+  /** Seconds since the job's current step began, as this page saw it begin. */
+  function stepSeconds(job) {
+    const key = job.key + "|" + job.done + "|" + job.line;
+    if (step.key !== key) step = { key, since: Date.now() };
+    return (Date.now() - step.since) / 1000;
+  }
+
+  function elapsedWords(job) {
+    const s = Math.floor(stepSeconds(job));
+    return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s";
+  }
+
+  /* Once a second, move what shows a running job in place (the bar, the percent, the time on this step),
+     without redrawing anything around it, so clicks and the working dots are left alone. */
+  setInterval(() => {
+    const job = state && state.job;
+    if (!job || job.status !== "running") return;
+    const pct = progressOf(job);
+    document.querySelectorAll("[data-hb-progress]").forEach((el) => { el.value = pct; });
+    document.querySelectorAll("[data-hb-pct]").forEach((el) => { el.textContent = el.dataset.hbPct === "paren" ? "(" + pct + "%)" : pct + "%"; });
+    document.querySelectorAll("[data-hb-elapsed]").forEach((el) => { el.textContent = elapsedWords(job); });
+  }, 1000);
 
   /** The job's tokens against its estimate (serve.py works the estimate out when it queues the job). */
   function costWords(job, running) {
@@ -549,6 +594,7 @@
       bar.max = 100;
       bar.value = w.pct;
       bar.className = "hbl-run__bar";
+      bar.setAttribute("data-hb-progress", "");
       bar.setAttribute("aria-label", "Progress");
       lineEl.append(bar);
     }
@@ -564,7 +610,7 @@
     if (job) {
       const w = jobWords(job);
       bits.push(h("span", { class: "hbl-pill", "data-tone": "accent", title: w.line || "" },
-        h("span", { class: "hbl-dot", "aria-hidden": "true" }), w.title + (w.pct != null ? " (" + w.pct + "%)" : "")));
+        h("span", { class: "hbl-dot", "aria-hidden": "true" }), w.title + " ", w.pct != null ? h("span", { "data-hb-pct": "paren" }, "(" + w.pct + "%)") : null));
     }
     if (state && state.queued && state.queued.length) bits.push(h("span", { class: "hbl-pill" }, state.queued.length + " waiting"));
     const recent = h("button", { type: "button", class: "btn btn--quiet btn--small", id: "hbl-recent", "aria-haspopup": "dialog" }, "Recent changes");
@@ -797,8 +843,12 @@
       state = s;
       me = s.user && s.user.name ? { name: s.user.name, id: s.user.id } : me;
       const key = s.job ? s.job.key : null;
-      const jobChanged = key !== jobKey || (before && JSON.stringify(before.last_job) !== JSON.stringify(s.last_job));
+      // A job joining or leaving the queue counts too: a start that waits behind another job showed nothing
+      // until that job ended, minutes later (23 Oct 2026, a chat start behind a paused trial).
+      const queued = (s.queued || []).map((q) => q.key).join(",");
+      const jobChanged = key !== jobKey || queued !== queueKey || (before && JSON.stringify(before.last_job) !== JSON.stringify(s.last_job));
       jobKey = key;
+      queueKey = queued;
       if (s.version > version) {
         version = s.version;
         await reloadData();
@@ -831,6 +881,8 @@
     noteUsage: (u) => { if (u) { HB.local.usage.push(u); console.info("Claude (this computer):", u.processed, "tokens processed", u); } },
     flag: (text) => { flagText = text; paintTop(); },
     state: () => state,
+    progress: progressOf,
+    elapsed: elapsedWords,
     refresh: pollState,
     /** Whether the owner's name is known on this computer; askName() asks for it (Promise of {name, id}). */
     named: () => Boolean(me.name),
@@ -871,7 +923,7 @@
 .hbl-recent__at { color: var(--ink-2); font-variant-numeric: tabular-nums; }
 .hbl-recent__detail { max-height: 12rem; overflow: auto; white-space: pre-wrap; font-size: var(--fs-12); }
 .hbl-name__msg:empty { display: none; }
-@media (width < 40rem) { .hbl-top { justify-content: flex-start; } }
+@media (width < 40rem) { .hbl-top { width: 100%; justify-content: space-between; } }   /* edge to edge, not floating off-centre (design read, 23 Oct 2026) */
 .hbl-update:empty { display: none; }
 .hbl-update { display: grid; gap: var(--s2); margin: var(--s3) auto 0; max-width: var(--measure-wide, 72rem); padding: 0 var(--s4, 1rem); }
 .hbl-update__box { display: grid; gap: var(--s2); padding: var(--s3); border: 1px solid var(--rule); border-left: 4px solid var(--accent); border-radius: 0.5rem; background: var(--surface); font-size: var(--fs-14); }

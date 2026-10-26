@@ -19,7 +19,7 @@ import json
 
 from pathlib import Path
 
-from . import edition
+from . import edition, naming
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, HandbookError, Project
 from .shapes import ROLES, check_folder, where_without_stale
 from .stakes import rule_stakes
@@ -279,6 +279,9 @@ def _feedback_answers(project: Project) -> dict | None:
             "language": s["language"] or project.read("project").get("language") or "the benchmark's own language (English if none is set)"}
 
 
+NAMES_SHOWN = 30
+
+
 def describe(project: Project, limit: int = 24000) -> dict:
     """The set-up as it stands, for the chat: whole small parts, the long lists cut short."""
     p = project.read("project")
@@ -299,6 +302,7 @@ def describe(project: Project, limit: int = 24000) -> dict:
         "needs": project.read("needs"),
         "rules": [{k: r.get(k) for k in ("id", "kind", "question_ids", "ask", "options", "recommended", "status",
                                           "decision", "stakes")} for r in rules],
+        "names": naming.review(project)[:NAMES_SHOWN],     # read before set-up is called done (naming.py)
     }
     text = json.dumps(out, ensure_ascii=False)
     if len(text) > limit:   # long question wording: keep the ids and short names, drop the levels

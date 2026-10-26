@@ -368,10 +368,29 @@ def _what(key: str, sheet: dict) -> str:
         of = key[len("band:"):]
         word = _band_word(_band_names(sheet, of))
         return f"The overall {word}" if of == "overall" else f"The {word} for {_what(of, sheet)}"
-    for section in sheet.get("sections") or []:
+    sections = sheet.get("sections") or []
+    for section in sections:
         if section.get("id") == key:
-            return f"{section['name']} ({key})" if section.get("name") else str(key)
+            if not section.get("name"):
+                return str(key)
+            # The name alone, unless two sections share it: "Contact waiting time (Ease of Contact) (EC)"
+            # read as a code (design read, 23 Oct 2026).
+            twin = sum(1 for s in sections if s.get("name") == section["name"]) > 1
+            return f"{section['name']} ({key})" if twin else str(section["name"])
     return f"Question {key}"
+
+
+def _edition_words(project: Project, edition) -> str:
+    """The past edition as the sentences name it: "2024"; "the published 2022 scores" when this run
+    re-scores that edition; "the last edition" when one name holds the other ("2026" beside "April to
+    June 2026", which read as the same edition)."""
+    ed = str(edition).strip()
+    mine = str((project.read("project") or {}).get("edition") or "").strip()
+    if ed and ed == mine:
+        return f"the published {ed} scores"
+    if ed and mine and (ed in mine or mine in ed):
+        return "the last edition"
+    return ed
 
 
 def _shown(v, key: str, sheet: dict, question: dict | None = None) -> str:
@@ -430,7 +449,7 @@ def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool
 def _big_moves(project: Project, disagreements: list[dict], history: dict, cells_by_row: dict,
                unit_by_id: dict, sheet: dict, questions: dict) -> list[dict]:
     """compare.json's `big_moves`, in the order of the disagreements they come from."""
-    edition = history["editions"][-1]
+    edition = _edition_words(project, history["editions"][-1])
     out = []
     for d in disagreements:
         if d.get("reason") not in BIG_MOVE_REASONS:

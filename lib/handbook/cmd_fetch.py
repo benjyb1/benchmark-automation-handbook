@@ -1,7 +1,8 @@
 """hb fetch URL --row ROW [--group LABEL=VALUE] --how plan|search|last_year|provided [--weak WHY]: fetch a
 document politely into `documents/` and add it to the row's `found/` file (and to every row whose
 label matches the group). A web address already in `documents/` is not fetched again; it is just
-added to the row's `found/`. `--weak WHY` marks it a weak source (not in the organisation's own
+added to the row's `found/` (the latest copy when `hb recheck` saved a later one). To look at a saved page
+again for changes, use `hb recheck`. `--weak WHY` marks it a weak source (not in the organisation's own
 words), also when it was saved before, unless someone cleared it. Run `hb prepare` afterwards.
 """
 from __future__ import annotations
@@ -88,10 +89,27 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     doc = fetch.doc_id_for_url(url)
 
     if fetch.has_document(project, doc):
-        meta = project.documents()[doc]
+        from . import recheck
+        docs = project.documents()
+        # A later copy saved by a re-check (recheck.py), unless it is held because most of its text had gone:
+        # rows whose cut-off has passed take the first copy, the nearer to it, and every other row that one.
+        newest = recheck.in_use(docs, doc)
+        if newest != doc:
+            past = [r for r in rows if render.wants_dated_copy(project.cutoff_for([r]))]
+            if past:
+                fetch.add_to_found(project, past, doc, named)
+            rows = [r for r in rows if r not in past]
+            say(f"{url} was saved more than once, as its page changed. The latest copy is {newest}, saved "
+                f"{str(docs[newest].get('fetched') or '')[:10]}." + (f" {', '.join(past)} keep the first copy, {doc}, "
+                                                                     "the nearer to their cut-off." if past else ""))
+            if not rows:
+                return doc
+            doc = newest
+        meta = docs[doc]
         title = meta.get("title") or doc
         added = fetch.add_to_found(project, rows, doc, named)
-        refused = [r for r in rows if doc in (project.found(r).get("removed") or [])]
+        copies = recheck.copies_of(project, doc)
+        refused = [r for r in rows if copies & set(project.found(r).get("removed") or [])]
         if refused:
             say(f"{doc} was taken off {_rows_text(refused)} before (found --remove), so it was not filed there again.")
         if added:

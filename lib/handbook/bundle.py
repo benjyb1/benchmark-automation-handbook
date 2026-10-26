@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 
 from .checks import _Documents
 from .fetch import weak_why
-from . import control, corrections, costs, edition, needs, rowwatch
+from . import control, corrections, costs, edition, needs, recheck, rowwatch
 from .folder import Project, applies, effective_question, read_json
 from .team import cell_rev, rule_rev
 from .custom_charts import read_charts
@@ -35,7 +35,8 @@ FLAG_WORDS = {"quote_not_found": "Quote not on saved page", "after_cutoff": "Dat
               "document_changed": "Document changed since scored", "owner_changed": "Changed by the owner",
               "todays_version": "Only today's copy of the page",
               "holds_back": "Holds the row below its next level",
-              "needs_document": "Needs a document you can add"}
+              "needs_document": "Needs a document you can add",
+              "page_gone": "Most of the page has gone"}
 REASON_WORDS = {"missing_document": "Missing document", "different_document": "Different document",
                 "document_date": "Document date", "rule_reading": "Rule reading",
                 "open_rule": "Undecided rule", "published_blank": "Blank last edition",
@@ -119,6 +120,59 @@ def _weak(meta: dict) -> dict | None:
     return None if why is None else {"why": why, "auto": not isinstance(meta.get("weak"), dict)}
 
 
+def _documents(documents: dict) -> dict:
+    """The bundle's documents: meta.json without the file name and hash, `weak` as _weak gives it, and on a
+    copy a re-check saved a later one of, `later` (that copy's id), so the page can show both dates."""
+    later = recheck.later_map(documents)
+    out = {}
+    for d, meta in documents.items():
+        out[d] = {**{k: v for k, v in meta.items() if k not in ("file", "sha1")}, "weak": _weak(meta)}
+        if later.get(d):
+            out[d]["later"] = later[d]
+    return out
+
+
+PAGE_CHANGE_LINES = 80        # the changed lines a row's evidence file carries for each changed page
+
+
+def _changes_for(project: Project, docs: set, documents: dict, later: dict) -> dict:
+    """{later copy: {"earlier", "later", "checked", "added", "removed", "lines", "cut"}} for every re-check
+    that touched one of `docs` (as the earlier or the later copy), the lines cut to PAGE_CHANGE_LINES."""
+    out = {}
+    for d in docs:
+        for newer in (d, later.get(d)):
+            if not newer or newer in out or not isinstance((documents.get(newer) or {}).get("earlier"), dict):
+                continue
+            got = recheck.changes(project, newer)
+            if got:
+                lines = list(got.get("lines") or [])
+                out[newer] = {**{k: got.get(k) for k in ("earlier", "later", "checked", "added", "removed")},
+                              "lines": lines[:PAGE_CHANGE_LINES],
+                              "cut": bool(got.get("cut")) or len(lines) > PAGE_CHANGE_LINES}
+    return out
+
+
+EARLIER_KEYS = ("state", "value", "points", "run", "replaced", "replaced_by", "checked")
+
+
+def _earlier(versions) -> list[dict]:
+    """A cell's earlier answers for the page, oldest first: what it said, the run, when it was replaced, and
+    the evidence (document, page, quote)."""
+    out = []
+    for v in versions if isinstance(versions, list) else []:
+        if not isinstance(v, dict):
+            continue
+        item = {k: v.get(k) for k in EARLIER_KEYS if v.get(k) is not None}
+        if isinstance(item.get("checked"), dict):
+            item["checked"] = True                     # who checked it stays a hidden id (team.py)
+        item["evidence"] = [{k: e.get(k) for k in ("doc", "page", "quote") if e.get(k) is not None}
+                            for e in v.get("evidence") or [] if isinstance(e, dict)]
+        if isinstance(v.get("owner"), dict):
+            item["owner"] = True
+        out.append(item)
+    return out
+
+
 def _text_or_none(path) -> str | None:
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
@@ -183,8 +237,7 @@ def make_bundle(project: Project, now: datetime) -> dict:
                                                                              if isinstance(q, dict)]),     # never a question that is gone
         "cells": cells,
         "totals": totals,
-        "documents": {d: {**{k: v for k, v in meta.items() if k not in ("file", "sha1")},
-                          "weak": _weak(meta)} for d, meta in documents.items()},
+        "documents": _documents(documents),
         "found": found,
         "runs": [{k: v for k, v in r.items() if k != "by_name"} if isinstance(r, dict) else r
                  for r in project.runs()],                    # who started it: a hidden id only (team.py)
@@ -218,16 +271,19 @@ def evidence_files(project: Project) -> dict[str, dict]:
     numbers) and the notes that are not empty. A row with no answer yet has no file: a long list
     (EggTrack's 601 rows) would otherwise pass the page's 500 data files before anything is scored."""
     documents = project.documents()
+    later = recheck.later_map(documents)
     texts: dict[str, dict] = {}
     out = {}
     for unit, qids, answers, _ in _rows(project):
         if not any(isinstance(answers.get(q), dict) and (answers[q].get("state") in ("answered", "no_evidence")
                    or answers[q].get("evidence")) for q in qids):     # not_applicable with evidence counts
             continue
-        pages = {}
+        pages, cited = {}, set()
         for q in qids:
             for e in (answers.get(q) or {}).get("evidence") or []:
                 doc, page = e.get("doc"), e.get("page")
+                if doc in documents:
+                    cited.add(doc)
                 if page is None or doc not in documents:
                     continue
                 if doc not in texts:
@@ -235,8 +291,19 @@ def evidence_files(project: Project) -> dict[str, dict]:
                 if texts[doc].get(page) is not None:
                     pages[f"{doc}#{page}"] = texts[doc][page]
         notes = {q: (answers.get(q) or {}).get("note") for q in qids}
-        out[unit.get("id")] = {"row": unit.get("id"), "pages": dict(sorted(pages.items())),
-                               "notes": {q: n for q, n in notes.items() if isinstance(n, str) and n.strip()}}
+        row = unit.get("id")
+        entry = {"row": row, "pages": dict(sorted(pages.items())),
+                 "notes": {q: n for q, n in notes.items() if isinstance(n, str) and n.strip()}}
+        earlier = {q: _earlier(v) for q, v in (project.earlier_answers(row).get("cells") or {}).items() if q in qids}
+        earlier = {q: v for q, v in earlier.items() if v}
+        if earlier:
+            entry["earlier"] = earlier
+            cited |= {e.get("doc") for v in earlier.values() for x in v for e in x["evidence"] if e.get("doc") in documents}
+        cited |= {d for d in project.found(row).get("documents") or [] if d in documents}
+        changed = _changes_for(project, cited, documents, later)
+        if changed:
+            entry["changes"] = changed
+        out[row] = entry
     return out
 
 
@@ -282,6 +349,20 @@ def _checked_by(checked) -> list:
     if isinstance(checked, dict) and checked.get("by"):
         return [f"person:{checked['by']}", (checked.get("at") or "")[:10] or None]
     return ["A person", (checked.get("at") or "")[:10] or None] if isinstance(checked, dict) else ["A person", None]
+
+
+def _change_words(earlier) -> str | None:
+    if not isinstance(earlier, dict):
+        return None
+    return recheck.change_words(earlier.get("added") or 0, earlier.get("removed") or 0)
+
+
+def _last_check(checks) -> str | None:
+    """The latest look at the live page, as "2026-10-23, the same" or "2026-10-23, could not be reached"."""
+    last = checks[-1] if isinstance(checks, list) and checks and isinstance(checks[-1], dict) else None
+    if not last:
+        return None
+    return f"{str(last.get('at') or '')[:10]}, " + ("the same" if last.get("result") == "same" else "could not be reached")
 
 
 def _sheet(sheet_id: str, name: str, columns: list[str], rows: list[list]) -> dict:
@@ -334,7 +415,11 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
                   "Weak: " + m["weak"]["why"] if m.get("weak") else "Own words",
                   _yes_no(m.get("kept")), m.get("pages"),
                   m.get("fetched"), _join(cited_by.get(d)),
-                  m["todays_version"]["why"] if isinstance(m.get("todays_version"), dict) else None]
+                  m["todays_version"]["why"] if isinstance(m.get("todays_version"), dict) else None,
+                  (m.get("earlier") or {}).get("doc") if isinstance(m.get("earlier"), dict) else None,
+                  m.get("later"),
+                  _change_words(m.get("earlier")),
+                  _last_check(m.get("rechecks"))]
                  for d, m in docs.items()]
 
     rules = []
@@ -357,7 +442,9 @@ def downloads_rows(project: Project, bundle: dict | None = None) -> dict:
         _sheet("documents", "Documents", ["Document", "Title", "Publisher", "Date", "Date from", "URL",
                                           "Archive URL", "How found", "Provided by owner", "Language",
                                           "Host type", "Source strength", "Saved copy kept", "Pages",
-                                          "Fetched", words, "Kept as today's page because"],
+                                          "Fetched", words, "Kept as today's page because",
+                                          "Earlier copy", "Later copy", "Changed from the earlier copy",
+                                          "Last checked against the live page"],
                documents),
         _sheet("rules", "Rules", ["Rule", "Kind", "Questions", words, "Question asked", "Options",
                                   "Recommended", "Why", "Cells affected", "Points at stake", "Status",

@@ -90,10 +90,38 @@
   let theirResults = "last year's results";
 
   function setWords(edition) {
-    them = edition ? String(edition) : "last year";
-    Them = edition ? String(edition) : "Last year";
-    when = edition ? `in ${edition}` : "last year";
-    theirResults = edition ? `the ${edition} results` : "last year's results";
+    if (!edition) return latestDefaults();
+    them = String(edition);
+    Them = String(edition);
+    when = `in ${edition}`;
+    theirResults = `the ${edition} results`;
+  }
+
+  /* The latest edition's words. "Last year" unless that would mislead: a run that re-scores the edition
+     already published (Consumer Reports 2022 against its published 2022 scores) names those scores, and
+     one whose edition name holds the other's ("April to June 2026" against "2026") says "last edition"
+     (design read, 23 Oct 2026). */
+  function latestDefaults() {
+    const ed = String(((bundle().results || {}).compare || {}).edition ?? "").trim();
+    const mine = String((bundle().project || {}).edition ?? "").trim();
+    if (ed && ed === mine) {
+      them = `the published ${ed} scores`; Them = `Published ${ed}`;
+      when = `in the published ${ed} scores`; theirResults = `the published ${ed} results`;
+    } else if (ed && mine && (mine.includes(ed) || ed.includes(mine))) {
+      them = "last edition"; Them = "Last edition"; when = "in the last edition"; theirResults = "last edition's results";
+    } else {
+      them = "last year"; Them = "Last year"; when = "last year"; theirResults = "last year's results";
+    }
+  }
+
+  /** A past edition's name as a noun, or "the last edition" when the bare name would mislead (see latestDefaults). */
+  function pastNoun(ed) {
+    const e = String(ed ?? "").trim();
+    const mine = String((bundle().project || {}).edition ?? "").trim();
+    if (!e || e === "last") return "the last edition";
+    if (e === mine) return `the published ${e} scores`;
+    if (mine && (mine.includes(e) || e.includes(mine))) return "the last edition";
+    return e;
   }
 
   /** Runs draw() with the latest edition's words, whatever edition is picked. */
@@ -157,9 +185,18 @@
       const name = String(s.name || "").trim();
       const colon = name.indexOf(":");
       if (colon > 0) return name.slice(0, colon).trim();
-      return name && name.length <= 18 ? name : String(key);
+      return name ? shortWords(name.replace(/\s*\([^)]*\)\s*$/, "")) : String(key);   // words, not the id ("EC")
     }
-    return HB.data.question(key) && /^\d/.test(String(key)) ? `Q${key}` : String(key);   // "Q1.1", but "N1" stays as it is
+    const q = HB.data.question(key);
+    if (q && q.short) return shortWords(String(q.short));      // "Contact waiting time", not "QEC1" (design read, 23 Oct 2026)
+    return q && /^\d/.test(String(key)) ? `Q${key}` : String(key);   // "Q1.1", but "N1" stays as it is
+  }
+
+  /** At most about 28 characters, cut at a word with "…". */
+  function shortWords(text) {
+    const t = text.trim();
+    if (t.length <= 28) return t;
+    return t.slice(0, 27).replace(/\s+\S*$/, "") + "\u2026";
   }
 
   const levelLong = (key) => parts().keyName(key);
@@ -462,12 +499,6 @@
 
   /* ---- How far we agree ------------------------------------------------------------ */
 
-  /* The run re-scores an edition already published (the held-back results are that edition). */
-  function sameEdition(c) {
-    const p = bundle().project || {};
-    return c && c.edition != null && p.edition != null && String(c.edition) === String(p.edition);
-  }
-
   function agreement(c, m) {
     const s = c.summary || {};
     const nouns = parts().unitNouns();
@@ -487,14 +518,13 @@
     const word = set ? parts().bandWord(set) : "band";
     return h("section", { class: "section cmp-top", "aria-labelledby": "cmp-head" },
       h("div", { class: "section__head" }, h("h3", { id: "cmp-head" }, `How far we agree with ${them}`)),
-      sameEdition(c) ? HB.notice("neutral", `This run re-scores the ${c.edition} edition, so "last year" here means the published ${c.edition} scores.`) : null,
       h("p", { class: "small muted cmp-measure" },
         `${plural(s.rows != null ? s.rows : (c.rows || []).length, nouns.one, nouns.many)} compared with ${theirResults}, ` +
         `which go down to ${level} level.` +
         (notCompared ? ` ${plural(notCompared, nouns.one, nouns.many)} not compared (listed at the end).` : "")),
       h("div", { class: "table-scroll cmp-agree-wrap", role: "region", tabindex: "0", "aria-labelledby": "cmp-head" },
         h("table", { class: "table cmp-agree" },
-          h("thead", null, h("tr", null, h("th", { scope: "col" }, "Level"), h("th", { scope: "col" }, "Same score"),
+          h("thead", null, h("tr", null, h("th", { scope: "col" }, "Figure"), h("th", { scope: "col" }, "Same score"),
             anyBand ? h("th", { scope: "col" }, `Same ${word}`) : null)),
           h("tbody", null, m.levels.map((L) => h("tr", null,
             h("th", { scope: "row" }, levelShort(L)), cell(L), anyBand ? cell("band:" + L) : null))))));
@@ -1309,7 +1339,7 @@
           : actBox("Decide this rule.", `${capital(words.question)} (rule ${rule.id})`,
             ruleStakes(rule) ? h("p", { class: "small muted cmp-act__note" }, ruleStakes(rule)) : null, ruleDecision(rule, ctx)),
         h("div", { class: "cmp-card__details" },
-          h("p", { class: "small muted" }, `Resting on it, with their difference from ${latest}:`),
+          h("p", { class: "small muted" }, `Resting on it, with their difference from ${pastNoun(latest)}:`),
           h("ul", { class: "cmp-card__rows" }, Array.from(rows, ([row, x]) => h("li", null,
             nameButton(row), " ", h("span", null, movesSummary(x.list, mLatest)),
             h("span", { class: "small muted" }, ` (${questionWords(Array.from(x.qs).sort((a, b) => a.localeCompare(b, "en-GB", { numeric: true })))})`)))))), { decided: Boolean(chose) });
@@ -1341,8 +1371,8 @@
                 if (ok) { button.textContent = "Sent"; button.disabled = true; button.classList.remove("btn--primary"); }
               } }, "Send the document or link"))
             : h("p", { class: "small" }, HB.when("The page can't take files just now. Reload it and try again.", `This view can't take files. Open the project's own page to send the document for ${name}.`));
-          action = actBox("Send us the document or link.",
-            `${what} was ${figureText(empty.theirs, empty.key)} in ${latest}, but this run found nothing for it. Claude files what you send and scores the answers again.`,
+          action = actBox("A document may be missing.",
+            `${what} was ${figureText(empty.theirs, empty.key)} in ${pastNoun(latest)}, but this run found nothing for it. Claude files what you send and scores the answers again.`,
             h("div", { class: "cmp-act__do" }, send), answerButtons(row, cells, down, ctx));
         } else if (flagged.length) {
           const counts = {};
@@ -1364,7 +1394,6 @@
             h("p", { class: "cmp-card__meta" },
               h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => latestWords(() => openDetail(row, mLatest, ctx)) },
                 "Every figure, both years", h("span", { class: "visually-hidden" }, `: ${name}`)),
-              h("span", { class: "mono muted small" }, row),
               ...Array.from(new Set(list.map(whyWord)), (w) => h("span", { class: "cmp-first__why" }, w))),
             h("ul", { class: "cmp-first__moves" }, list.map((mv) => moveLine(mv, hist)))));
       });
@@ -1375,8 +1404,8 @@
       cards[0].setOpen(true);
     }
     const all = (on) => cards.forEach((x) => x.setOpen(on));
-    const group = (title, list) => (list.length ? h("div", { class: "cmp-first__group" },
-      h("h4", { class: "cmp-first__gtitle" }, `${title} (${fmtInt(list.length)})`),
+    const group = (title, list, titled) => (list.length ? h("div", { class: "cmp-first__group" },
+      titled ? h("h4", { class: "cmp-first__gtitle" }, `${title} (${fmtInt(list.length)})`) : null,
       h("ol", { class: "cmp-first__list" }, list.map((x) => x.node))) : null);
     return h("section", { class: "section cmp-first", "aria-labelledby": "cmp-first" },
       h("div", { class: "section__head cmp-first__headrow" }, h("h3", { id: "cmp-first" }, `Check these first (${fmtInt(cards.length)})`),
@@ -1384,10 +1413,12 @@
           h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => all(true) }, "Expand all"),
           h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => all(false) }, "Collapse all"))),
       h("p", { class: "small muted cmp-measure" },
-        `The biggest differences from the ${latest} edition, each with what you can do about it. Open one to act on it.` +
+        `The biggest differences from ${pastNoun(latest) === String(latest) ? `the ${latest} edition` : pastNoun(latest)}, each with what you can do about it. Open one to act on it.` +
         (hist && hist.editions.length ? ` A small line under each move shows the ${nouns.one}'s past editions; the last dot is this run, and the shaded band is its past range.` : "")),
-      group(ruleCards.some((x) => x.decided) ? "Rules to decide or re-run" : "Open rules to decide", ruleCards),
-      group(`${capital(nouns.many)} to check`, rowCards));
+      // A group's own heading only when there are both kinds: "Check these first (3)" straight over
+      // "Suppliers to check (3)" said it twice (design read, 23 Oct 2026).
+      group(ruleCards.some((x) => x.decided) ? "Rules to decide or re-run" : "Open rules to decide", ruleCards, rowCards.length > 0),
+      group(`${capital(nouns.many)} to check`, rowCards, ruleCards.length > 0));
   }
 
   /** "Over time": a line per assessment (or per group's mean) across the past editions, this run last. */
@@ -1496,10 +1527,12 @@
     const missing = v.items.length - has.length;
     const unexplained = (v.m.c.disagreements || []).filter((d) => (d.key === v.L || d.key === "band:" + v.L) && d.reason === "unexplained").length;
     return h("div", { class: "cmp-sumwrap" },
+      // "0 of 0 the same" looked broken (design read, 23 Oct 2026): with no figure in both, say so instead.
       h("p", { class: "cmp-sum" }, h("strong", null, levelLong(v.L)),
-        `. ${fmtInt(same)} of ${fmtInt(has.length)} the same as ${them}, ${fmtInt(higher)} higher, ${fmtInt(lower)} lower.` +
+        (has.length ? `. ${fmtInt(same)} of ${fmtInt(has.length)} the same as ${them}, ${fmtInt(higher)} higher, ${fmtInt(lower)} lower.`
+          : `. No ${nouns.one} has a figure both here and ${when} yet.`) +
         (tiered.length ? ` Same ${v.sc.word}: ${fmtInt(tiered.filter((a) => a.tierSame).length)} of ${fmtInt(tiered.length)}.` : "") +
-        (missing ? ` ${plural(missing, nouns.one, nouns.many)} without a figure in both years.` : "")),
+        (missing && has.length ? ` ${plural(missing, nouns.one, nouns.many)} without a figure in both.` : "")),
       unexplained ? h("p", { class: "small muted" },
         `${plural(unexplained, "difference", "differences")} at this level ${unexplained === 1 ? "is" : "are"} not explained yet. Open ${unexplained === 1 ? "it" : "one"} below and press Ask Claude why.`) : null);
   }
@@ -1512,7 +1545,7 @@
       h("div", { class: "section__head" }, h("h3", { id: "cmp-not" }, `Not compared (${fmtInt(list.length)})`)),
       h("p", { class: "small muted" }, `${plural(list.length, nouns.one, nouns.many)} left out of every figure above.`),
       h("ul", { class: "cmp-not" }, list.map((x) => h("li", null,
-        h("strong", null, rowName(x.row)), " ", h("span", { class: "mono muted small" }, x.row), ": ", x.text || x.why))));
+        h("strong", null, rowName(x.row)), " ", x.text || x.why))));
   }
 
   function render(root, ctx) {
@@ -1561,7 +1594,9 @@
     viewWide.node.classList.add("cmp-views--wide");
     viewNarrow.node.classList.add("cmp-views--narrow");
     const levelOptions = m.levels.map((L) => [L, levelShort(L)]);
-    const level = (levelOptions.length <= 4 ? segmented : chooser)("Level", levelOptions, state.level, (L) => {
+    // "Figure", not "Level": the choices are the overall score, the sections or the questions, and
+    // "Level" over "L" and "C" (lead and cadmium) read as the answer's level (design read, 23 Oct 2026).
+    const level = (levelOptions.length <= 4 ? segmented : chooser)("Figure", levelOptions, state.level, (L) => {
       state.level = L;
       state.pick = null;
       HB.store.set(LEVEL_KEY, L);
@@ -1706,6 +1741,7 @@
     .cmp-card__kind { color: var(--ink-2); font-weight: 400; }
     .cmp-card__sum { grid-column: 2; color: var(--ink-2); font-size: var(--fs-14); font-variant-numeric: tabular-nums; }
     .cmp-card__cta { grid-column: 3; grid-row: 1; justify-self: end; padding: 0 var(--s2); border: 1px solid var(--accent); border-radius: 999px;
+    .cmp-card__toggle[aria-expanded="true"] .cmp-card__cta { visibility: hidden; }   /* open, the card's own button says it */
       color: var(--accent); font-size: var(--fs-12); font-weight: 600; white-space: nowrap; }
     @media (width < 40rem) {
       .cmp-card__toggle { grid-template-columns: 1rem minmax(0, 1fr); }

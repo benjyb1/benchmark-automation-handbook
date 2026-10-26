@@ -395,6 +395,12 @@ def _tidy_url(url: str) -> str:
                                     parts.query, ""))
 
 
+def doc_id_for_version(url: str, fetched: str) -> str:
+    """The id of a later copy of a page already on file (recheck.py): the same hash as doc_id_for_url, over
+    the tidied address and the time this copy was fetched, so each copy keeps its own folder."""
+    return "d-" + hashlib.sha1(f"{_tidy_url(url)}@{fetched}".encode("utf-8")).hexdigest()[:10]
+
+
 def doc_id_for_bytes(data: bytes) -> str:
     """`d-` and the first ten characters of the SHA-1 of a provided file's bytes."""
     return "d-" + hashlib.sha1(data).hexdigest()[:10]
@@ -439,16 +445,20 @@ def resolve_rows(project, rows=None, group=None) -> list[str]:
 
 
 def add_to_found(project, rows, doc_id: str, named=None) -> list[str]:
-    """Put `doc_id` in `found/<row>.json` for each row; returns the rows it was newly added to. A row it
-    was taken off (`found --remove`) is skipped: re-fetching the page must not put it back (ACES re-test,
-    15 Oct 2026: a page giving the camp's ACES level came back on the next fetch). When `named` is given
+    """Put `doc_id` in `found/<row>.json` for each row; returns the rows it was newly added to. A row it, or any
+    other copy of its page, was taken off (`found --remove`) is skipped: re-fetching the page must not put it
+    back (ACES re-test, 15 Oct 2026: a page giving the camp's ACES level came back on the next fetch). When `named` is given
     (the rows a search was for), a row it reaches only through a group also lists it under `shared`: a
     search for another row of its group found it, so the row's own documents are still to look for."""
-    added = []
+    added, copies = [], None
     for row in rows:
         found = project.found(row)
-        if doc_id in (found.get("removed") or []):
-            continue
+        if found.get("removed"):
+            if copies is None:                 # every copy of the page (recheck.py): a row that took one off refuses all
+                from .recheck import copies_of
+                copies = copies_of(project, doc_id)
+            if copies & set(found["removed"]):
+                continue
         found["row"] = row
         docs = found.setdefault("documents", [])
         if doc_id not in docs:

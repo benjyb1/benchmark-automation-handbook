@@ -469,6 +469,8 @@
      after_cutoff     a calendar      "After the cut-off"
      todays_version   an empty calendar "Only today's copy" (a web page kept as it is today, with no
                                       archive copy from before a cut-off long past)
+     page_gone        a page, mostly blank "Most of the page has gone" (a re-check found most of a cited
+                                      page's text gone; the answer reads the earlier copy until the owner chooses)
      reads_disagree   a half disc     "Reads disagree"
      weak_source      one bar of three "Not from its own source" (every document cited is weak)
      needs_document   a page with a plus "Needs a document" (scored as if there were nothing, for want
@@ -488,13 +490,14 @@
 (function (HB) {
   "use strict";
 
-  const FACTUAL = ["needs_document", "quote_not_found", "document_changed", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed", "holds_back"];
+  const FACTUAL = ["needs_document", "quote_not_found", "document_changed", "page_gone", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed", "holds_back"];
   const WORDS = {
     quote_not_found: "Quote not on saved page",
     document_changed: "Document changed since scored",
     group_differs: "Differs across countries",
     after_cutoff: "After the cut-off",
     todays_version: "Only today's copy",
+    page_gone: "Most of the page has gone",
     reads_disagree: "Second read differs",
     weak_source: "Not from its own source",
     owner_changed: "Changed by the owner",
@@ -523,6 +526,8 @@
     holds_back: () => [HB.svg("path", Object.assign({ d: "M3 4.2h6M6 9.4V5.6M4.2 7.4 6 5.6l1.8 1.8" }, LINE))],
     needs_document: () => [HB.svg("rect", Object.assign({ x: 3.2, y: 2.6, width: 5.6, height: 6.8, rx: 0.8 }, LINE)),
       HB.svg("path", Object.assign({ d: "M6 4.4v3.2M4.4 6h3.2" }, LINE))],
+    page_gone: () => [HB.svg("rect", Object.assign({ x: 3.2, y: 2.6, width: 5.6, height: 6.8, rx: 0.8 }, LINE)),
+      HB.svg("path", Object.assign({ d: "M4.6 4.6h2.8" }, LINE)), HB.svg("path", Object.assign({ d: "M4.6 6.6h1.2M4.6 8h0.6", opacity: "0.45" }, LINE))],
   };
 
   function factualFlags(cell) {

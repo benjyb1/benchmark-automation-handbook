@@ -139,8 +139,10 @@ recommendation.
   member states (its regulations apply in each), a federal government for states, a parent company
   for national arms, a scheme owner for its certified sites.
 - `results_sites`: the web hosts where the benchmark publishes its results or profiles of the rows
-  with their scores (`["elephantstandards.com"]`, `["data.eggtrack.com"]`). Finders cannot save
-  from them and the where-to-look plan may not point at them. Never list such a page as a place to
+  with their scores (`["elephantstandards.com"]`, `["data.eggtrack.com"]`), and any other site the
+  owner wants never used: the project's block list. A host includes its subdomains; add a path to
+  block only part of a host (`"zenodo.org/records/17120023"`). Finders cannot open or save from
+  them and the where-to-look plan may not point at them. Never list such a page as a place to
   look, even with a note to ignore the score: the finder saves the whole page.
 - `scoring` (optional): leave it out. `"careful"` makes every row go to the full scorer, which searches
   and re-reads, at several times the tokens: only when the owner asks for it, for a benchmark built on

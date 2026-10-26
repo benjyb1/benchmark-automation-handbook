@@ -201,6 +201,13 @@ class Project:
     def write_answers(self, row: str, data: dict) -> None:
         write_json(self.path / "answers" / f"{_row_id(row)}.json", data)
 
+    def earlier_answers(self, row: str) -> dict:
+        """`answers/earlier/<row>.json`: what each answer said before a later run replaced it (ingest.py)."""
+        return read_json(self.path / "answers" / "earlier" / f"{_row_id(row)}.json", {"row": row, "cells": {}})
+
+    def write_earlier_answers(self, row: str, data: dict) -> None:
+        write_json(self.path / "answers" / "earlier" / f"{_row_id(row)}.json", data)
+
     def checks(self, row: str) -> dict:
         return read_json(self.path / "checks" / f"{_row_id(row)}.json",
                          {"row": row, "row_flags": [], "cells": {}})

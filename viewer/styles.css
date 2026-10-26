@@ -1997,9 +1997,11 @@ textarea.input {
   font-variant-numeric: tabular-nums;
 }
 
-.hb-head__facts > span + span::before {
+/* The dot ends an item rather than starting the next, so a wrapped line never starts with "·"
+   (design read, 23 Oct 2026). */
+.hb-head__facts > span:not(:last-child)::after {
   content: "\00b7";
-  margin-right: var(--s3);
+  margin-left: var(--s3);
   color: var(--rule-strong);
 }
 
@@ -2062,7 +2064,8 @@ a.tabs__tab {
   .hb-head { display: contents; }
   .hb-head__title { flex: 1 1 100%; min-width: 0; font-size: 1.0625rem; }   /* its own line: a long name never breaks mid-word */
   .hb-head__facts { flex: 1 1 100%; order: 2; gap: 0 var(--s2); font-size: var(--fs-12); }
-  .hb-head__facts > span + span::before { margin-right: var(--s2); }
+  .hb-head__facts > span:not(:last-child)::after { margin-left: var(--s2); }
+  .hb-theme { flex: 1 1 100%; margin-left: 0; }   /* Share, Recent changes and Download across the row, not floating mid-way (design read, 23 Oct 2026) */
   .hb-theme__switch > .btn { min-height: 2rem; }
   .hb-tabs { gap: var(--s4); }
   .hb-tabs .tabs__tab { padding-block: var(--s2); }
