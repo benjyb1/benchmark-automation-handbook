@@ -68,10 +68,13 @@
 .rl-item__ask, .rl-item__stakes { grid-column: 2; }
 .rl-item__ask { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: var(--fs-14); line-height: 1.35; }
 .rl-item:not([data-s="open"]) .rl-item__ask { color: var(--ink-2); }
-.rl-item__stakes { display: flex; align-items: center; gap: var(--s2); min-width: 0; margin-top: 0.125rem; font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
+/* Each part of the line keeps its words together and the parts wrap as wholes, so a narrow list never
+   shows "5,638 points at / stake" or "All 16 questio..." (design read 26 Oct 2026). */
+.rl-item__stakes { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s2); min-width: 0; margin-top: 0.125rem; font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
+.rl-item__stakes > span { white-space: nowrap; }
 .rl-track { flex: none; width: 4rem; height: 0.3rem; overflow: hidden; border-radius: 2px; background: var(--rule); }
 .rl-track__fill { display: block; height: 100%; border-radius: 2px; background: var(--series-1); }
-.rl-item__q { min-width: 0; overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+.rl-item__stakes > .rl-item__q { min-width: 0; color: var(--ink-2); white-space: normal; }   /* "1.1-1.8, 2.6" breaks after a comma */
 .rl-tone-accent { --tone: var(--accent); --on-tone: var(--on-accent); }
 .rl-detail { display: grid; gap: var(--s4); min-width: 0; padding: var(--s4) var(--s5) var(--s5); border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); }
 .rl-detail .rl-back { display: none; justify-self: start; margin: calc(-1 * var(--s2)) 0 0 calc(-1 * var(--s3)); }

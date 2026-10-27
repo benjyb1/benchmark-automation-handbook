@@ -543,6 +543,24 @@
     }, HB.svg("circle", { cx: 6, cy: 6, r: 6, style: "fill: var(--surface, #fff)" }), shape());
   }
 
+  // Text cut to at most about n characters for a line that can't hold it all: at a whole word ("publicly
+  // avai..." read as a typo, design read 26 Oct 2026), with no stray stop or comma before the "...", and a
+  // quote or bracket opened in the kept part closed again ("(e.g...." had four dots and no close).
+  function shortText(t, n) {
+    const x = String(t == null ? "" : t).replace(/\s+/g, " ").trim();
+    if (x.length <= n) return x;
+    let cut = x.slice(0, n).replace(/\s+\S*$/, "");
+    if (cut.length < n / 2) cut = x.slice(0, n - 1);   // one long word: cut inside it rather than say nothing
+    cut = cut.replace(/[\s.,;:!?\-\u2013\u2014('"\u2018\u201c]+$/, "");
+    let close = "";
+    if ((cut.match(/\(/g) || []).length > (cut.match(/\)/g) || []).length) close = ")";
+    if ((cut.match(/\u201c/g) || []).length > (cut.match(/\u201d/g) || []).length) close = "\u201d" + close;
+    else if ((cut.match(/(^|[\s(])"/g) || []).length % 2 === 1) close = '"' + close;
+    else if ((cut.match(/(^|[\s(])['\u2018]/g) || []).length > (cut.match(/['\u2019](?=$|[\s.,;:!?)])/g) || []).length) close = "'" + close;
+    return cut + "\u2026" + close;
+  }
+
+  HB.shortText = shortText;
   HB.flagKinds = { factual: FACTUAL.slice(), words: Object.assign({}, WORDS) };
   HB.factualFlags = factualFlags;
   HB.flagGlyph = flagGlyph;

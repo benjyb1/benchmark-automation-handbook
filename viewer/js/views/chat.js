@@ -2230,8 +2230,7 @@
   }
 
   function clipText(t, n) {
-    const x = String(t || "").replace(/\s+/g, " ").trim();
-    return x.length > n ? x.slice(0, n - 1) + "\u2026" : x;
+    return HB.shortText(t, n);
   }
 
   function gotIt(id) {
@@ -2394,6 +2393,19 @@
     repaint();
   }
 
+  // On a phone the button goes at the end of the tabs' row, where it covers nothing; elsewhere it floats in
+  // the lane the page keeps free for it.
+  const PHONE = "(width < 40rem)";
+  function placeFab() {
+    const nav = document.getElementById("hb-tabs");
+    const phone = typeof window.matchMedia === "function" && window.matchMedia(PHONE).matches;
+    if (phone && nav && nav.parentNode && nav.parentNode.classList.contains("hb-top")) {
+      if (ui.fab.previousElementSibling !== nav) nav.after(ui.fab);
+    } else if (ui.fab.parentNode !== ui.host) {
+      ui.host.prepend(ui.fab);
+    }
+  }
+
   function start() {
     if (ui.panel || typeof document === "undefined") return;
     ui.host = document.getElementById("hb-chat");
@@ -2463,6 +2475,8 @@
       window.addEventListener("drop", (ev) => { if (files(ev)) ev.preventDefault(); });
     }
     ui.host.replaceChildren(ui.fab, ui.panel);
+    placeFab();
+    if (typeof window.matchMedia === "function") window.matchMedia(PHONE).addEventListener("change", placeFab);
     repaint();
 
     const c = typeof window !== "undefined" ? window.claude : null;
@@ -2486,6 +2500,16 @@
 /* Room under the page for the button, so the last lines of a tab can scroll clear of it instead of
    staying under it ("+6.3 points" read "+6.3 poi", design read 23 Oct 2026). */
 body:has(.hbc-fab:not([hidden])) .hb-main { padding-bottom: calc(3.25rem + 2.5rem + env(safe-area-inset-bottom, 0px)); }
+/* A lane down the page's right side for the button, so it never covers a button or a figure partway down
+   a tab ("Send the docu...", "Very poor", design read 26 Oct 2026). On a phone that lane would cost too much
+   width, so the button sits at the end of the tabs' row instead (placeFab). */
+@media (width >= 40rem) { body:has(.hbc-fab:not([hidden])) .hb-main { padding-right: calc(3.25rem + var(--s3)); } }
+@media (width < 40rem) {
+  .hb-top > .hbc-fab { position: relative; inset: auto; order: 3; flex: none; align-self: center; width: 2.5rem; height: 2.5rem; margin-left: var(--s2); box-shadow: none; }
+  .hb-top > .hbc-fab .hbc-fab__glyph { width: 1.375rem; height: 1.375rem; }
+  .hb-top:has(> .hbc-fab:not([hidden])) .hb-tabs { flex: 1 1 0; }
+  body:has(.hb-top > .hbc-fab) .hb-main { padding-bottom: var(--s7); }
+}
 .hbc-fab__glyph { width: 1.75rem; height: 1.75rem; }
 .hbc-fab__badge { position: absolute; top: -0.2rem; right: -0.2rem; min-width: 1.25rem; height: 1.25rem; padding: 0 0.3rem; border-radius: 999px; background: #b42318; color: #ffffff; font-size: 0.75rem; font-weight: 600; line-height: 1.25rem; text-align: center; box-shadow: 0 0 0 2px var(--bg, #ffffff); }
 .hbc-fab__badge[hidden] { display: none; }

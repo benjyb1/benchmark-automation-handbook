@@ -154,6 +154,9 @@
 .hbg-ov__secs, .hbg-ov__mk { display: flex; gap: var(--sec-gap); }
 .hbg-ov__sec { display: grid; grid-template-rows: 1fr auto; gap: 2px; min-width: 0; }   /* the numbers sit on one line under names of any height */
 .hbg-ov__sec > .hbg-ov__secname { align-self: end; }
+.hbg-ov__secname.is-short { font-size: 0; line-height: 0; }   /* partly behind a pinned column: see edgeNames */
+.hbg-ov__secname.is-short::after { content: attr(data-short); font-size: var(--fs-12); line-height: 1.2; white-space: nowrap; }
+.hbg-ov__secname.is-cut { visibility: hidden; }
 .hbg-ov__secname { width: 0; min-width: 100%; color: var(--ink); line-height: 1.2; overflow-wrap: anywhere; }   /* wraps as far as it needs: never cut (22 Oct 2026); no hyphens: the section is as wide as its longest word, and "hyphens: auto" still broke "com-mitment" to fill a line (GLAAD, 23 Oct) */
 /* A section is as wide as its marks or its name's longest word, whichever is wider, so a two-mark
    section called "Vegetarian diets" wraps between words, not inside one (BFCI, 23 Oct 2026). The
@@ -760,8 +763,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       h("span", { class: "hbg-ov__secs" }, m.sections.map((sec, si) => {
         const nums = m.shortIds(sec);
         const full = sec.name ? sec.id + " " + sec.name : sec.id;
-        return h("span", { class: "hbg-ov__sec", style: { "--sw": "var(--sw-" + si + ")" } },
-          h("span", { class: "hbg-ov__secname", title: full }, sec.name || sec.id || "No section"),
+        return h("span", { class: "hbg-ov__sec", title: full, style: { "--sw": "var(--sw-" + si + ")" } },
+          h("span", { class: "hbg-ov__secname", title: full, "data-id": sec.name ? sec.id : null }, sec.name || sec.id || "No section"),
           h("span", { class: "hbg-ov__qs" }, sec.qs.map((q, i) => {
             col += 1;
             const end = col > total / 2;
@@ -809,9 +812,76 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       root.append(sec);
     });
     if (nameFit) root.style.setProperty("--name-max", nameFit);
+    if (tierFit) root.style.setProperty("--tier-w", tierFit);
     requestAnimationFrame(fitNames);
     fitSectionsWhenShown(root, m, 0);
+    root.addEventListener("scroll", () => edgeNames(root), { passive: true });   // scroll events come once a frame at most
     return root;
+  }
+
+  // A section name partly behind the pinned columns as the grid scrolls sideways showed half a word
+  // ("Performance" cut at Overall, a GLAAD name one letter wide at the edge: design read 26 Oct 2026),
+  // and hiding it left a 20-column section with no name at all (IMCO). So each name keeps to the part of
+  // its section in view: it slides along with the scroll while its words fit there, then shortens
+  // ("Pillar 2", "Pillar 2: Performance...", "P2"), and only a sliver too narrow for that goes blank. The
+  // full name is on hover.
+  function edgeNames(live) {
+    if (!live || !live.isConnected) return;
+    const head = live.querySelector(".hbg-ov__head");
+    if (!head) return;
+    const l = head.querySelector(".hbg-ov__pin-l"), n = head.querySelector(".hbg-ov__pin-n");
+    const from = l && getComputedStyle(l).position === "sticky" ? l.getBoundingClientRect().right : -Infinity;
+    const to = n && getComputedStyle(n).position === "sticky" ? n.getBoundingClientRect().left : Infinity;
+    const names = [...head.querySelectorAll(".hbg-ov__secname")];
+    // The name's own text never changes here: the page's layout check rescans on every change of text,
+    // and the two set each other off without end (Quem Defende stalled the release sweep for 20 minutes,
+    // 26 Oct 2026). A shorter form is drawn from data-short by CSS, and measured on a canvas.
+    names.forEach((el) => {
+      el.classList.remove("is-cut", "is-short");
+      el.style.transform = "";
+    });
+    head.style.minHeight = "";
+    head.style.minHeight = head.getBoundingClientRect().height + "px";   // the header keeps its height as names shorten
+    const range = document.createRange();
+    let pen = null;
+    names.forEach((el) => {
+      const box = el.getBoundingClientRect();
+      const left = Math.max(box.left, from), right = Math.min(box.right, to);
+      const shift = Math.max(0, left - box.left);
+      range.selectNodeContents(el);
+      if (box.left + shift + range.getBoundingClientRect().width <= right + 1) {
+        if (shift) el.style.transform = "translateX(" + Math.round(shift) + "px)";
+        return;
+      }
+      if (!pen) {
+        wordCanvas = wordCanvas || document.createElement("canvas");
+        pen = wordCanvas.getContext("2d");
+        pen.font = getComputedStyle(el).font;
+      }
+      // Shorter forms, in this order: the name up to its colon ("Pillar 2"), the name cut at a whole word,
+      // then the section's own code when it has a letter in it ("P2", "IV"; a bare "6" says nothing).
+      const full = el.textContent, room = right - left;
+      const tries = [];
+      const colon = full.indexOf(":");
+      if (colon > 0) tries.push(full.slice(0, colon).trim());
+      for (let chars = Math.floor(room / 6.5); chars >= 6; chars -= 2) {
+        const cut = HB.shortText(full, chars);
+        if (/\s/.test(cut.replace(/\u2026.*$/, ""))) tries.push(cut);   // keeps a whole word, not "Indicat..."
+      }
+      if (el.dataset.id && el.dataset.id.length <= 4 && /[a-z]/i.test(el.dataset.id)) tries.push(el.dataset.id);
+      const fits = tries.find((t) => pen.measureText(t).width <= room - 1);
+      if (fits) {
+        el.dataset.short = fits;
+        el.classList.add("is-short");
+        if (shift) el.style.transform = "translateX(" + Math.round(shift) + "px)";
+      } else {
+        el.classList.add("is-cut");
+      }
+    });
+  }
+  if (typeof window !== "undefined" && !window.__hbgEdge) {
+    window.__hbgEdge = true;
+    window.addEventListener("resize", () => edgeNames(document.querySelector(".hbg-ov")), { passive: true });
   }
 
   // Each section's width: its marks, or its name's longest word once measured (wordFit, kept across
@@ -886,9 +956,11 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const key = sec.name || sec.id || "";
       if (wordFit[key] !== widest) { wordFit[key] = widest; changed = true; }
     });
-    if (!changed) return;
-    const widths = sectionWidths(m);
-    Object.keys(widths).forEach((k) => live.style.setProperty(k, widths[k]));
+    if (changed) {
+      const widths = sectionWidths(m);
+      Object.keys(widths).forEach((k) => live.style.setProperty(k, widths[k]));
+    }
+    edgeNames(live);
   }
 
   // Every row is its own grid, so the name column can't size itself to its content: measure the
@@ -904,9 +976,26 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       range.selectNodeContents(el);
       widest = Math.max(widest, range.getBoundingClientRect().width);
     });
+    if (widest) {
+      nameFit = "min(" + Math.ceil(widest + 4) + "px, 28rem)";
+      live.style.setProperty("--name-max", nameFit);
+    }
+    fitTiers(live, range);
+    edgeNames(live);
+  }
+
+  // The band column is as wide as its longest band name ("Tier 4 · Getting started"), up to 16rem, rather
+  // than a fixed 7rem that cut it to "Getting sta..." (Pecking Order, design read 26 Oct 2026).
+  let tierFit = "";
+  function fitTiers(live, range) {
+    let widest = 0;
+    live.querySelectorAll(".hbg-ov__r > .hbg-ov__pin-r, .hbg-ov__gh > .hbg-ov__pin-r").forEach((el) => {   // and "Open as table"
+      range.selectNodeContents(el);
+      widest = Math.max(widest, range.getBoundingClientRect().width);
+    });
     if (!widest) return;
-    nameFit = "min(" + Math.ceil(widest + 4) + "px, 28rem)";
-    live.style.setProperty("--name-max", nameFit);
+    tierFit = "min(max(" + Math.ceil(widest + 4) + "px, 4.5rem), 16rem)";
+    live.style.setProperty("--tier-w", tierFit);
   }
 
   /* ---- Tables ------------------------------------------------------------------ */

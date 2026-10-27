@@ -192,11 +192,27 @@
     return q && /^\d/.test(String(key)) ? `Q${key}` : String(key);   // "Q1.1", but "N1" stays as it is
   }
 
-  /** At most about 28 characters, cut at a word with "…". */
+  /** At most about 32 characters, cut at a word with "…"; in full when the cut could also be the start of
+   *  another question's or section's name ("Milk alternatives in the…" stood for both "…in the text" and
+   *  "…in the pictures", BFCI design read 26 Oct 2026). */
   function shortWords(text) {
     const t = text.trim();
-    if (t.length <= 28) return t;
-    return t.slice(0, 27).replace(/\s+\S*$/, "") + "\u2026";
+    const cut = HB.shortText(t, 32);
+    if (cut === t) return t;
+    const stem = cut.slice(0, cut.lastIndexOf("\u2026"));
+    return allNames().some((n) => n !== t && n.startsWith(stem)) ? t : cut;
+  }
+
+  // The benchmark's question and section names, gathered once a bundle.
+  let namesFor = null, names = [];
+  function allNames() {
+    const b = bundle();
+    if (namesFor === b) return names;
+    namesFor = b;
+    names = [...new Set((b.questions || []).map((q) => q && q.short)
+      .concat(((b.scoresheet || {}).sections || []).map((x) => x && String(x.name || "").replace(/\s*\([^)]*\)\s*$/, "")))
+      .filter(Boolean).map((n) => String(n).trim()))];
+    return names;
   }
 
   const levelLong = (key) => parts().keyName(key);
@@ -217,7 +233,7 @@
     return why.sample !== false;
   }
 
-  const clip = (t, n) => { const x = String(t || "").replace(/\s+/g, " ").trim(); return x.length > n ? x.slice(0, n - 1) + "\u2026" : x; };
+  const clip = (t, n) => HB.shortText(t, n);
 
   /** What Claude is told: the figure both ways, and this edition's answers and quotes behind it. */
   function whyPrompt(rowId, d) {
@@ -416,7 +432,7 @@
     }
     const mark = ask.indexOf("?");
     if (mark > 0) ask = ask.slice(0, mark + 1);
-    else if (ask.length > 160) ask = ask.slice(0, 157).replace(/\s+\S*$/, "") + "…";
+    else if (ask.length > 160) ask = HB.shortText(ask, 160);
     return { topic, question: ask || String((rule && rule.id) || "") };
   }
 
@@ -878,7 +894,7 @@
     };
     const short = (text) => {
       const t = String(text || "").replace(/\s+/g, " ").trim();
-      return t.length > 140 ? t.slice(0, 137).replace(/\s+\S*$/, "") + "…" : t;
+      return HB.shortText(t, 140);
     };
     const rowsOut = list.map((f) => ({ id: f.rule.id, rule: f.rule, items: f.items, qs: Array.from(f.qs).sort((a, b) => a.localeCompare(b, "en-GB", { numeric: true })) }));
     if (none.length) rowsOut.push({ id: "", rule: null, items: none, qs: [] });
@@ -1321,12 +1337,12 @@
         const words = ruleWords(rule);
         const n = rows.size;
         const q = capital(words.question);
-        const title = words.topic || (q.length > 80 ? q.slice(0, 77).replace(/\s+\S*$/, "") + "…" : q);   // no topic: its question, short
+        const title = words.topic || HB.shortText(q, 80);   // no topic: its question, short
         const chose = ownerChoice(rule);
         const rowIds = Array.from(rows.keys());
         return Object.assign(firstCard("rule:" + rule.id, chose ? {
           kind: "Decided", title, cta: rerunWaiting(rule) ? "Re-run asked for" : "Re-run",
-          summary: `${chose.text.length > 90 ? chose.text.slice(0, 87).replace(/\s+\S*$/, "") + "…" : chose.text} \u00b7 ` +
+          summary: `${HB.shortText(chose.text, 90)} \u00b7 ` +
             (n === 1 ? `one ${nouns.one} to score again` : `${fmtInt(n)} ${nouns.many} to score again`),
         } : {
           kind: "Open rule", title, cta: "Decide this rule",
