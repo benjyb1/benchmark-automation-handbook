@@ -402,7 +402,9 @@
 
   const num = (v, sc) => (isNum(v) ? fmtNum(v, 1) + sc.suffix : "–");
   const signed = (g) => (!isNum(g) ? "–" : g > 0 ? "+" + fmtNum(g, 1) : g < 0 ? MINUS + fmtNum(-g, 1) : "0");
-  const gapWords = (g) => (g === 0 ? "the same score" : `${fmtNum(Math.abs(g), 1)} ${Math.abs(g) === 1 ? "point" : "points"} ${g > 0 ? "higher" : "lower"}`);
+  // In percentage points where scores are percentages, as the captions say beside it ("44 points lower" under
+  // percentages read as a different unit, IMCO, design read 15 Nov 2026).
+  const gapWords = (g, sc) => (g === 0 ? "the same score" : `${fmtNum(Math.abs(g), 1)} ${sc && sc.pct ? "percentage " : ""}${Math.abs(g) === 1 ? "point" : "points"} ${g > 0 ? "higher" : "lower"}`);
 
   /** "Tier 3" on screen, the band's full name for screen readers and in its title. */
   function tierCell(name, sc) {
@@ -489,7 +491,7 @@
   function ariaFor(a, sc) {
     const rules = ruleLines(a);
     return `${a.name}: this edition ${num(a.ours, sc)}, ${them} ${num(a.theirs, sc)}, ` +
-      (a.has ? gapWords(a.gap) : "not in both editions") + tierWords(a, sc) + "." +
+      (a.has ? gapWords(a.gap, sc) : "not in both editions") + tierWords(a, sc) + "." +
       (rules ? rules.map((x) => ` ${x}${/[?.]$/.test(x) ? "" : "."}`).join("")
         : (a.d ? ` Reason: ${reasonText(a.d)}.` : "") + (a.d && a.d.note ? ` ${a.d.note}` : ""));
   }
@@ -500,7 +502,7 @@
       rows: [
         { strong: num(a.ours, sc), text: "this edition" + (a.tierO ? `, ${a.tierO}` : "") },
         { strong: num(a.theirs, sc), text: them + (a.tierT ? `, ${a.tierT}` : "") },
-        a.has ? capital(gapWords(a.gap)) + (a.hasTier ? (a.tierSame ? `, same ${sc.word}` : `, different ${sc.word}`) : "") : "Not in both editions",
+        a.has ? capital(gapWords(a.gap, sc)) + (a.hasTier ? (a.tierSame ? `, same ${sc.word}` : `, different ${sc.word}`) : "") : "Not in both editions",
         ...reasonLines(a),
       ],
     };
@@ -728,7 +730,7 @@
       label: `${levelLong(v.L)}: this edition against ${them}, one dot per ${nouns.one}`,
       points: v.items.map((a) => ({
         id: a.id, label: a.name, x: a.theirs, y: a.ours, tag: far.includes(a.id), muted: v.state.show === "diff" && a.same,
-        note: [a.has ? capital(gapWords(a.gap)) + tierWords(a, v.sc) : null, ...reasonLines(a)]
+        note: [a.has ? capital(gapWords(a.gap, v.sc)) + tierWords(a, v.sc) : null, ...reasonLines(a)]
           .filter(Boolean).map((x) => (/[?.]$/.test(x) ? x : x + ".")).join(" "),
       })),
       xLabel: Them, yLabel: "This edition", max: v.sc.max,
@@ -1571,7 +1573,7 @@
       // edition's results" under a heading about the published 2026 scores read as a contradiction).
       h("ul", { class: "cmp-not" }, list.map((x) => h("li", null,
         h("strong", null, rowName(x.row)), ": ",
-        String(x.text || x.why || "").replace(/^It is /, "").replace(/last edition's results/g, theirResults)))));
+        capital(String(x.text || x.why || "").replace(/^It is /, "").replace(/last edition's results/g, theirResults))))));   // every reason starts the same way (TPI, 15 Nov 2026)
   }
 
   function render(root, ctx) {

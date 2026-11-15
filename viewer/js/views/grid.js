@@ -147,6 +147,11 @@
 .hbg-ov__head > .hbg-num { text-align: right; }
 .hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r { position: sticky; z-index: 4; align-self: stretch; background: inherit; }
 .hbg-ov__pin-l { left: 0; margin-inline: calc(-1 * var(--ov-pad)) calc(-1 * var(--ov-gap)); padding-inline: var(--ov-pad) var(--ov-gap); box-shadow: inset -1px 0 0 var(--rule); }
+/* While questions go on past an edge, that edge's pinned column casts a soft shade over the marks sliding under it,
+   so a half-hidden square reads as "more this way", not as cut off (BFCI, design read 15 Nov 2026). edgeNames sets
+   the classes as the grid scrolls. */
+.hbg-ov.is-more-right .hbg-ov__pin-n { box-shadow: inset 1px 0 0 var(--rule), -10px 0 10px -8px color-mix(in srgb, var(--ink) 35%, transparent); }
+.hbg-ov.is-more-left .hbg-ov__pin-l { box-shadow: inset -1px 0 0 var(--rule), 10px 0 10px -8px color-mix(in srgb, var(--ink) 35%, transparent); }
 .hbg-ov__pin-n { right: calc(var(--tier-w) + var(--ov-pad)); display: flex; align-items: center; justify-content: flex-end; margin-inline: calc(-1 * var(--ov-gap)); padding-inline: var(--ov-gap); box-shadow: inset 1px 0 0 var(--rule); }
 .hbg-ov__pin-r { right: 0; display: flex; align-items: center; min-width: 0; margin-right: calc(-1 * var(--ov-pad)); padding-right: var(--ov-pad); }
 .hbg-ov__pin-r > * { min-width: 0; }
@@ -173,7 +178,7 @@
    one line cut "Coca-Cola Consolidated" to "Coca-Cola Conso..." (all-projects sweep, 27 Oct 2026). A name
    longer than two lines still ends in "..." with the whole name on hover. */
 .hbg-ov__gname { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
-.hbg-ov__gmeta { min-width: 0; color: var(--ink-2); font-size: var(--fs-12); }
+.hbg-ov__gmeta { min-width: 0; padding-left: var(--s2); color: var(--ink-2); font-size: var(--fs-12); }   /* clear of the column line, not against it (design read, 15 Nov 2026) */
 .hbg-ov__gh .hbg-num { font-weight: 600; }
 .hbg-ov__open { justify-self: end; white-space: nowrap; }
 .hbg-ov__rows { padding-block: 2px; }
@@ -547,7 +552,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const sections = sectionsFor(bundle, qidsAll);
 
     // Counts over the rows in view.
-    const counts = { answered: 0, valued: 0, ne: 0, waiting: 0, owner: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
+    // answers: every answer, a level or "no evidence found" alike, by the page's one definition (HB.data.isScored),
+    // so the toolbar's figure is the one Feedback and Results count (Grid "15 answered" beside Feedback's 21 answers
+    // to check, IMCO, design read 15 Nov 2026). answered and ne split it for the key.
+    const counts = { answers: 0, answered: 0, valued: 0, ne: 0, waiting: 0, owner: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
     for (const k of HB.flagKinds.factual) counts.kinds[k] = 0;
     const restsByQ = new Map();
     const cellInfo = new Map();
@@ -555,6 +563,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       for (const sec of sections) for (const q of sec.qs) {
         const c = ctx.data.cell(u.id, q.id);
         if (!c) continue;
+        if (HB.data.isScored(c)) counts.answers += 1;
         if (c.state === "answered") {
           counts.answered += 1;
           if (carriesNoPoints(q)) counts.valued += 1;
@@ -854,8 +863,17 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   // its section in view: it slides along with the scroll while its words fit there, then shortens
   // ("Pillar 2", "Pillar 2: Performance...", "P2"), and only a sliver too narrow for that goes blank. The
   // full name is on hover.
+  // A shortened name keeps whole words only: never a stem that stops inside a word ("LEVEL 1: ACKNOWLE...", TPI at
+  // 780 wide, 15 Nov 2026), nor a single cut word ("Indicat...").
+  function wholeWordCut(full, cut) {
+    const stem = String(cut).replace(/\u2026.*$/, "");
+    return /\s/.test(stem) && (stem.length >= full.length || /^[\s.,;:!?)\]]/.test(full.slice(stem.length)));
+  }
+
   function edgeNames(live) {
     if (!live || !live.isConnected) return;
+    live.classList.toggle("is-more-left", live.scrollLeft > 1);
+    live.classList.toggle("is-more-right", live.scrollLeft + live.clientWidth < live.scrollWidth - 1);
     const head = live.querySelector(".hbg-ov__head");
     if (!head) return;
     const l = head.querySelector(".hbg-ov__pin-l"), n = head.querySelector(".hbg-ov__pin-n");
@@ -911,7 +929,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const tries = [full];
       for (let chars = Math.min(full.length - 1, Math.floor(room / 6.5) * most); chars >= 6; chars -= 2) {
         const cut = HB.shortText(full, chars);
-        if (/\s/.test(cut.replace(/\u2026.*$/, ""))) tries.push(cut);   // keeps a whole word, not "Indicat..."
+        if (wholeWordCut(full, cut)) tries.push(cut);
       }
       const colon = full.indexOf(":");
       if (colon > 0) tries.push(full.slice(0, colon).trim());
@@ -1330,8 +1348,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
           refocus(".hbg-view > summary");
         } }, "Clear")));
     }
-    parts.push(part(h("b", null, fmtInt(c.answered)), " answered"));
-    if (c.flagged) parts.push(part(h("b", null, fmtInt(c.flagged)), " to check"));
+    parts.push(part(h("b", null, fmtInt(c.answers)), " answered"));
+    // "flagged", as the group lines say: Feedback's "answers to check" are answers nobody has looked over yet,
+    // a different thing, and one phrase for both read as a contradiction (design read, 15 Nov 2026).
+    if (c.flagged) parts.push(part(h("b", null, fmtInt(c.flagged)), " flagged"));
     const bar = [h("div", { class: "hbg-counts", role: "status" }, parts)];
     bar.push(h("span", { class: "hbg-bar__grow" }));
     const hlCount = Array.isArray(state.highlight) ? state.highlight.length : 0;
@@ -1507,6 +1527,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     label: "Grid",
     order: 40,
     render,
+    wholeWordCut,
     visible() {
       return true;
     },

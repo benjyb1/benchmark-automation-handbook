@@ -30,7 +30,7 @@
   const { h, fmtInt } = HB;
 
   const STYLE = `
-.hbg-ov__who { display: flex; align-items: baseline; gap: var(--s2); min-width: 0; }
+.hbg-ov__who { display: flex; align-items: last baseline; gap: var(--s2); min-width: 0; }   /* "2 missing" beside the name's last line: on the first, a two-line name stranded it mid-row (TPI, design read 15 Nov 2026) */
 .hbg-ov__who > .hbg-ov__nm { flex: 0 1 auto; min-width: 0; }
 .hbg-gap { flex: none; padding: 0 var(--s1); border: 0; border-bottom: 1px dotted var(--ink-2); border-radius: 0; background: none; color: var(--ink-2); font: inherit; font-size: var(--fs-12); line-height: 1.3; cursor: pointer; white-space: nowrap; }
 .hbg-gap:hover { border-bottom-style: solid; color: var(--ink); }

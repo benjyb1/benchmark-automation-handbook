@@ -430,7 +430,10 @@ def _move_text(m: dict, sheet: dict, edition: str, apart: int, no_evidence: bool
     else:
         gap = abs(ours - theirs)
         gap = str(int(gap)) if float(gap).is_integer() else str(round(gap, 1))
-        points = "points" if _is_percent(key, sheet) or gap != "1" else "point"
+        # Between percentages the gap is in percentage points, as the page's captions say ("44% to 0%, 44 points
+        # lower" read as a different unit, IMCO, design read 15 Nov 2026).
+        pct = _is_percent(key, sheet)
+        points = ("percentage " if pct else "") + ("point" if gap == "1" else "points")
         if answers.is_number(question):
             unit = str((question.get("answer") or {}).get("unit") or "")
             points = "percentage points" if unit == "%" else unit
