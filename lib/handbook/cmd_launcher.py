@@ -7,12 +7,20 @@ AppleScript app made with macOS's own `osacompile`; nothing is downloaded, and b
 on this Mac it opens without a security warning. It goes in the project folder, and with
 `--desktop` a copy goes on the Desktop too. The server's output goes to `<project>/.serve.log`.
 
+On Windows the same thing is a shortcut, "Open <benchmark>.lnk", made through PowerShell (built in):
+it runs lib/hb.cmd in a minimised window, which keeps the page going; closing that window stops it.
+It wears the same icon, written as an .ico. On Linux it is a desktop entry, "open-<benchmark>.desktop",
+in the applications menu (~/.local/share/applications) and the project folder, running a small shell
+script beside it. Being made on the computer, neither carries a downloaded-file warning.
+
 The app wears the tool's own icon: a green rounded square with a white speech bubble and three
 dots. The PNG is drawn here with the standard library alone (zlib and struct), turned into an
 .iconset with `sips` and an .icns with `iconutil`, and copied over the app's applet.icns. If sips
 or iconutil is missing, or anything in that goes wrong, the app keeps the stock script icon.
 """
 from __future__ import annotations
+import base64
+import os
 import re
 import shutil
 import struct
@@ -22,16 +30,32 @@ import tempfile
 import zlib
 from pathlib import Path
 
+from . import system
 from .cli import command_parser, open_project
 from .folder import HandbookError, handbook_home
 
 HB = Path(__file__).resolve().parents[1] / "hb"
+HB_CMD = HB.with_name("hb.cmd")                  # the Windows launcher beside it
+ICON_ICO = ".hb-icon.ico"                       # kept in the project folder for the shortcut
+ICON_PNG = ".hb-icon.png"
 
 
 def app_name(benchmark: str) -> str:
     """'Open <name>.app', with characters Finder dislikes in a name taken out."""
     clean = re.sub(r"\s+", " ", re.sub(r"[/:\\]+", " ", benchmark or "")).strip() or "my benchmark"
     return f"Open {clean}.app"
+
+
+def windows_name(benchmark: str) -> str:
+    """'Open <name>.lnk', with the characters Windows forbids in a file name taken out."""
+    clean = re.sub(r"\s+", " ", re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", benchmark or "")).strip(" .") or "my benchmark"
+    return f"Open {clean}.lnk"
+
+
+def linux_name(benchmark: str) -> str:
+    """'open-<name>.desktop', lower case with hyphens."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (benchmark or "").lower()).strip("-") or "my-benchmark"
+    return f"open-{slug}.desktop"
 
 
 def _applescript_text(value: str) -> str:
@@ -155,6 +179,103 @@ def set_icon(app: Path) -> bool:
         return False
 
 
+def icon_ico(sizes=(16, 32, 48, 256)) -> bytes:
+    """The icon as a Windows .ico: one PNG per size (Windows Vista and later read PNGs inside an .ico)."""
+    pngs = [(s, icon_png(s)) for s in sizes]
+    head = struct.pack("<HHH", 0, 1, len(pngs))
+    offset = 6 + 16 * len(pngs)
+    entries, body = b"", b""
+    for s, data in pngs:
+        dim = 0 if s >= 256 else s                      # 0 means 256
+        entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(data), offset + len(body))
+        body += data
+    return head + entries + body
+
+
+def windows_target(hb_cmd: Path, project: Path) -> tuple[str, str]:
+    """What the shortcut runs: cmd.exe, and its arguments. `cmd /c ""..." ..."`: with the whole line in
+    one pair of outer quotes cmd keeps the inner quotes round paths with spaces."""
+    comspec = os.environ.get("ComSpec") or r"C:\Windows\System32\cmd.exe"
+    log = str(project) + "\\.serve.log"
+    return comspec, f'/c ""{hb_cmd}" serve --app-window --project "{project}" > "{log}" 2>&1"'
+
+
+SHORTCUT_PS = """$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:HB_LNK)
+$s.TargetPath = $env:HB_TARGET
+$s.Arguments = $env:HB_ARGS
+$s.WorkingDirectory = $env:HB_DIR
+$s.WindowStyle = 7
+$s.IconLocation = $env:HB_ICON + ',0'
+$s.Description = 'Opens the benchmark tool page'
+$s.Save()
+"""
+
+
+def make_shortcut(target: Path, project: Path) -> None:
+    """Make the Windows shortcut. The paths go to PowerShell in environment variables and the script
+    as -EncodedCommand, so no quoting can go wrong between them."""
+    if not HB_CMD.is_file():
+        raise HandbookError(f"The Windows launcher {HB_CMD} is missing; install the tool again.")
+    icon = project / ICON_ICO
+    try:
+        icon.write_bytes(icon_ico())
+    except OSError:
+        icon = None
+    exe, args = windows_target(HB_CMD, project)
+    env = dict(os.environ, HB_LNK=str(target), HB_TARGET=exe, HB_ARGS=args, HB_DIR=str(project),
+               HB_ICON=str(icon) if icon else exe)
+    encoded = base64.b64encode(SHORTCUT_PS.encode("utf-16-le")).decode("ascii")
+    try:
+        got = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+                             capture_output=True, text=True, env=env, timeout=60)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise HandbookError(f"The shortcut could not be made: {e}") from None
+    if got.returncode != 0 or not target.is_file():
+        raise HandbookError(f"The shortcut could not be made: {(got.stderr or '').strip()[:200]}")
+
+
+def _desktop_quote(arg: str) -> str:
+    """One argument of a desktop entry's Exec line, quoted as the freedesktop spec asks: inside double
+    quotes, \", `, $ and \\ take a backslash, and the whole value's backslashes are doubled again."""
+    inner = "".join("\\" + c if c in '"`$\\' else c for c in arg)
+    return ('"' + inner + '"').replace("\\", "\\\\")
+
+
+def linux_script(hb: Path, project: Path) -> str:
+    q = lambda s: "'" + str(s).replace("'", "'\\''") + "'"
+    return "\n".join(["#!/bin/sh", "# Opens the benchmark tool page for this project (made by hb launcher).",
+                      f"exec {q(hb)} serve --app-window --project {q(project)} > {q(str(project) + '/.serve.log')} 2>&1", ""])
+
+
+def desktop_entry(script_path: Path, icon: Path | None, name: str) -> str:
+    lines = ["[Desktop Entry]", "Type=Application", f"Name={name}", "Comment=Opens the benchmark tool page",
+             f"Exec={_desktop_quote(str(script_path))}", "Terminal=false"]
+    if icon:
+        lines.append(f"Icon={icon}")
+    return "\n".join(lines) + "\n"
+
+
+def make_desktop_entry(places: list[Path], project: Path, benchmark: str) -> list[Path]:
+    """The Linux launcher: a script in the project folder and a desktop entry in each place."""
+    script_path = project / ".open-benchmark.sh"
+    script_path.write_text(linux_script(HB, project), encoding="utf-8")
+    script_path.chmod(0o755)
+    icon = project / ICON_PNG
+    try:
+        icon.write_bytes(icon_png(256))
+    except OSError:
+        icon = None
+    made = []
+    entry = desktop_entry(script_path, icon, app_name(benchmark)[:-len(".app")])
+    for place in places:
+        place.mkdir(parents=True, exist_ok=True)
+        path = place / linux_name(benchmark)
+        path.write_text(entry, encoding="utf-8")
+        path.chmod(0o755)
+        made.append(path)
+    return made
+
+
 def make_app(target: Path, text: str) -> None:
     if shutil.which("osacompile") is None:
         raise HandbookError("Making the launcher needs a Mac (osacompile was not found).")
@@ -171,17 +292,33 @@ def main(argv) -> int:
     parser.add_argument("--desktop", action="store_true", help="also put a copy on the Desktop")
     args = parser.parse_args(argv)
     project = open_project(args.project)
-    name = app_name((project.read("project") or {}).get("name"))
-    if project.is_team():
-        # A shared folder holds nothing that belongs to one person: the app (it names this computer's
-        # copy of the tool) and its output go in this person's own places.
+    benchmark = (project.read("project") or {}).get("name")
+    team = project.is_team()
+    # A shared folder holds nothing that belongs to one person: the app (it names this computer's
+    # copy of the tool) and its output go in this person's own places.
+    own = [] if team else [project.path]
+    desktop = [Path.home() / "Desktop"] if (args.desktop or team) else []
+    if system.windows():
+        for place in own + desktop:
+            make_shortcut(place / windows_name(benchmark), project.path)
+            print(f"Made {place / windows_name(benchmark)}.")
+        print("Double-click it to open the benchmark's page. It keeps a small window open in the taskbar while "
+              "the page runs; close that window to stop.")
+        return 0
+    if not system.mac():
+        places = own + [Path.home() / ".local" / "share" / "applications"] + desktop
+        for path in make_desktop_entry(places, project.path, benchmark):
+            print(f"Made {path}.")
+        print("Open it from your applications menu (or double-click it) to open the benchmark's page.")
+        return 0
+    name = app_name(benchmark)
+    if team:
         log = handbook_home() / "logs" / f"{project.slug}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         text = script(HB, project.path, log)
-        places = [Path.home() / "Desktop"]
     else:
         text = script(HB, project.path)
-        places = [project.path] + ([Path.home() / "Desktop"] if args.desktop else [])
+    places = own + desktop
     for place in places:
         make_app(place / name, text)
         print(f"Made {place / name}.")

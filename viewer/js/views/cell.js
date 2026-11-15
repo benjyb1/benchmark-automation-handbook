@@ -79,6 +79,8 @@
     page_gone: "Most of the page has gone",
     reads_disagree: "Second read differs",
     weak_source: "Not from its own source",
+    set_aside: "Evidence set aside, for you to check",
+    sources_disagree: "Sources disagree",
     owner_changed: "Changed by the owner",
     holds_back: "Holds the row below its next level",
     needs_document: "Needs a document you can add",
@@ -93,6 +95,8 @@
     todays_version: () => [svg("rect", { x: 1.8, y: 2.4, width: 8.4, height: 7.8, rx: 1 }), svg("path", { d: "M1.8 5h8.4" }), svg("circle", { class: "is-fill", cx: 6, cy: 7.6, r: 1 })],
     reads_disagree: () => [svg("circle", { cx: 6, cy: 6, r: 4.4 }), svg("path", { class: "is-fill", d: "M6 1.6a4.4 4.4 0 0 1 0 8.8z" })],
     weak_source: () => [svg("path", { d: "M3 10V7.4" }), svg("path", { d: "M6 10V5M9 10V2.6", opacity: "0.4" })],
+    set_aside: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M6 4v3" }), svg("circle", { class: "is-fill", cx: 6, cy: 8.6, r: 0.8 })],
+    sources_disagree: () => [svg("path", { d: "M2.2 4h5M9.8 8h-5" }), svg("path", { d: "M6 2.2 7.8 4 6 5.8M6 6.2 4.2 8 6 9.8" })],
     owner_changed: () => [svg("path", { d: "M3.6 8.4 8.8 3.2" }), svg("path", { class: "is-fill", d: "M2.4 9.6l.7-2.3 1.6 1.6z" })],
     needs_document: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M6 4v4M4 6h4" })],
     page_gone: () => [svg("rect", { x: 2.6, y: 1.8, width: 6.8, height: 8.4, rx: 1 }), svg("path", { d: "M4.2 4.2h3.6" }), svg("path", { d: "M4.2 6.4h1.6M4.2 8.2h0.8", opacity: "0.45" })],
@@ -978,7 +982,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     const out = [h("p", { class: "cellp-ans" },
       h("strong", null, lead),
       cell.value == null && !noPoints ? ". Answer not recorded." : named && named !== lead ? " \u00b7 " + named : "")];
-    const sub = [cell.value == null || bareCode || (noPoints && !name) ? null : valueWord(q, cell.value),
+    // The value once: "18 of 18 points · Yes" then "Yes · Answered" said it twice (design read, 26 Oct 2026).
+    const sub = [cell.value == null || bareCode || (noPoints && !name) || valueWord(q, cell.value) === named ? null : valueWord(q, cell.value),
       noPoints && lead === STATE_WORDS[cell.state] ? null : STATE_WORDS[cell.state]];
     if (cell.second_read && cell.second_read.value != null) {
       sub.push("Second read: " + valueWord(q, cell.second_read.value) + (cell.second_read.agrees ? ", agrees" : ", differs"));
@@ -1299,6 +1304,29 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       return peers.length === 1
         ? [...names, " cited the same document but got a different answer. One of the two may be wrong: open it to compare."]
         : [...names, " cited the same document but got different answers. Open them to compare and see which reading is right."];
+    }
+    if (kind === "set_aside") {
+      const s = cell.set_aside || {};
+      const doc = s.doc && docs[s.doc] ? "‘" + (docs[s.doc].title || s.doc) + "’" : "a document";
+      const would = s.if_accepted != null ? " If you accept it, this answer would be " + String(s.if_accepted) + "." : "";
+      return ["Claude found evidence in " + doc + " but set it aside under a rule" +
+        (s.note ? " (" + String(s.note).replace(/^./, (c) => c.toLowerCase()).replace(/\.$/, "") + ")" : "") +
+        ", so this answer does not count it." + would + " Check the source and correct the answer if it should count."];
+    }
+    if (kind === "sources_disagree") {
+      const WHY = { source_order: "it is the better kind of source", in_force: "it is in force and the other is a draft",
+        in_period: "it is dated inside the study period", newer_version: "it is the later version",
+        more_specific: "it is more specific", rule: "a coding rule decides it" };
+      const name = (d) => (d && docs[d] && docs[d].title ? "‘" + docs[d].title + "’" : String(d || "a document"));
+      const parts = (Array.isArray(cell.conflicts) ? cell.conflicts : []).map((e) => {
+        const sides = (Array.isArray(e.sides) ? e.sides : []).map((s) => name(s.doc) + (s.page ? " p. " + s.page : "") +
+          (s.says ? " (" + String(s.says).replace(/\.$/, "") + ")" : ""));
+        const went = e.went_with
+          ? " This answer went with " + name(e.went_with) + (WHY[e.why] ? " because " + WHY[e.why] : "") + "."
+          : " Claude could not choose between them.";
+        return sides.join(" and ") + " disagree." + went;
+      });
+      return [(parts.join(" ") || "Documents behind this answer disagree.") + " Check the choice if it matters."];
     }
     if (kind === "weak_source") {
       const whys = Array.from(new Set(cited.map((d) => docs[d].weak && docs[d].weak.why).filter(Boolean)));
@@ -1924,7 +1952,8 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
     // Why the grid marked it comes straight under the answer: that is what the owner clicked to find out.
     if (cell) content.push(flagsPart(ctx, unit, qv, cell, quotes));
     if (cell) content.push(earlierPart(ctx, row, qid, qv));
-    if (cell && qv) content.push(fixPart(ctx, row, qid, qv));
+    // Nothing to correct before it is scored (design read, 26 Oct 2026).
+    if (cell && qv && cell.state !== "not_run") content.push(fixPart(ctx, row, qid, qv));
     if (cell) {
       content.push(...reasonParts(ctx, row, qid, qv, cell));
       content.push(...quotes.sections);

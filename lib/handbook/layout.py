@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from .folder import read_json, write_json
 
-KINDS = ("broken_word", "cut_off", "spills")
+KINDS = ("broken_word", "cut_off", "spills", "covered", "short_cut", "lookalike", "number_wraps")
 SOURCE_KINDS = ("section", "question", "unit", "label", "project", "band")
 MAX_PER_VIEW = 50
 

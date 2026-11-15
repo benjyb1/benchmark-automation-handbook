@@ -22,6 +22,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
+from . import system
 from .cli import command_parser, open_project
 from .folder import HandbookError, read_json, write_json
 from .localstore import Config, home
@@ -31,6 +32,30 @@ from .upgrade import ProjectTooNew
 from .updater import wait_for_exit
 
 DEFAULT_PORT = 8470
+
+# The folder of the owner's real projects. A copy of the tool being worked on (a checkout of this
+# repository) must not open one of them by mistake: serving rebuilds the project's page with the code
+# under test (26 Oct 2026, a branch was served on a real project's folder). Benchmark Admin's own
+# pins (a project served from a branch on purpose) pass HB_FROM_ADMIN=1; anyone else adds --real-project.
+REAL_PROJECTS = Path.home() / "Benchmark tool"
+
+
+def dev_checkout() -> bool:
+    """Whether this hb runs from a checkout of the tool's repository rather than an installed copy."""
+    return any(part.name.startswith("benchmark-automation") for part in Path(__file__).resolve().parents)
+
+
+def guard_real_project(where: Path, allowed: bool) -> None:
+    """A HandbookError when a checkout of the tool is about to serve one of the owner's real projects."""
+    if allowed or os.environ.get("HB_FROM_ADMIN") == "1" or not dev_checkout():
+        return
+    try:
+        where.resolve().relative_to(REAL_PROJECTS.resolve())
+    except ValueError:
+        return
+    raise HandbookError(f"This is a copy of the tool being worked on, and {where} is one of your real projects: "
+                        "serving it would rebuild its page with untested code. Serve a copy instead "
+                        "(cp -cR the folder), or add --real-project if you mean it.")
 
 
 def project_key(path) -> str:
@@ -44,11 +69,7 @@ def running_file(path) -> Path:
 
 
 def _alive(pid) -> bool:
-    try:
-        os.kill(int(pid), 0)
-        return True
-    except (OSError, ValueError, TypeError):
-        return False
+    return system.alive(pid)          # never os.kill on Windows: there it ends the process
 
 
 def already_running(path) -> str | None:
@@ -83,6 +104,15 @@ def show(url: str, app_window: bool = False) -> None:
     if app_window and sys.platform == "darwin" and CHROME.is_dir():
         if subprocess.run(["open", "-na", str(CHROME), "--args", f"--app={url}"]).returncode == 0:
             return
+    elif app_window and sys.platform != "darwin":
+        browser = system.app_browser()           # Chrome, else Edge (always there on Windows)
+        if browser:
+            try:
+                subprocess.Popen([browser, f"--app={url}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL)
+                return
+            except OSError:
+                pass
     webbrowser.open(url)
 
 
@@ -93,6 +123,8 @@ def main(argv) -> int:
     parser.add_argument("--no-browser", action="store_true", help="print the address but don't open the browser")
     parser.add_argument("--app-window", action="store_true",
                         help="open the page in its own window (Chrome's app mode) when Chrome is installed")
+    parser.add_argument("--real-project", action="store_true",
+                        help="from a checkout of the tool, open one of your real projects anyway")
     args = parser.parse_args(argv)
     # Set by the page that restarts itself after an update (updater.respawn): its process id, and its pass,
     # kept so the open tab carries on. Never passed on to anything this server starts.
@@ -102,6 +134,7 @@ def main(argv) -> int:
     where = args.project or config.last_project()
     if not where:
         raise HandbookError("Say which project to open: hb serve --project <folder>.")
+    guard_real_project(Path(where).expanduser(), args.real_project or bool(restart_of))
     if restart_of:
         wait_for_exit(int(restart_of))
     else:

@@ -168,7 +168,8 @@
         const u = HB.data.unit(r.row);
         return {
           row: r.row, name: u && u.name ? u.name : String(r.row), gap, ours: r.ours[key], theirs: r.theirs[key],
-          words: (gap > 0 ? "+" : MINUS) + pointsWords(gap),
+          // A percentage moves in percentage points: "-100 points ... from 100% to 0%" read as mixed units.
+          words: (gap > 0 ? "+" : MINUS) + (pct ? fmtNum(Math.abs(gap), 1) + " percentage " + (Math.abs(gap) === 1 ? "point" : "points") : pointsWords(gap)),
           was: `from ${fmtNum(r.theirs[key], 1)}${suffix} to ${fmtNum(r.ours[key], 1)}${suffix}`,
         };
       })
@@ -178,7 +179,7 @@
     const falls = all.filter((m) => m.gap < 0).sort(order).slice(0, SHOWN);
     const reason = !rises.length && !falls.length
       ? `Nothing moved: every ${nouns().one} scored the same as in ${since}.` : null;
-    return { since, rescore, name, key, label: figureName(sheet, key), rises, falls, reason };
+    return { since, rescore, name, key, pct, label: figureName(sheet, key), rises, falls, reason };
   }
 
   /* ---- The model ----------------------------------------------------------------------------------- */
@@ -190,11 +191,15 @@
     const sectionIds = sectionList(sheet).map((s) => String(s.id));
     const units = (b.units || []).filter((u) => u && u.id != null);
     const scored = units.filter((u) => fullyScored(u, sectionIds));
+    // Rows with some answers but not all: "0 of 6 scored" beside a Grid listing three with answers read as
+    // a contradiction (design read, 26 Oct 2026), so they are counted and named.
+    const cellsOf = b.cells || {};
+    const partly = units.filter((u) => !scored.includes(u) && Object.values(cellsOf[u.id] || {}).some((c) => c && HB.data.isScored(c))).length;
     const figure = headline(units, scored, sheet, sectionIds);
     const edition = p.edition != null ? String(p.edition).trim() : "";
     const name = String(p.name || "").trim();
     return {
-      name, edition, nouns: nouns(), total: units.length, scored: scored.length,
+      name, edition, nouns: nouns(), total: units.length, scored: scored.length, partly,
       title: edition && !name.includes(edition) ? `${name} ${edition}`.trim() : name,
       figure, tiers: tiers(scored, figure), movers: movers(figure, sheet, sectionIds),
       sheetWorks: Boolean(sheet && sheet.computable !== false),
@@ -206,8 +211,12 @@
   function headlineBlock(m) {
     const n = m.nouns;
     const left = m.total - m.scored;
-    const count = `${fmtInt(m.scored)} of ${plural(m.total, n.one, n.many)} scored`;
-    const clarify = left > 0 ? `${fmtInt(left)} ${left === 1 ? "has" : "have"} questions still to score and ${left === 1 ? "is" : "are"} left out.` : null;
+    const count = `${fmtInt(m.scored)} of ${plural(m.total, n.one, n.many)} fully scored`;
+    const untouched = left - m.partly;
+    const clarify = left <= 0 ? null : [
+      m.partly ? `${fmtInt(m.partly)} ${m.partly === 1 ? "has" : "have"} some answers and ${m.partly === 1 ? "is" : "are"} left out until every question is scored.` : null,
+      untouched > 0 ? `${fmtInt(untouched)} ${untouched === 1 ? "is" : "are"} not scored yet.` : null,
+    ].filter(Boolean).join(" ");
     if (m.figure) {
       return h("div", { class: "rsum__headline" },
         h("p", { class: "rsum__label" }, m.figure.label),
@@ -217,11 +226,11 @@
         clarify ? h("p", { class: "rsum__note rsum__note--quiet" }, clarify) : null);
     }
     return h("div", { class: "rsum__headline" },
-      h("p", { class: "rsum__label" }, `${capital(n.many)} scored`),
+      h("p", { class: "rsum__label" }, `${capital(n.many)} fully scored`),
       h("p", { class: "rsum__value" }, fmtInt(m.scored), h("span", { class: "rsum__unit rsum__unit--word" }, ` of ${fmtInt(m.total)}`)),
       h("p", { class: "rsum__note" }, m.sheetWorks
-        ? "The score sheet gives no score to average yet, so this is the count of scored " + n.many + "."
-        : "The score sheet cannot add up scores yet, so this is the count of scored " + n.many + "."),
+        ? "The score sheet gives no score to average yet, so this is the count of fully scored " + n.many + "."
+        : "The score sheet cannot add up scores yet, so this is the count of fully scored " + n.many + "."),
       clarify ? h("p", { class: "rsum__note rsum__note--quiet" }, clarify) : null);
   }
 
@@ -291,7 +300,8 @@
         : h("p", { class: "rsum__quiet" }, none));
     return h("div", { class: "rsum__movers" },
       h("h4", { class: "rsum__sub" }, title),
-      h("p", { class: "rsum__cap" }, `Change in the ${mv.label}, in points. Select one to open its comparison.`),
+      // "Change in the III. Clasificaciones" read badly: "the" only before "overall score" (design read, 26 Oct 2026).
+      h("p", { class: "rsum__cap" }, `Change in ${mv.label === "overall score" ? "the overall score" : mv.label}, in ${mv.pct ? "percentage points" : "points"}. Select one to open its comparison.`),
       h("div", { class: "rsum__cols" },
         list("Biggest rises", mv.rises, `No ${m.nouns.one} scored higher.`),
         list("Biggest falls", mv.falls, `No ${m.nouns.one} scored lower.`)));
@@ -331,6 +341,7 @@
     .rsum__unit { margin-left: 0.1em; font-size: 0.45em; color: var(--ink-2); letter-spacing: 0; }
     .rsum__unit--word { font-size: 0.35em; margin-left: 0.2em; font-family: var(--sans); }
     .rsum__note { font-size: var(--fs-14); line-height: 1.4; }
+    .rsum__note strong { white-space: nowrap; }   /* "3 of 152 products scored" never splits from its figure */
     .rsum__note--quiet, .rsum__cap, .rsum__quiet { color: var(--ink-2); font-size: var(--fs-12); line-height: 1.4; }
     .rsum__quiet { margin: 0; max-width: var(--measure); }
 

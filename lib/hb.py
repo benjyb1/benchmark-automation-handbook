@@ -5,8 +5,16 @@
 """Entry point: `handbook/lib/hb <command> [--project FOLDER] [args]` runs this with the Python and
 libraries listed above (fetched by uv); `python3 handbook/lib/hb.py ...` also works where they are
 installed."""
+import os
 import sys
 from pathlib import Path
+
+# On Windows Python reads and writes text in the Windows code page unless told otherwise, so a pound
+# sign or an accent in Claude's replies would come out wrong. lib/hb.cmd sets UTF-8; run any other way,
+# hb.py starts itself again with it.
+if os.name == "nt" and not sys.flags.utf8_mode and __name__ == "__main__":
+    import subprocess
+    raise SystemExit(subprocess.call([sys.executable, "-X", "utf8", *sys.argv], env=dict(os.environ, PYTHONUTF8="1")))
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

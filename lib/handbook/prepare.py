@@ -173,6 +173,48 @@ def date_from_url(meta: dict) -> None:
         meta["date"], meta["date_basis"] = day, "url"
 
 
+COPY_BASES = (None, "pdf metadata", "page text", "http header", "archive capture", "url")   # dates of the copy, not the law
+
+
+def date_as_law(meta: dict, texts) -> None:
+    """Date a legal text by its enactment, assent or gazette date in its own words (`date_basis` "law text"), or,
+    when its title is just a law's name and year and the copy is dated after that year, by that year alone
+    (`date` null and `law.year`, which checks._after_cutoff reads). What dated the copy is kept in `law`. Dates the
+    owner or the finder gave are left alone. Malawi's Data Protection Act 2024, 5 Nov 2026: both copies were left out
+    of the kit as dated 2025 and 2026, by a PDF's metadata and a download page's "Last Updated"."""
+    from .lawdate import law_date
+    basis = meta.get("date_basis")
+    if basis not in COPY_BASES + ("law text",):
+        return
+    law = meta.get("law") if isinstance(meta.get("law"), dict) else {}
+    if basis != "law text":
+        law = {"copy_date": meta.get("date"), "copy_basis": basis}
+    saved = str(meta.get("fetched") or "")[:10] or None
+    got = law_date(meta.get("title") or "", "\n".join(t or "" for t in texts), saved)
+    if got is None:
+        if basis != "law text":
+            meta.pop("law", None)
+        return
+    copy = law.get("copy_date")
+    if "date" in got:
+        if (is_date(copy) and got["date"] > copy) or (not is_date(copy) and got["said"] == "later version"):
+            # never later than the copy's own date: dating a law by its text only ever lets an old law's copy in, it
+            # never moves a document out (Colombia, 5 Nov 2026: DIAN's running compilation of Decree 1074 of 2015,
+            # dated by an article amended in 2026, would otherwise have left the kit). An undated copy said to hold a
+            # later version stays undated, as before.
+            meta["date"], meta["date_basis"] = copy, law.get("copy_basis")
+            meta.pop("law", None)
+            return
+        meta["date"], meta["date_basis"] = got["date"], "law text"
+        meta["law"] = dict(law, said=got["said"])
+        return
+    if is_date(copy) and int(copy[:4]) <= got["year"]:
+        meta.pop("law", None)           # the copy is no later than the law's year: its date stands
+        return
+    meta["date"], meta["date_basis"] = None, None
+    meta["law"] = dict(law, year=got["year"], said="name")
+
+
 # --- one document -------------------------------------------------------------------------------
 
 def find_original(project, doc: str) -> Path | None:
@@ -307,6 +349,7 @@ def prepare_document(project, doc: str) -> dict:
                 meta["archived_on"] = captured
             meta["date"], meta["date_basis"] = said, "page text"
     date_from_url(meta)          # the page's own words first, then a full date in its address, else unknown
+    date_as_law(meta, texts)     # a law by its enactment, not its copy (lawdate.py)
     write_json(folder / "meta.json", meta)
     return {"doc": doc, "kind": kind, "pages": len(pages),
             "empty_pages": sum(1 for t in texts if not t.strip()),

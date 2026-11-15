@@ -232,6 +232,7 @@
   /* ---- user: a local name, asked once ------------------------------------------- */
 
   let me = { name: null, id: null };
+  let nameChecked = false;     // the first state answer has come, so me.name is what the server knows
   let asking = null;
 
   function askName() {
@@ -250,7 +251,8 @@
         '<input class="input" id="hbl-mail" type="email" autocomplete="email" maxlength="200">' +
         '<p class="hb-hint">Only the address and which version you have (free or Full) go to the benchmark tool\'s website. You can stop them at the bottom of the page.</p></div>' +
         '<p class="hbl-name__msg" role="status"></p></div>' +
-        '<div class="hb-dialog__foot"><button class="btn btn--primary" id="hbl-name-save" type="submit">Save</button></div></form>';
+        '<div class="hb-dialog__foot"><button class="btn btn--quiet" id="hbl-name-later" type="button">Not now</button>' +
+        '<button class="btn btn--primary" id="hbl-name-save" type="submit">Save</button></div></form>';
       d.setAttribute("aria-labelledby", "hbl-name-title");
       (document.querySelector(".hb") || document.body).append(d);
       const input = d.querySelector("#hbl-name");
@@ -259,7 +261,10 @@
       const mailBox = d.querySelector("#hbl-mail-box");
       const mail = d.querySelector("#hbl-mail");
       tick.addEventListener("change", () => { mailBox.hidden = !tick.checked; if (tick.checked) mail.focus(); });
-      d.addEventListener("cancel", (ev) => ev.preventDefault());
+      // A way out (design read, 26 Oct 2026): carry on without a name; the page asks again when it next needs one.
+      const later = () => { d.close(); d.remove(); asking = null; resolve(me); };
+      d.querySelector("#hbl-name-later").addEventListener("click", later);
+      d.addEventListener("cancel", (ev) => { ev.preventDefault(); later(); });
       d.querySelector("form").addEventListener("submit", async (ev) => {
         ev.preventDefault();
         const name = input.value.trim();
@@ -755,8 +760,9 @@
     const h = HB.h;
     const u = state && state.update;
     if (!h || !u) return;
-    const ed = u.edition === "full" ? "Full version" : "free version";
-    const bits = [h("span", null, "Benchmark tool " + (u.current && u.current !== "0" ? "version " + u.current : "(no version number)") + ", " + ed + ".")];
+    // A sentence, not a build note ("Benchmark tool version 1.0.5, Full version.", design read, 26 Oct 2026).
+    const ed = u.edition === "full" ? "the Full version" : "the free version";
+    const bits = [h("span", null, "You have " + ed + " of the benchmark tool" + (u.current && u.current !== "0" ? ", version " + u.current : "") + ".")];
     const busy = u.phase && RUNNING.indexOf(u.phase) >= 0;
     if (!u.development && !busy) {
       bits.push(" ", h("button", { type: "button", class: "hbl-foot__link", onclick: () => { footChecked = true; updateAction("check"); } }, "Check for updates"));
@@ -842,6 +848,12 @@
       const before = state;
       state = s;
       me = s.user && s.user.name ? { name: s.user.name, id: s.user.id } : me;
+      // Ask for a name only once the server has said it has none: a fixed wait asked again on a big
+      // project whose first answer took longer (stress test, 27 Oct 2026).
+      if (!nameChecked) {
+        nameChecked = true;
+        if (!me.name) setTimeout(() => { if (!me.name) askName(); }, 300);
+      }
       const key = s.job ? s.job.key : null;
       // A job joining or leaving the queue counts too: a start that waits behind another job showed nothing
       // until that job ended, minutes later (23 Oct 2026, a chat start behind a paused trial).
@@ -932,7 +944,7 @@
 .hbl-update__notes { margin: 0; padding-left: 1.2rem; }
 .hbl-update__small { color: var(--ink-2); font-size: var(--fs-12); }
 .hbl-update__acts { display: flex; gap: var(--s2); flex-wrap: wrap; }
-.hbl-foot { margin: var(--s6, 3rem) 0 var(--s4, 1rem); max-width: var(--measure-wide, 72rem); padding: var(--s3) var(--s4, 1rem); border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--fs-12); }
+.hbl-foot { margin: var(--s6, 3rem) 0 var(--s4, 1rem); padding: var(--s3) var(--s4, 1rem); border-top: 1px solid var(--rule); color: var(--ink-2); font-size: var(--fs-12); }
 .hbl-foot p { margin: 0 0 var(--s1); }
 .hbl-foot__link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .hbl-foot__small { color: var(--ink-2); }
@@ -948,7 +960,6 @@
     pollState();
     setInterval(pollState, STATE_MS);
     window.addEventListener("focusout", () => { if (reloadWanted) setTimeout(() => { if (!busyTyping()) reloadData(); }, 50); });
-    setTimeout(() => { if (!me.name) askName(); }, 800);
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);

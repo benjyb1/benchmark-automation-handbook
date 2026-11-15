@@ -18,6 +18,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import system
 from .claude_cli import MODEL
 from .cli import command_parser, open_project
 from .folder import HandbookError, write_json
@@ -44,15 +45,18 @@ def now_iso() -> str:
 
 
 def prompt_for(project: Path, python: str) -> str:
-    hb = f'"{python}" "{LIB / "hb.py"}"'
+    hb = system.hb_call(python, LIB / "hb.py")
+    shell = system.sandboxed()
     return "\n".join([
         f"Draft a benchmark's set-up from the owner's files. The project folder is {project}.",
         f"Read {SKILL / 'SKILL.md'} (steps 1 and 2 only, and its rules) and {SKILL / 'drafting.md'}, and follow them, "
         "with these differences, because the owner is not here to answer:",
         f"- The owner's files are in {project}/inbox/uploads/ (each name starts with an upload id and two dashes). "
         f"Read them with: {hb} material-text --project \"{project}\" FILE (it prints PDF, Word and Excel files as text).",
-        f"- For a script (for example turning a long sheet into the row list), run it with \"{python}\", never python3: "
-        "on a Mac without Apple's developer tools, python3 opens an installer instead of running.",
+        (f"- For a script (for example turning a long sheet into the row list), run it with \"{python}\", never python3: "
+         "on a Mac without Apple's developer tools, python3 opens an installer instead of running." if shell else
+         "- You can run hb commands and nothing else here: no scripts. Write each file whole with the Write tool "
+         "(a long row list too) and change files with Edit."),
         "- The project folder already exists (hb init has run); do not run init.",
         "- Do not ask questions. Where the skill says to ask or wait, draft what the material supports, mark it draft, "
         "and add the question to your open questions instead.",
@@ -65,8 +69,8 @@ def prompt_for(project: Path, python: str) -> str:
         "a data need (step 5). Keep them few: only what changes many points or blocks the work.",
         "- Work in few, large steps: every step re-reads everything before it, so the number of steps is "
         "the cost (drafts took 23 to 53 steps and 1.3 to 5.5 million tokens, 14 Oct 2026). Read each upload "
-        "once; write each set-up file whole in one go; write a long list of rows or results with one script, "
-        "not by hand; do not read back a file you have just written; run validate once everything is "
+        "once; write each set-up file whole in one go; write a long list of rows or results "
+        + ("with one script, not by hand" if shell else "in one Write, not row by row") + "; do not read back a file you have just written; run validate once everything is "
         "written, then fix what it lists. Of grill.md you need only \"Writing a rule\".",
         "- Before you finish, check four things (format tests, 15 Oct 2026): (1) in last edition's results, a "
         "question that is always empty or 'not applicable' for one kind of row gets applies_to on that label; "
@@ -175,13 +179,19 @@ def command(project: Path, python: str, held_back: Path | None = None) -> list[s
     settings = {"disableAllHooks": True,
                 "sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
                             "autoAllowBashIfSandboxed": True, "filesystem": {"allowWrite": writable},
-                            "network": {"allowedDomains": []}}}
+                            "network": {"allowedDomains": []}},
+                "permissions": {"deny": system.key_deny_rules()}}
     allowed = ",".join(["Read", "Glob", "Grep", "Bash"] + [f"{tool}({w}/**)" for w in writable for tool in ("Edit", "Write")])
+    tools = TOOLS
+    if not system.sandboxed():          # Windows: no fence, so only hb commands (system.HB_ONLY)
+        settings = {"disableAllHooks": True, "permissions": {"deny": system.key_deny_rules()}}
+        allowed = ",".join(["Read", "Glob", "Grep", *system.HB_ONLY, *system.edit_rules(writable)])
+        tools = TOOLS + ",PowerShell"
     extra = ["--add-dir", str(held_back)] if held_back else []
-    return ["claude", "-p", prompt_for(project, python), "--safe-mode", "--strict-mcp-config", "--mcp-config",
+    return [system.claude(), "-p", prompt_for(project, python), "--safe-mode", "--strict-mcp-config", "--mcp-config",
             '{"mcpServers":{}}', "--settings", json.dumps(settings), "--disable-slash-commands",
             "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-            "--tools", TOOLS, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
+            "--tools", tools, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
             "--add-dir", lib, "--model", MODEL, *extra]
 
 
@@ -229,7 +239,7 @@ def describe(tool: dict, uploads: dict[str, str]) -> tuple[str, str | None, str 
     return "Thinking about your set-up", None, None
 
 
-def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> dict:
+def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S, env: dict | None = None) -> dict:
     """Run the draft session, writing PROGRESS after every step, and return its final result event."""
     uploads = upload_names(project)
     path = project.joinpath(*PROGRESS)
@@ -244,7 +254,7 @@ def run_streaming(cmd: list[str], project: Path, timeout: int = TIMEOUT_S) -> di
         return f.stat().st_mtime_ns if f.is_file() else None
     before = {name: stamp(name) for name in LANDS}
     proc = subprocess.Popen(cmd, cwd=project, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8")
+                            text=True, encoding="utf-8", env=env)
     killer = threading.Timer(timeout, proc.kill)
     killer.start()
     result, last = {}, ""
@@ -298,7 +308,8 @@ def main(argv) -> int:
         raise HandbookError("There are no files to draft from. Add them on the Set-up tab first.")
     project.held_back.mkdir(parents=True, exist_ok=True)
     today = datetime.now(timezone.utc).date().isoformat()
-    result = run_streaming(command(project.path, sys.executable, project.held_back), project.path)
+    result = run_streaming(command(project.path, sys.executable, project.held_back), project.path,
+                           env=system.session_env(LIB))
     try:
         ensure_cutoff_rule(project, today)          # never a silent default for the cut-off
     except (HandbookError, OSError, ValueError):

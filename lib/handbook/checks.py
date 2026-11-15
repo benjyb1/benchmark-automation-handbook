@@ -6,7 +6,8 @@ the plan), `weak_source` (every document the cell cites is weak: see `fetch.weak
 `document_changed` (the saved copy of a cited document is no longer the capture the answer was
 scored from), `owner_changed` (the owner corrected the answer; see corrections.py) and
 `todays_version` (a web page cited was kept as it is today, long after the cut-off, with no archive
-copy from before it: see cmd_fetch) and `needs_document` (the scorer needed a document it did not have and
+copy from before it: see cmd_fetch), `sources_disagree` (the reader logged documents that disagree on
+the answer: conflicts.py) and `needs_document` (the scorer needed a document it did not have and
 the answer took the question's no-evidence value: map-equality, 21 Oct 2026, scored harmful laws the finder
 had named but could not fetch at "no such law", the best score). A quote is matched against the capture its answer names (`evidence[].capture`, put
 there by `ingest` from the kit), so a document that changed after scoring is not a quote problem;
@@ -176,6 +177,10 @@ def _after_cutoff(meta: dict | None, cutoff: str | None) -> bool:
     if not meta or not cutoff:
         return False
     when = meta.get("date")
+    law = meta.get("law")
+    if when is None and isinstance(law, dict) and isinstance(law.get("year"), int):
+        # a law known only by the year in its name (lawdate.py): after the cut-off only when that year is later
+        return law["year"] > date.fromisoformat(cutoff).year
     if isinstance(when, str) and re.fullmatch(r"\d{4}", when):
         return int(when) > date.fromisoformat(cutoff).year
     if not is_date(when):
@@ -249,6 +254,12 @@ def compute_checks(project: Project) -> dict[str, dict]:
             if (isinstance(doubt, dict) and doubt.get("why") == "document" and not doubt.get("handled")
                     and (c.get("state") == "no_evidence" or (blank is not None and _same_value(c.get("value"), blank)))):
                 mine.add("needs_document")    # scored as if there were nothing, for want of a document the owner can add
+            if isinstance(doubt, dict) and doubt.get("why") == "set_aside" and not doubt.get("handled"):
+                mine.add("set_aside")         # evidence found but set aside under a rule (undated, outside the period,
+                                              # not official): a person decides, and `if_accepted` says what it would give
+            if isinstance(c.get("conflicts"), list) and c["conflicts"]:
+                mine.add("sources_disagree")  # the reader logged documents that disagree and which it went with
+                                              # (conflicts.py): a person can see the choice, and `hb conflicts` counts them
             for e in c.get("evidence") or []:
                 if not isinstance(e, dict) or not isinstance(e.get("doc"), str) or not docs.kept(e["doc"]):
                     continue                  # no saved copy, or no meta.json (a shape error): skip

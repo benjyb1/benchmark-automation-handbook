@@ -534,14 +534,17 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
         h("h3", { class: "rl-rule__ask", id: slug + "-ask", tabindex: "-1" }, line || "No question recorded"),
         background ? h("p", { class: "rl-rule__bg" }, background) : null,
         h("dl", { class: "rl-stats" },
-          stat(fmtInt(cells.length), cells.length === 1 ? "cell affected" : "cells affected"),
+          // Answers, not "cells", and words that don't read as a contradiction ("1,700 cells affected" beside
+          // "0 answers cite this rule", design read, 26 Oct 2026).
+          stat(fmtInt(cells.length), cells.length === 1 ? "answer it can change" : "answers it can change"),
           pts == null ? null : stat(fmtInt(pts), "points at most"),
-          stat(fmtInt(resting.length), awaiting ? "rest on Claude's reading now" : "answers cite this rule"),
+          stat(fmtInt(resting.length), awaiting ? (resting.length === 1 ? "uses Claude's reading for now" : "use Claude's reading for now")
+            : (resting.length === 1 ? "answer used it" : "answers used it")),
           stat(qs.text, qs.n === 1 ? "question" : "questions", qs.all ? null : "rl-stats__q")),
         h("p", { class: "rl-cells" },
-          show(cells, "Show " + plural(cells.length, "cell")),
+          show(cells, "Show " + plural(cells.length, "answer")),
           awaiting && resting.length && resting.length !== cells.length
-            ? show(resting, "Show the " + fmtInt(resting.length) + " resting on Claude's reading") : null),
+            ? show(resting, "Show the " + fmtInt(resting.length) + " using Claude's reading") : null),
       ].filter(Boolean));
     }
 

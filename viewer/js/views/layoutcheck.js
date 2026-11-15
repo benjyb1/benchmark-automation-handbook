@@ -14,6 +14,19 @@
                                         "cut_off"      text cut by its box with no
                                                        full version on hover
                                         "spills"       text running out of its box
+                                        "covered"      text with something drawn over
+                                                       it (the chat button, a pinned
+                                                       column, the next cell)
+                                        "short_cut"    a short name cut to "..." even
+                                                       with the full text on hover
+                                                       ("Getting sta...": its box is
+                                                       too narrow, not the name too long)
+                                        "lookalike"    two shortened names that read
+                                                       the same ("Milk alternatives
+                                                       in the..." twice)
+                                        "number_wraps" a figure and its words split
+                                                       over lines ("5,638 points at /
+                                                       stake")
                                 text    the words affected (at most 120 characters)
                                 view    the tab it was seen on ("grid", "results", ...)
                                 source  what the text is in the project, when it is
@@ -27,6 +40,8 @@
                               is idle) and sends new problems to `hb serve`, which
                               keeps them in page-data/layout.json (layout.py).
                               Does nothing on a published page (no server).
+   HB.layoutCheck.scanAll()   draws every other tab off screen and sends its scan
+                              too, once each time the project's names change.
    HB.layoutCheck.last()      the problems from the last scan.
    HB.layoutCheck.all()       Promise of every tab's problems (hb serve's list,
                               with the tab on screen from the last scan).
@@ -43,13 +58,21 @@
   "use strict";
 
   const SHORT = 60;          // characters: longer text is prose, which may hyphenate
-  const WORD = /[\p{L}\p{N}]{4,}/gu;
+  const SHORT_CUT = 28;      // characters: a name this short never needs "..." ("Tier 4 · Getting started")
+  // A figure and the words that go with it ("5,638 points at stake", "18 of 18 points", "£54,440 a year",
+  // "33% of companies"); not a question's number before its name ("1.1 Broiler welfare policy", "9
+  // elektronische Aktenführung") or a year ("2021 edition"), which may wrap.
+  const NUMBER_PHRASE = /^[\s(]*[-+\u2212]?(?:[£$€]\d[\d.,]*|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?%|\d+\s+of\s+\d[\d,]*)\s*\p{Ll}/u;
+  // A word: four letters or more of a script that puts spaces between words. Chinese, Japanese and Thai
+  // break between characters as a matter of course (stress test, 27 Oct 2026), so they never "break".
+  const WORD = /(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Thai}])[\p{L}\p{N}]){4,}/gu;
+  const LAYOUT_WORD = 12;    // letters: an ordinary word this short breaking means its box is too narrow, not the name too long
   const SKIP = "script, style, template, svg, .visually-hidden, [aria-hidden='true'], .hbg-tip, [data-layout-ok]";
   let lastFound = [];
   const sent = new Map();          // tab: the problem keys it last sent
 
   const tidy = (s) => String(s == null ? "" : s).replace(/\s+/g, " ").trim();
-  const clip = (s) => (s.length > 120 ? s.slice(0, 119) + "…" : s);
+  const clip = (s) => (s.length > 120 ? s.slice(0, 119) + "…" : s);   // not shown: the report's copy
 
   const currentView = () => (typeof HB.route === "function" && HB.route().tab) || location.hash.replace(/^#/, "").split("~")[0] || "start";
 
@@ -94,8 +117,12 @@
 
   function visible(el) {
     if (!el || el.closest(SKIP)) return false;
-    const shut = el.closest("details:not([open])");          // a closed "More": its body isn't on screen
-    if (shut && !el.closest("summary")) return false;
+    // A closed "More": its body isn't on screen, only its own summary is, and only if no closed one
+    // holds it in turn (the key's "Other kinds of check" inside the closed View panel).
+    for (let d = el.closest("details:not([open])"); d; d = d.parentElement && d.parentElement.closest("details:not([open])")) {
+      const own = el.closest("summary");
+      if (!own || own.parentElement !== d) return false;
+    }
     const r = el.getBoundingClientRect();
     if (r.width <= 2 || r.height <= 2) return false;
     const cs = getComputedStyle(el);
@@ -137,7 +164,9 @@
     // The full text is on hover, read out, or one click away (a preview in a list that opens it).
     const full = el.closest("[title]") || el.querySelector(".visually-hidden") ||
       el.closest("button, a[href], summary, [role='button'], [role='option'], [role='tab'], [tabindex]");
-    return !(marked && full);
+    if (!(marked && full)) return "cut_off";
+    // A short name cut even with the full text on hover: its box is too narrow (design read, 26 Oct 2026).
+    return wide && tidy(el.textContent).length <= SHORT_CUT ? "short_cut" : false;
   }
 
   // Spills: the box's own words reach past its edges, so they run over whatever is next to it. The
@@ -152,8 +181,126 @@
       if (n.nodeType !== 3 || !n.nodeValue.trim()) return false;
       range.selectNodeContents(n);
       const r = range.getBoundingClientRect();
-      return r.width > 0 && (r.right > box.right + 2 || r.left < box.left - 2);
+      // 4px: the spaces that hang at line ends in pre-wrap text reach a few pixels past the box, unseen.
+      return r.width > 0 && (r.right > box.right + 4 || r.left < box.left - 4);
     });
+  }
+
+  // Covered: something else is drawn over the words where they should show (the chat button over
+  // "Send the document", a pinned column over "Performance", a sticky cell over the one before it:
+  // design read, 26 Oct 2026). Points along each line of the text are tested for what is on top there;
+  // it counts when that is not the text's own box, is opaque, and is not a dialog over the whole page.
+  // Words a scrolling box has moved out of its view are not covered, just scrolled.
+  function covered(el, node, range) {
+    if (tidy(node.nodeValue).length <= 3) return null;   // a column's number at a scrolling edge: the grid scrolls under its pins
+    if (el.closest(".cellp-page")) return null;           // a quoted page: a small box of its own that scrolls
+    range.selectNodeContents(node);
+    const view = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+    const clip = clipBox(el, view);
+    for (const r of range.getClientRects()) {
+      if (r.width < 4 || r.height < 4) continue;
+      const y = r.top + r.height / 2;
+      for (const x of [r.left + 2, r.left + r.width / 2, r.right - 2]) {
+        if (x < clip.left || x > clip.right || y < clip.top || y > clip.bottom) continue;
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || hit === el || el.contains(hit)) continue;
+        const cover = opaqueCover(hit, el);
+        if (cover && !cover.closest("[data-layout-ok]") && !headerOver(cover)) return cover;
+      }
+    }
+    return null;
+  }
+
+  // Cut by a box around it: the words (or the box that ends them in "...") run past the edge of a parent
+  // that hides what overflows, so they stop mid-word with no "..." ("...Holdings" cut to "Holdin" by the
+  // grid's name column: stress test, 27 Oct 2026). A scrolling box isn't counted: its edge moves.
+  function clippedByBox(el, node, range) {
+    const cs = getComputedStyle(el);
+    if (/auto|scroll/.test(cs.overflowX)) return null;   // text in a box that scrolls is scrolled, not cut
+    const ownEnd = /hidden|clip/.test(cs.overflowX) && cs.textOverflow === "ellipsis";
+    let r;
+    if (ownEnd) r = el.getBoundingClientRect();
+    else { range.selectNodeContents(node); r = range.getBoundingClientRect(); }
+    if (r.width < 2) return null;
+    for (let n = el.parentElement; n && n !== document.body; n = n.parentElement) {
+      const ps = getComputedStyle(n);
+      if (/auto|scroll/.test(ps.overflowX)) return null;
+      if (!/hidden|clip/.test(ps.overflowX)) continue;
+      const b = n.getBoundingClientRect();
+      if (r.right > b.right + 1 || r.left < b.left - 1) {
+        // A parent that ends its own line in "..." (the Tier cell's "Tier 4 · Getting sta...") is a marked
+        // cut, judged as that parent's text (cutOff, short_cut).
+        return ps.textOverflow === "ellipsis" && n.closest("[title]") ? null : n;
+      }
+    }
+    return null;
+  }
+
+  // The visible part of el: the viewport cut down by el and every box above it that clips its overflow
+  // (a name cut to "..." in its own box is not covered past its end).
+  function clipBox(el, box) {
+    const out = Object.assign({}, box);
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+      const r = n.getBoundingClientRect();
+      out.left = Math.max(out.left, r.left); out.right = Math.min(out.right, r.right);
+      out.top = Math.max(out.top, r.top); out.bottom = Math.min(out.bottom, r.bottom);
+    }
+    return out;
+  }
+
+  // The element that hides the text at a point: hit or the first of its parents (short of one that holds
+  // the text) with a background, so a see-through layer over a card doesn't count. A layer covering most
+  // of the page is a dialog, which hides the page on purpose.
+  function opaqueCover(hit, el) {
+    if (document.querySelector("dialog:modal")) return null;   // a dialog open over the page ("What should we call you?") covers it on purpose
+    const area = window.innerWidth * window.innerHeight;
+    for (let n = hit; n && n !== document.body && !n.contains(el); n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      const paint = (cs.backgroundColor && !/^(transparent|rgba\(0, 0, 0, 0\))$/.test(cs.backgroundColor)) || cs.backgroundImage !== "none";
+      if (!paint) continue;
+      const r = n.getBoundingClientRect();
+      return r.width * r.height > 0.35 * area ? null : n;
+    }
+    return null;
+  }
+
+  // A header that sticks to the top of a scrolling box (the grid's group lines, a panel's title): what
+  // scrolls under it is meant to. It may hold cells pinned to the left as well ("Already scored" over the
+  // names), so every box up the chain is looked at, not just the first that sticks.
+  function headerOver(cover) {
+    for (let n = cover; n && n !== document.body; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if ((cs.position === "sticky" || cs.position === "fixed") && cs.top !== "auto") return true;
+    }
+    return false;
+  }
+
+  // Two shortened names that read the same: in one line of text ("Milk alternatives in the...: 3 to 0;
+  // Milk alternatives in the...: 3 to 0"), or as boxes side by side whose full names differ.
+  function lookalike(el) {
+    const text = tidy(el.textContent);
+    const cuts = text.match(/[^;,·:()]{4,}?(?:\u2026|\.\.\.)/g) || [];
+    const seen = new Set();
+    for (const c of cuts.map(tidy)) {
+      if (seen.has(c)) return c;
+      seen.add(c);
+    }
+    const parent = el.parentElement;
+    if (!parent || text.length < 5 || !/(\u2026|\.\.\.)$/.test(text)) return null;   // not a lone "..." standing for a figure
+    const title = el.getAttribute("title") || "";
+    for (const sib of parent.children) {
+      if (sib !== el && tidy(sib.textContent) === text && (sib.getAttribute("title") || "") !== title) return text;
+    }
+    return null;
+  }
+
+  // A figure and the words after it split over two lines ("5,638 points at / stake").
+  function numberWraps(node, range, whole) {
+    if (whole.length > 32 || !NUMBER_PHRASE.test(whole)) return false;
+    range.selectNodeContents(node);
+    return lines([...range.getClientRects()]) > 1;
   }
 
   // Which element, for whoever fixes it: its tag and classes, and those of its parent.
@@ -167,18 +314,21 @@
     return [...el.childNodes].some((n) => n.nodeType === 3 && n.nodeValue.trim());
   }
 
-  function scan(root) {
+  function scan(root, tab) {
     const roots = root ? [root] : [document.getElementById("main"), document.getElementById("drawer-body")]
       .filter((r) => r && r.getClientRects().length);
-    const view = currentView();
+    const view = tab || currentView();
     const index = sourceIndex();
     const range = document.createRange();
     const found = new Map();
-    const add = (kind, el, text) => {
+    const add = (kind, el, text, layoutFault) => {
       const t = clip(tidy(text));
       if (!t) return;
       const key = kind + "|" + view + "|" + t;
-      if (!found.has(key)) found.set(key, { kind, text: t, view, source: sourceOf(index, el), key, el: describe(el) });
+      // Covered, cut short, look-alike and split figures are the layout's fault, whatever the words: no
+      // shorter name helps, so they count as the tool's (and stop a release) rather than go to the chat.
+      const own = !layoutFault && (kind === "broken_word" || kind === "cut_off" || kind === "spills");
+      if (!found.has(key)) found.set(key, { kind, text: t, view, source: own ? sourceOf(index, el) : null, key, el: describe(el) });
     };
     roots.forEach((r) => {
       const walker = document.createTreeWalker(r, NodeFilter.SHOW_TEXT, {
@@ -191,26 +341,36 @@
         const whole = tidy(el.textContent);
         if (whole.length <= SHORT) {
           const broken = brokenWords(node, range);
-          if (broken.length) add("broken_word", el, whole);
+          // "Compan/y 01" in a squeezed column is the page's fault; "Supercalifragilistic/..." the name's.
+          // A code as long as G.GOVERNANCE.DPL.e.e2 is the name's, whatever letters break.
+          if (broken.length) add("broken_word", el, whole, broken.every((w) => w.length < LAYOUT_WORD) &&
+            !whole.split(/\s+/).some((t) => t.length >= 20));
+          else if (numberWraps(node, range, tidy(node.nodeValue))) add("number_wraps", el, whole);
         }
+        if (covered(el, node, range)) add("covered", el, whole);
+        else if (clippedByBox(el, node, range)) add("cut_off", el, whole, true);
         if (seen.has(el) || !ownText(el)) continue;
         seen.add(el);
         const cs = getComputedStyle(el);
-        if (cutOff(el, cs)) add("cut_off", el, whole);
+        const cut = cutOff(el, cs);
+        if (cut) add(cut, el, whole);
         else if (spills(el, cs, range)) add("spills", el, whole);
+        const same = lookalike(el);
+        if (same) add("lookalike", el, same);
       }
     });
-    lastFound = [...found.values()];
-    return lastFound;
+    const out = [...found.values()];
+    if (!tab) lastFound = out;          // a tab drawn off screen (scanAll) isn't the one on screen
+    return out;
   }
 
   /* ---- Telling hb serve ------------------------------------------------------------ */
 
   // Each tab's whole scan, sent when it differs from what that tab last sent (an empty one too, so a
   // fixed name drops off the list).
-  function report(problems) {
+  function report(problems, tab) {
     if (!HB.local || typeof HB.local.post !== "function") return;
-    const view = currentView();
+    const view = tab || currentView();
     const keys = problems.map((p) => p.key).sort().join("\n");
     if (sent.get(view) === keys) return;
     sent.set(view, keys);
@@ -247,7 +407,9 @@
   async function promptBlock() {
     const own = (await all()).filter((p) => p.source);
     if (!own.length) return "";
-    const what = { broken_word: "a word breaks across two lines", cut_off: "is cut off", spills: "runs out of its box" };
+    const what = { broken_word: "a word breaks across two lines", cut_off: "is cut off", spills: "runs out of its box",
+      covered: "is hidden under something else", short_cut: "is cut short where it should show in full",
+      lookalike: "reads the same as another name once shortened", number_wraps: "splits its figure from its words" };
     const lines = own.slice(0, 20).map((p) => {
       const s = p.source;
       const thing = s.kind === "question" ? "question " + s.id + "'s " + (s.field || "short")
@@ -264,11 +426,44 @@
       lines.join("\n");
   }
 
+  // Every other tab, drawn off screen and checked, once each time the project's names change (set-up
+  // writes them; scoring doesn't), so set-up Claude reads every tab's names that don't fit (`hb names`)
+  // before handing over, not just those of the tab someone happened to open. Set-up itself is left out:
+  // its chat lives in the tab and can't be drawn twice.
+  let allFor = null;
+  function namesSignature() {
+    const b = (HB.data && HB.data.bundle && HB.data.bundle()) || {};
+    const sheet = b.scoresheet || {};
+    return JSON.stringify([window.innerWidth, (b.project || {}).name,
+      (sheet.sections || []).map((x) => x && x.name), (sheet.bands || []).map((x) => x && x.name),
+      (b.questions || []).map((q) => q && q.short), (b.units || []).map((u) => u && [u.name, u.labels])]);
+  }
+  async function scanAll() {
+    if (typeof HB.drawOffscreen !== "function" || !HB.local) return;
+    const sig = namesSignature();
+    if (sig === allFor) return;
+    allFor = sig;
+    const here = currentView();
+    const tabs = [...document.querySelectorAll(".tabs__tab")]
+      .map((a) => (a.getAttribute("href") || "").replace(/^#/, "").split("~")[0])
+      .filter((id) => id && id !== here && id !== "setup");
+    for (const id of tabs) {
+      const box = HB.drawOffscreen(id);
+      if (!box) continue;
+      await new Promise((r) => setTimeout(r, 250));   // the grid measures its names on a timer
+      try {
+        report(scan(box, id), id);
+      } finally {
+        box.remove();
+      }
+    }
+  }
+
   let timer = null;
   function later() {
     clearTimeout(timer);
     timer = setTimeout(() => {
-      const run = () => report(scan());
+      const run = () => { report(scan()); setTimeout(scanAll, 1500); };
       if ("requestIdleCallback" in window) window.requestIdleCallback(run, { timeout: 3000 });
       else run();
     }, 1200);
@@ -285,5 +480,5 @@
     later();
   }
 
-  HB.layoutCheck = { scan, watch, last: () => lastFound, all, cached, promptBlock };
+  HB.layoutCheck = { scan, scanAll, watch, last: () => lastFound, all, cached, promptBlock };
 })(window.HB = window.HB || {});

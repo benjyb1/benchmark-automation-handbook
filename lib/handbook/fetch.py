@@ -27,10 +27,9 @@ from . import readers
 from .folder import HandbookError, now_stamp, write_json
 
 USER_AGENT = "Mozilla/5.0 (compatible; HandbookFetcher/0.1; a benchmark's document collection)"
-# Some government sites refuse any agent that is not a browser (India's mha.gov.in, 14 Oct 2026): a
-# 403 is tried once more as the browser a person would read the page in.
-BROWSER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
-                 "Chrome/126.0 Safari/537.36")
+# The tool always asks as itself. A site that refuses it (403, a robot check) is not asked again in another name
+# or through another program: the web archive's capture is read instead, where the caller has one to read (the open-data benchmark,
+# 9 Nov 2026: the tool used to retry a 403 or 503 as a desktop browser and then through curl).
 TIMEOUT_S = 30.0
 # Guidelines and reports can be large PDFs (Eroski's annual report is 25.2 MB); bound pathological responses.
 MAX_BYTES = 60_000_000
@@ -41,9 +40,6 @@ RETRY_WAIT_S = 2.0
 # the copy from before the cut-off never came and today's pages were kept.
 BUSY_WAITS_S = (5.0, 15.0, 30.0)
 BUSY_WAIT_MAX_S = 60.0
-# Statuses a site's robot filter gives an agent that is not a browser. abnamro.com (Akamai, 20 Oct 2026)
-# answered 503 to every page for the tool's own agent, curl's and Claude's web tool, and 200 to a browser's.
-REFUSED_AS_ROBOT = (403, 503)
 EXTENSIONS = readers.EXTENSIONS          # the extension each kind is saved with (a picture keeps its own)
 # Where the Mac keeps its trusted certificates: the tool's own Python may not know them all
 # (7-Eleven's site, 14 Oct 2026: refused by the tool, fetched by curl).
@@ -95,6 +91,11 @@ def _get_once(url: str, timeout: float, context=None, agent: str = USER_AGENT) -
         opened = (urllib.request.urlopen(req, timeout=timeout, context=context) if context is not None
                   else urllib.request.urlopen(req, timeout=timeout))
         with opened as resp:
+            said = (resp.headers.get("content-length") or "").strip() if getattr(resp, "headers", None) else ""
+            if said.isdigit() and int(said) > MAX_BYTES:
+                # Refused before reading: the Land Commission's 125 MB atlas (an open-data benchmark, 2 Nov 2026) trickled for half an
+                # hour before the read below could tell.
+                return FetchResult(url, 0, b"", "", failure="too-large")
             content = resp.read(MAX_BYTES + 1)          # one byte over tells us the file is too big
             status = getattr(resp, "status", 200) or 200
             final = resp.geturl() if hasattr(resp, "geturl") else url
@@ -135,7 +136,8 @@ def _retry_after(headers) -> Optional[float]:
 def _curl(url: str, timeout: float) -> Optional[FetchResult]:
     """The Mac's own curl, which checks certificates with the system's store: INAO's site failed the
     tool's Python even with the Mac's certificate file, and curl fetched it in under a second (ALI,
-    14 Oct 2026). None when curl is missing or fails too."""
+    14 Oct 2026). Used only for a certificate the tool's Python cannot check, never for a refusal, and it asks
+    as the tool. None when curl is missing or fails too."""
     import shutil
     import subprocess
     curl = shutil.which("curl") or ("/usr/bin/curl" if os.path.isfile("/usr/bin/curl") else None)
@@ -144,7 +146,7 @@ def _curl(url: str, timeout: float) -> Optional[FetchResult]:
     try:
         proc = subprocess.run([curl, "-sSL", "--proto", "=http,https", "--proto-redir", "=http,https",
                                "--max-time", str(int(timeout)), "--max-filesize", str(MAX_BYTES),
-                               "-A", BROWSER_AGENT, "-w", "\n%{http_code} %{content_type} %{url_effective}",
+                               "-A", USER_AGENT, "-w", "\n%{http_code} %{content_type} %{url_effective}",
                                "--url", url],
                               capture_output=True, timeout=timeout + 10)
     except (OSError, subprocess.TimeoutExpired):
@@ -165,22 +167,12 @@ def _curl(url: str, timeout: float) -> Optional[FetchResult]:
 
 
 def fetch_bytes(url: str, timeout: float = TIMEOUT_S, retries: int = 1) -> FetchResult:
-    """Polite GET: a real User-Agent, a 30-second timeout and one retry when the site did not
-    answer or failed (5xx). A 403 or 503 is tried again as a browser, then with the Mac's curl, since
-    robot filters answer either. A site busy with us (429) is waited on, longer each time (BUSY_WAITS_S,
-    or its Retry-After), up to len(BUSY_WAITS_S) times whatever `retries` says. Anything else (404) is final."""
+    """Polite GET as the tool itself: a 30-second timeout and one retry when the site did not answer or failed
+    (5xx). A site busy with us (429) is waited on, longer each time (BUSY_WAITS_S, or its Retry-After), up to
+    len(BUSY_WAITS_S) times whatever `retries` says. A refusal (403) or anything else (404) is final: it is never
+    asked again as a browser or through curl."""
     url = url.strip().replace(" ", "%20")            # an address copied with spaces (ALI, 14 Oct 2026)
-    agent = USER_AGENT
     result = _get_once(url, timeout)
-    if result.status_code in REFUSED_AS_ROBOT:
-        tried = _get_once(url, timeout, agent=BROWSER_AGENT)
-        if tried.ok or tried.status_code not in REFUSED_AS_ROBOT:
-            agent = BROWSER_AGENT
-        result = tried
-    if result.status_code in REFUSED_AS_ROBOT:
-        # Some sites refuse Python's own connection whatever it calls itself (carrefour.com, OWA test,
-        # 15 Oct 2026) but serve the Mac's curl.
-        result = _curl(url, timeout) or result
     tries, busy = 0, 0
     while not result.ok:
         if result.status_code == 429 and busy < len(BUSY_WAITS_S):
@@ -191,7 +183,7 @@ def fetch_bytes(url: str, timeout: float = TIMEOUT_S, retries: int = 1) -> Fetch
             tries += 1
         else:
             break
-        result = _get_once(url, timeout, agent=agent) if agent != USER_AGENT else _get_once(url, timeout)
+        result = _get_once(url, timeout)
     return result
 
 
@@ -206,6 +198,8 @@ def describe_failure(result: FetchResult) -> str:
         return "the site answered 202 (it often means a check for robots, with no page sent)"
     if result.failure == "http-429":
         return "the site answered 429 (too many requests) each time, even after waiting"
+    if result.failure == "cut-short":
+        return "the PDF it sent stops part way (it has no end), so it is a broken copy"
     if result.failure == "robot-check":
         return "the site sent a robot check (a page asking to prove a person is visiting), not the document"
     if result.failure and result.failure.startswith("http-"):
@@ -372,6 +366,22 @@ def kind_of(content: bytes, content_type: str = "", name: str = "") -> Optional[
     """What the handbook can read the file as: "pdf", "image", "html", "text", "sheet" and the other
     kinds in readers.py; None for anything else. One list for fetch, add-document and the Set-up uploads."""
     return readers.kind_of(content, content_type, name)
+
+
+ARCHIVE_CUT = 1_048_576      # where the web archive cuts some captures it took in from Common Crawl
+
+
+def cut_short(content: bytes, content_type: str = "", name: str = "") -> bool:
+    """Whether a PDF stops part way: no %%EOF near its end. The web archive serves some captures cut at
+    1,048,576 bytes (an open-data benchmark, Cote d'Ivoire's data protection law, 29 Oct 2026: the April 2024 capture of a 6 MB
+    gazette was 1 MiB, so DPL scored 59 against the benchmark's 93, while the June 2023 capture held the whole law)."""
+    kind = kind_of(content, content_type, name)
+    if kind == "html":
+        # A web page cut at exactly 1 MiB with no closing tag (Colombia's DNP decree page, archive capture, 5 Nov 2026)
+        return len(content) == ARCHIVE_CUT and b"</html" not in content[-4096:].lower()
+    if kind != "pdf":
+        return False
+    return b"%%EOF" not in content[-4096:]
 
 
 # --- ids ----------------------------------------------------------------------------------------

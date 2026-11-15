@@ -60,7 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from . import chatwork, costs, edition, needs, readers, updates
+from . import chatwork, costs, edition, needs, readers, system, updates
 from .estimate import show_tokens
 from .folder import HandbookError, Project, read_json
 from .localstore import Config, Store, home
@@ -147,7 +147,7 @@ class Commands:
         it started (`stop_all`), and no Claude session is left running on its own."""
         cmd = [sys.executable, str(HB), *args] + (["--project", str(self.project.path)] if project else [])
         p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             text=True, encoding="utf-8", start_new_session=True)
+                             text=True, encoding="utf-8", **system.own_group())
         self.running.add(p)
         try:
             out, _ = p.communicate(timeout=timeout)
@@ -161,13 +161,7 @@ class Commands:
 
     @staticmethod
     def _kill(p: subprocess.Popen) -> None:
-        try:
-            os.killpg(p.pid, signal.SIGTERM)
-        except (OSError, AttributeError):
-            try:
-                p.terminate()
-            except OSError:
-                pass
+        system.stop_tree(p)          # the command and the claude -p it started, on every system
 
     def stop_all(self) -> None:
         for p in list(self.running):
@@ -1521,7 +1515,8 @@ class Worker:
     # Commands the chat may not run behind the page: they start another server, make another
     # project or open windows. Everything else in hb is the chat's, with Confirm, a copy and Undo.
     CHAT_HB_BLOCKED = ("serve", "launcher", "init")
-    CHAT_HB_READ_ONLY = ("help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text", "names")
+    CHAT_HB_READ_ONLY = ("help", "status", "validate", "todo", "cost", "estimate", "doctor", "material-text", "names",
+                         "conflicts")
     CHAT_HB_SLOW = ("find", "score", "draft-setup", "job", "fetch", "prepare", "second-finds", "second-reads", "compare")
 
     def changed_by_chat(self, title: str, run, hold: bool = True) -> dict:

@@ -1,6 +1,6 @@
 """Storing a scorer's answers, and raising a rule question from the cells it touches.
 
-The scorer writes `{"row": ROW, "cells": {QID: {"state", "value", "evidence", "note", "unsure"}}}`
+The scorer writes `{"row": ROW, "cells": {QID: {"state", "value", "evidence", "note", "unsure", "conflicts"}}}`
 (the shape in the kit's brief). `ingest_answers` checks every cell first and stores nothing if any
 cell has a problem; otherwise it computes points, fills `rules` and `judgement`, sets `run` and
 merges the listed cells into `answers/<row>.json`, leaving every other cell as it was.
@@ -8,6 +8,9 @@ merges the listed cells into `answers/<row>.json`, leaving every other cell as i
 With the kit's `capture.json` (`captures`), each evidence item also gets `capture`: the id of the
 document's pages as the scorer saw them, so the quote check can read that text even after the saved
 copy changes. A kit whose copy of a document is not one the project has on file is refused.
+
+`conflicts`, the contradiction log (conflicts.py), is cleaned rather than checked: a slip in the log never
+throws a row's answers away. A cell the scorer gave no log stores none, as answers did before it existed.
 """
 from __future__ import annotations
 import json
@@ -15,6 +18,7 @@ import re
 from datetime import datetime, timezone
 
 from . import answers as answer_kinds
+from . import conflicts as conflict_log
 from .folder import HandbookError, Project, applies
 from .kit import rules_for, unit
 from .shapes import UNSURE_WHY, check_answers, check_rules
@@ -132,12 +136,22 @@ def _check_cell(problems, qid, c, question, docs, row, stale):
     if unsure is not None:
         if not isinstance(unsure, dict) or unsure.get("why") not in UNSURE_WHY:
             why = unsure.get("why") if isinstance(unsure, dict) else unsure
-            problems.append(f"{w}: unsure must be null or {{\"why\": \"rule\" or \"document\", "
+            problems.append(f"{w}: unsure must be null or {{\"why\": \"rule\", \"document\" or \"set_aside\", "
                             f"\"note\": \"...\"}}, found why {why!r}")
         elif not isinstance(unsure.get("note"), str):
             problems.append(f"{w}: unsure note must be text")
     if c.get("note") is not None and not isinstance(c.get("note"), str):
         problems.append(f"{w}: note must be text")
+
+
+def row_docs(project: Project, row: str) -> dict[str, set]:
+    """{doc: its page numbers} for every document found for `row` (none for one with no saved copy)."""
+    docs = {}
+    for doc in project.found(row).get("documents") or []:
+        pages = project.pages(doc) if (project.doc_dir(doc) / "meta.json").is_file() else []
+        docs[doc] = {p.get("page") if isinstance(p.get("page"), int) else i
+                     for i, p in enumerate(pages, start=1)}
+    return docs
 
 
 def validate_answers(project: Project, row: str, data, captures=None) -> list[str]:
@@ -155,11 +169,7 @@ def validate_answers(project: Project, row: str, data, captures=None) -> list[st
     the_unit = unit(project, row)
     mine = {q["id"]: q for q in project.questions_for(the_unit)}
     known = {q.get("id") for q in project.read("questions").get("questions", [])}
-    docs = {}
-    for doc in project.found(row).get("documents") or []:
-        pages = project.pages(doc) if (project.doc_dir(doc) / "meta.json").is_file() else []
-        docs[doc] = {p.get("page") if isinstance(p.get("page"), int) else i
-                     for i, p in enumerate(pages, start=1)}
+    docs = row_docs(project, row)
     stale = {doc: cid for doc, cid in kit_captures(captures).items()
              if doc in docs and not project.capture(doc, cid)}
     for qid, c in cells.items():
@@ -171,7 +181,7 @@ def validate_answers(project: Project, row: str, data, captures=None) -> list[st
     return problems
 
 
-def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps: dict) -> dict:
+def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps: dict, docs: dict | None = None) -> dict:
     state = c["state"]
     value = (c.get("value") if state == "answered" else None if state == "not_applicable"
              else question.get("no_evidence_value"))
@@ -190,11 +200,13 @@ def _stored_cell(c: dict, question: dict, rules: list, row: str, run: str, caps:
         stored_unsure = {"why": unsure["why"], "note": unsure["note"], "handled": False}
         if unsure["why"] == "document" and missing_name(unsure):
             stored_unsure["missing"] = missing_name(unsure)
+    log, _ = conflict_log.clean(c.get("conflicts"), docs)
     return {"state": state, "value": value, "points": None if value is None else _points(question, value),
             "evidence": evidence, "rules": [r["id"] for r in applying],
             "judgement": any(r.get("status") in ("open", "skipped") for r in applying),
             "unsure": stored_unsure,
-            "note": c.get("note") or "", "run": run, "out_of_date": False}
+            "note": c.get("note") or "", "run": run, "out_of_date": False,
+            **({"conflicts": log} if log is not None else {})}
 
 
 MISSING_CHARS = 200
@@ -313,7 +325,8 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
     questions = {q["id"]: q for q in project.questions_for(unit(project, row))}
     rules = project.read("rules").get("rules", [])
     caps = kit_captures(captures)
-    new = {qid: _stored_cell(c, questions[qid], rules, row, run, caps) for qid, c in data["cells"].items()}
+    docs = row_docs(project, row)
+    new = {qid: _stored_cell(c, questions[qid], rules, row, run, caps, docs) for qid, c in data["cells"].items()}
     answers = project.answers(row)
     for qid, cell in new.items():
         old = (answers.get("cells") or {}).get(qid)
@@ -350,7 +363,7 @@ def ingest_answers(project: Project, row: str, run: str, data, captures=None) ->
 
 KEEP_EARLIER = 20           # earlier answers kept per cell, the newest
 EARLIER_KEYS = ("state", "value", "points", "evidence", "note", "run", "rules", "judgement", "unsure",
-                "out_of_date", "owner", "checked", "rescored", "feedback")
+                "out_of_date", "owner", "checked", "rescored", "feedback", "conflicts")
 
 
 def _gist(cell) -> str:

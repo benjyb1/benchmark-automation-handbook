@@ -25,7 +25,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import updates, upgrade
+from . import system, updates, upgrade
 from .folder import HandbookError, read_json, write_json
 from .localstore import Config, home
 
@@ -39,9 +39,7 @@ def running_infos() -> list[dict]:
         info = read_json(f, None) if f.is_file() else None
         if not isinstance(info, dict):
             continue
-        try:
-            os.kill(int(info["pid"]), 0)
-        except (OSError, KeyError, ValueError, TypeError):
+        if not system.alive(info.get("pid")):         # never os.kill(pid, 0): on Windows that ends the page
             continue
         out.append({**info, "file": str(f)})
     return out
@@ -280,11 +278,11 @@ def respawn(server, project_path: Path, marker: Path | None) -> None:
         if isinstance(info, dict) and info.get("pid") == os.getpid():
             info["restarting"] = time.time()
             write_json(marker, info)
-    hb = updates.tool_dir() / "lib" / "hb"
+    hb = updates.tool_dir() / "lib" / ("hb.cmd" if system.windows() else "hb")
     env = dict(os.environ, HB_SERVE_TOKEN=server.token, HB_RESTART_OF=str(os.getpid()))
     log = open(Path(project_path) / ".serve.log", "ab")
     subprocess.Popen([str(hb), "serve", "--project", str(project_path), "--no-browser", "--port", str(server.port)],
-                     env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, start_new_session=True)
+                     env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL, **system.own_group())
     log.close()
     threading.Thread(target=server.shutdown, daemon=True).start()
 
@@ -292,8 +290,6 @@ def respawn(server, project_path: Path, marker: Path | None) -> None:
 def wait_for_exit(pid: int, timeout_s: float = 90) -> None:
     end = time.time() + timeout_s
     while time.time() < end:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not system.alive(pid):
             return
         time.sleep(0.2)

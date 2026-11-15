@@ -129,7 +129,7 @@
   const arr = (v) => (Array.isArray(v) ? v : []);
   const cut = (text, n) => {
     const s = text == null ? "" : String(text);
-    return s.length > n ? s.slice(0, n - 3).replace(/\s+\S*$/, "") + "..." : s;
+    return s.length > n ? s.slice(0, n - 3).replace(/\s+\S*$/, "") + "..." : s;   // not shown: what Claude is told
   };
   const unitWord = () => (bundle().project || {}).unit_word || "row";
   const unitName = (row) => {
@@ -2229,6 +2229,8 @@
     return out.filter((n) => !seen.has(n.id));
   }
 
+  // Cut at a word, never inside one ("publicly avai…", design read, 26 Oct 2026), and without a stop
+  // left before the "…" ("e.g.…").
   function clipText(t, n) {
     return HB.shortText(t, n);
   }
@@ -2510,6 +2512,8 @@ body:has(.hbc-fab:not([hidden])) .hb-main { padding-bottom: calc(3.25rem + 2.5re
   .hb-top:has(> .hbc-fab:not([hidden])) .hb-tabs { flex: 1 1 0; }
   body:has(.hb-top > .hbc-fab) .hb-main { padding-bottom: var(--s7); }
 }
+/* Under a dialog's backdrop, like the rest of the page. */
+body:has(dialog[open]:modal) .hbc-fab { visibility: hidden; }
 .hbc-fab__glyph { width: 1.75rem; height: 1.75rem; }
 .hbc-fab__badge { position: absolute; top: -0.2rem; right: -0.2rem; min-width: 1.25rem; height: 1.25rem; padding: 0 0.3rem; border-radius: 999px; background: #b42318; color: #ffffff; font-size: 0.75rem; font-weight: 600; line-height: 1.25rem; text-align: center; box-shadow: 0 0 0 2px var(--bg, #ffffff); }
 .hbc-fab__badge[hidden] { display: none; }

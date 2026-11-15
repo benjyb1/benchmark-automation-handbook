@@ -203,6 +203,38 @@ def kit_ocr_pages(kit: Path) -> dict[str, set[int]]:
     return out
 
 
+def _one_apart(a: str, b: str) -> bool:
+    """Whether `b` is `a` with one character dropped or added (d-95b7f6bac for d-095b7f6bac)."""
+    if abs(len(a) - len(b)) != 1:
+        return False
+    short, long_ = (a, b) if len(a) < len(b) else (b, a)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
+def near_doc(doc: str, known) -> str | None:
+    """The one id in `known` that `doc` misspells by a single dropped or added character, else None
+    (none, or more than one, so there is no telling which was meant)."""
+    if not isinstance(doc, str) or doc in known:
+        return None
+    hits = [k for k in known if isinstance(k, str) and _one_apart(doc, k)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def mend_doc_ids(cells: dict, known) -> int:
+    """Put right, in place, evidence that cites a document id one character off a kit document's id
+    (a reader dropped or added a character). Returns how many evidence items were mended."""
+    known = set(known)
+    mended = 0
+    for cell in (cells or {}).values():
+        for e in cell.get("evidence") or [] if isinstance(cell, dict) else []:
+            if isinstance(e, dict):
+                right = near_doc(e.get("doc"), known)
+                if right:
+                    e["doc"] = right
+                    mended += 1
+    return mended
+
+
 def check_kit(kit: Path, answers_path: Path | None = None) -> list[dict]:
     """Every quote in the answers file (`kit/answers.json` unless `answers_path` says otherwise)
     that is not word for word on a page of its document, as `{"question", "evidence", "doc",

@@ -68,6 +68,8 @@
     page_gone: "most of the text of a web page cited has gone from the live site; the answer still reads the earlier copy until you choose what to do",
     reads_disagree: "a second, independent read gave a different answer",
     weak_source: "every document cited is a weak source, such as a copy on another site",
+    set_aside: "Claude found evidence but set it aside under a rule (no date in the period, not an official copy); a person decides whether it counts",
+    sources_disagree: "Claude found documents that disagree on this answer and logged which it went with and why",
     owner_changed: "the owner corrected this answer; open it to see whether Claude agreed",
     holds_back: "this answer keeps the {unit} below its next level, which needs every question below it met, so it is worth a second look",
     needs_document: "scored as if there were nothing, because Claude needed a document it could not get; you can add it",
@@ -138,7 +140,7 @@
    names sit in the same column as their marks, so they move together. The name column is as wide
    as the longest row or group name (fitNames, at most 28rem), so short names such as producers
    don't leave a gap before the marks and long names such as trial titles are not cut. */
-.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-max: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
+.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-cap: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --name-max: min(var(--name-fit, var(--name-cap)), var(--name-cap)); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
 .hbg-ov > * { min-width: var(--ov-w); }
 .hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--ov-gap); padding-inline: var(--ov-pad); }
 .hbg-ov__head { position: sticky; top: 0; z-index: 5; align-items: end; padding-block: var(--s2) var(--s1); border-bottom: 1px solid var(--rule-strong); border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; }
@@ -167,7 +169,10 @@
 .hbg-ov__q .hbg-qid { padding: 0; }
 .hbg-ov__g + .hbg-ov__g { border-top: 1px solid var(--rule); }
 .hbg-ov__gh { min-height: 2.375rem; padding-block: var(--s1); background: color-mix(in srgb, var(--paper) 70%, var(--surface)); border-bottom: 1px solid var(--rule); }
-.hbg-ov__gname { overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+/* Names wrap to two lines before they are cut: with the answer panel open the name column is 11rem, and
+   one line cut "Coca-Cola Consolidated" to "Coca-Cola Conso..." (all-projects sweep, 27 Oct 2026). A name
+   longer than two lines still ends in "..." with the whole name on hover. */
+.hbg-ov__gname { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
 .hbg-ov__gmeta { min-width: 0; color: var(--ink-2); font-size: var(--fs-12); }
 .hbg-ov__gh .hbg-num { font-weight: 600; }
 .hbg-ov__open { justify-self: end; white-space: nowrap; }
@@ -175,7 +180,7 @@
 .hbg-ov__r { min-height: 1.625rem; background: var(--surface); }
 .hbg-ov__r:nth-child(even) { background: color-mix(in srgb, var(--paper) 40%, var(--surface)); }
 .hbg-ov__r:hover { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
-.hbg-ov__nm { overflow: hidden; color: var(--ink); text-overflow: ellipsis; white-space: nowrap; }
+.hbg-ov__nm { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; color: var(--ink); line-height: 1.3; overflow-wrap: anywhere; }
 .hbg-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .hbg-ov__r .hbg-num { font-weight: 600; }
 .hbg-tier { overflow: hidden; color: var(--ink-2); font-size: var(--fs-12); text-overflow: ellipsis; white-space: nowrap; }
@@ -187,6 +192,7 @@
 .hbg-mk:focus-visible { z-index: 2; outline: 2px solid var(--focus); outline-offset: 1px; }
 .hbg-mk.is-ne { background-color: var(--surface); background-image: repeating-linear-gradient(135deg, color-mix(in srgb, var(--ink-2) 55%, transparent) 0 1px, transparent 1px 4px); box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .hbg-mk.is-na { background: transparent; }
+.hbg-mk.is-value::after { inset: 28%; height: auto; border-radius: 50%; }   /* answered, worth no points: a dot, not a score */
 .hbg-mk.is-na::after { display: none; }
 .hbg-mk.is-wait { background: transparent; box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .hbg-mk.is-wait::after { display: none; }
@@ -250,10 +256,10 @@
 a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline-offset: 1px; }
 
 @media (width < 60rem) {
-  .hbg-ov { --name-min: 6rem; --name-max: 12rem; --num-w: 3rem; --tier-w: 4.5rem; }
+  .hbg-ov { --name-min: 6rem; --name-cap: 12rem; --num-w: 3rem; --tier-w: 4.5rem; }
   .hbg-ov__gmeta { white-space: normal; }
 }
-@media all { .hb.has-dock .hbg-ov { --name-min: 6rem; --name-max: 11rem; --num-w: 3rem; --tier-w: 7.5rem; } }   /* the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
+@media all { .hb.has-dock .hbg-ov { --name-min: 6rem; --name-cap: 11rem; --num-w: 3rem; --tier-w: 7.5rem; } }   /* the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
 @media (width < 52rem) {
   .hbg-ov { --mk-w: 15px; --mk-gap: 2px; --sec-gap: 10px; }
   .hbg-ov .hbg-rm { min-width: 0; width: var(--mk-w); padding: 0; font-size: 0.5625rem; letter-spacing: -0.02em; }
@@ -278,13 +284,13 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 @media print {
   .hb-view[data-view="grid"] { container-type: inline-size; }
   .hbg-ov, .hbg-scroll, .hbg-scroll--all { max-height: none; overflow: visible; }
-  .hbg-ov { --name-max: 10rem; --ov-gap: var(--s2); --mk-gap: 1px; --sec-gap: 6px; --mk-w: clamp(5px, calc((100cqi - var(--name-max) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px - (var(--nq) - var(--ns)) * var(--mk-gap) - (var(--ns) - 1) * var(--sec-gap)) / var(--nq)), 18px); container-type: normal; }
+  .hbg-ov { --name-cap: 10rem; --ov-gap: var(--s2); --mk-gap: 1px; --sec-gap: 6px; --mk-w: clamp(5px, calc((100cqi - var(--name-max) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px - (var(--nq) - var(--ns)) * var(--mk-gap) - (var(--ns) - 1) * var(--sec-gap)) / var(--nq)), 18px); container-type: normal; }
   .hbg-ov > * { min-width: 0; }
   .hbg-ov__q { font-size: 0.5rem; }
   .hbg-ov__q .hbg-qid { writing-mode: vertical-rl; }   /* two-digit numbers fit over narrow marks */
   .hbg-ov__head, .hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r, .hbg-ov__table, .hbg-table :is(th, td) { position: static; }
   .hbg-ov__table { width: auto; }
-  .hbg-ov { --name-max: 14rem; }
+  .hbg-ov { --name-cap: 14rem; }
   .hbg-ov__nm { white-space: normal; overflow: visible; text-overflow: clip; }   /* the full name on paper */
 }
 @media (forced-colors: active) {
@@ -541,7 +547,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const sections = sectionsFor(bundle, qidsAll);
 
     // Counts over the rows in view.
-    const counts = { answered: 0, ne: 0, waiting: 0, owner: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
+    const counts = { answered: 0, valued: 0, ne: 0, waiting: 0, owner: 0, flagged: 0, stale: 0, rests: 0, kinds: {} };
     for (const k of HB.flagKinds.factual) counts.kinds[k] = 0;
     const restsByQ = new Map();
     const cellInfo = new Map();
@@ -549,8 +555,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       for (const sec of sections) for (const q of sec.qs) {
         const c = ctx.data.cell(u.id, q.id);
         if (!c) continue;
-        if (c.state === "answered") counts.answered += 1;
-        else if (c.state === "no_evidence") counts.ne += 1;
+        if (c.state === "answered") {
+          counts.answered += 1;
+          if (carriesNoPoints(q)) counts.valued += 1;
+        } else if (c.state === "no_evidence") counts.ne += 1;
         else if (c.waiting) counts.owner += 1;
         else if (c.state !== "not_applicable") counts.waiting += 1;
         const kinds = HB.factualFlags(c);
@@ -596,7 +604,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const top = topPoints(q);
       const pts = isNum(c.points) ? c.points : null;
       const of = isNum(top) ? " of " + fmtNum(top) : "";
-      const out = { c, state: c.state, pts, top, step: 0, kinds: extra.kinds, rests: extra.rules, stale: Boolean(c.out_of_date) };
+      const out = { c, state: c.state, pts, top, step: 0, kinds: extra.kinds, rests: extra.rules, stale: Boolean(c.out_of_date),
+        valued: c.state === "answered" && carriesNoPoints(q) };
       let words;
       if ((c.state === "answered" || c.state === "no_evidence") && HB.isFigureQuestion(q)) {
         // A figure (EggTrack's 73%): the cell shows it, shaded by where it sits between min and max.
@@ -623,7 +632,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         out.owner = c.waiting;
         out.text = "data";
         const what = need && need.what ? String(need.what) : "";
-        words = "waits for data you need to supply" + (what ? ": " + (what.length > 90 ? what.slice(0, 89) + "…" : what) : "");
+        words = "waits for data you need to supply" + (what ? ": " + HB.shortText(what, 90) : "");
       } else {
         out.state = "not_run";
         out.text = "";
@@ -669,8 +678,17 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     return m;
   }
 
+  // An answer worth no points (High Pay's CEO pay, a tracker's status) has nothing to fill a square with,
+  // and drew as the empty grey of a zero score: three answered companies looked like the 214 not scored
+  // (27 Oct 2026). It gets a dot instead: answered, with no score to show.
+  function carriesNoPoints(q) {
+    const top = topPoints(q);
+    return !(isNum(top) && top > 0);
+  }
+
   function cellClasses(base, x, rests) {
     const cls = [base];
+    if (x.valued) cls.push("is-value");
     if (x.state === "no_evidence") cls.push("is-ne");
     if (x.state === "not_run") cls.push("is-wait");
     if (x.owner) cls.push("is-owner");
@@ -754,6 +772,14 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     return m.cols && m.cols.band ? m.bandNode(m.bandName(unit)) : h("span", { class: "hbg-tier" }, "");
   }
 
+  /** The bands' own word ("tier", "level", "grade"), from the results' band sets; "tier" when none says. */
+  function tierWord() {
+    const rp = HB.resultsParts;
+    const sets = rp && typeof rp.bandSets === "function" ? rp.bandSets() : [];
+    const w = sets.length && typeof rp.bandWord === "function" ? rp.bandWord(sets[0]) : "tier";
+    return w && w !== "band" ? w : "tier";
+  }
+
   function stripsHead(m) {
     const unitWord = cap(m.p.unit_word || "row");
     let col = 0;
@@ -772,7 +798,10 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
           })));
       })),
       h("span", { class: "hbg-num hbg-ov__pin-n" }, "Overall"),
-      h("span", { class: "hbg-ov__pin-r" }, m.cols && m.cols.band ? "Tier" : ""));
+      // Headed by the band's own word ("Level" for TPI, whose bands are "Level 2/3"), and "Status" over
+      // "Partial score" when there are no bands, not a blank (design read, 26 Oct 2026).
+      h("span", { class: "hbg-ov__pin-r" }, m.cols && m.cols.band ? cap(tierWord())
+        : m.units.some((u) => { const t = m.totals(u); return t && t.partial; }) ? "Status" : ""));   // only over something
   }
 
   function strips(ctx, m) {
@@ -811,7 +840,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       }
       root.append(sec);
     });
-    if (nameFit) root.style.setProperty("--name-max", nameFit);
+    if (nameFit) root.style.setProperty("--name-fit", nameFit);
     if (tierFit) root.style.setProperty("--tier-w", tierFit);
     requestAnimationFrame(fitNames);
     fitSectionsWhenShown(root, m, 0);
@@ -978,7 +1007,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     });
     if (widest) {
       nameFit = "min(" + Math.ceil(widest + 4) + "px, 28rem)";
-      live.style.setProperty("--name-max", nameFit);
+      live.style.setProperty("--name-fit", nameFit);   // never wider than the room (--name-cap): with the answer panel open, long names took the squares' place (stress test, 27 Oct 2026)
     }
     fitTiers(live, range);
     edgeNames(live);
@@ -1078,7 +1107,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         scope: "col", class: i === 0 ? "hbg-start" : null, title: s.name ? String(s.name) : null,
       }, String(s.id))));
       qRow.push(h("th", { scope: "col", class: "hbg-pin-n" + (cols.sections.length ? "" : " hbg-start") }, "Overall"));
-      if (cols.band) qRow.push(h("th", { scope: "col", class: "hbg-pin-r", style: "text-align: left" }, cols.band === "overall" ? "Tier" : "Tier " + cols.band));
+      if (cols.band) qRow.push(h("th", { scope: "col", class: "hbg-pin-r", style: "text-align: left" }, cols.band === "overall" ? cap(tierWord()) : cap(tierWord()) + " " + cols.band));
     }
     return { head: h("thead", null, h("tr", null, secRow), h("tr", null, qRow)), width: 1 + qCount + (cols ? cols.sections.length + 1 + (cols.band ? 1 : 0) : 0) };
   }
@@ -1125,7 +1154,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       const mean = m.groupMean(g.rows);
       const flagged = m.groupFlagged(g.rows);
       const meta = [ctx.unitWords(g.rows.length)];
-      if (mean !== null) meta.push("mean " + m.overallText({ overall: Math.round(mean) }));
+      if (mean !== null) meta.push("average " + m.overallText({ overall: Math.round(mean) }));
       if (flagged) meta.push(fmtInt(flagged) + " flagged");
       return h("tbody", null,
         h("tr", { class: "hbg-divider" }, h("th", { scope: "rowgroup", colspan: String(width) },
@@ -1215,7 +1244,8 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const items = [];
     if (view === "strips") {
       items.push(
-        li(wide, sample("hbg-mk", "--v: 0.6"), "Green fill: the points scored. A full square is top marks; a thin sliver, a low score; empty grey, none", n(c.answered)),
+        li(wide, sample("hbg-mk", "--v: 0.6"), "Green fill: the points scored. A full square is top marks; a thin sliver, a low score; empty grey, none", n(c.answered - c.valued)),
+        c.valued ? li(wide, sample("hbg-mk is-value"), "A dot: answered with a figure or a level that carries no points", n(c.valued)) : null,
         li(wide, sample("hbg-mk is-ne"), "Hatched: no evidence found", n(c.ne)),
         li(wide, sample("hbg-mk is-flag", "--v: 0"), "Red corner, top right: something to check on this answer, one of the kinds below. Hover over it to see which; click it and the panel says why at the top", n(c.flagged)),
         li(wide, sample("hbg-mk is-wait"), "Not scored yet", n(c.waiting)),

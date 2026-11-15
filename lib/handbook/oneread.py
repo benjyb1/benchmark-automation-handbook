@@ -45,9 +45,25 @@ so it does not call them missing. The answers are then put together by plain cod
 in one part takes that answer; the same answer in several parts keeps every quote; parts that disagree
 go to one more short call that sees only the pages the answers cite (`reconcile`). The cost is about
 the documents once plus the brief and questions once per part.
+
+A single document longer than LONG_DOC characters (a 1,100-page budget book, a whole digital code, a
+compendium decree holding one chapter on data protection) is not sent whole even in parts: an open-data benchmark's Kenya
+land and budget kit, 9.8 million characters over 20 documents, would take 45 parts and 8.4 million
+tokens that way (29 Oct 2026), more than the full scorer's 2.4 million. Such a document is read
+focused instead: one short call first sees the questions, each long document's opening pages (its
+contents) and a map of the rest, one line a page (a run of pages opening with the same line is one
+entry), and chooses the pages the questions need (`focus`, at most MAX_LOOK over all long documents).
+The unit chosen is a piece of at most PIECE characters (a PDF page, or a cut of a web page saved as
+one 100,000-character page), so the choice is even across documents however they were saved. The reading
+then gets the short documents whole, the chosen pieces of the long ones with the map of the rest, and may
+ask once for up to MORE_PAGES more for the cells still open ("want" beside the cells): that call carries
+only the added pieces and the first answers, not the whole kit again (Benin, 29 Oct 2026: the third call
+re-sent everything and cost as much as the reading). Choosing by keyword was the method that lost answers above; here the model chooses from the
+document's own headings, and can ask again.
 """
 from __future__ import annotations
 import json
+import math
 import os
 import re
 import shutil
@@ -55,9 +71,10 @@ import subprocess
 from collections import Counter
 from pathlib import Path
 
+from . import conflicts
 from .claude_cli import LOOKUP_MODEL, MODEL, ONE_READ_EFFORT
 from .folder import HandbookError, read_json, write_json
-from .quotecheck import check_kit, kit_pages
+from .quotecheck import check_kit, kit_pages, mend_doc_ids
 
 BRIEF = "reading.md"                 # written by hb kit next to brief.md
 SYSTEM = ("You score one row of a benchmark from the documents in the message. Use only those documents, "
@@ -65,7 +82,16 @@ SYSTEM = ("You score one row of a benchmark from the documents in the message. U
 CHARS_PER_TOKEN = 3.0                # a little under the usual 4: law, tables and XML cut into more tokens
 LIMIT = 200_000                      # estimated tokens in the message; a bigger kit goes to the full scorer
 LOOKUP_LIMIT = 150_000               # the cheaper model reads less at once
-MAX_QUESTIONS = 80                   # per call, so the answers stay well inside one reply
+# Questions per call, so the answers stay well inside one reply: about 200 output tokens a cell, 24,000 for
+# 120, against reply limits of 128,000. It was 80, and an open-data benchmark's 83- and 89-question rows (29 Oct 2026) then read
+# every document twice for the last few questions. Over this the questions go in equal chunks (`_chunks`).
+MAX_QUESTIONS = 120
+LONG_DOC = 300_000                   # characters: a document longer than this is read focused (see the docstring)
+PIECE = 5000                         # characters: the unit chosen from a long document (a page, or a cut of a long one)
+MAP_CHARS = 90                       # characters of a piece's opening line shown on the map
+OPEN_PIECES = 6                      # a long document's first pieces (its contents) always go whole
+MAX_LOOK = 60                        # pieces chosen over all long documents for one reading
+MORE_PAGES = 40                      # pieces the reading may then ask for, once
 TIMEOUT_S = 1800
 USAGE_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")
 # Trimming a shared document's long page (see the module docstring).
@@ -161,19 +187,276 @@ def _page(n: int, text: str) -> str:
     return f'<page n="{n}">\n{text}\n</page>'
 
 
-def _documents(kit: Path, names: set[str], question_words: list[set[str]], only: dict | None = None) -> str:
+def _documents(kit: Path, names: set[str], question_words: list[set[str]], only: dict | None = None,
+               maps: list[str] | None = None, cut: dict | None = None) -> str:
     """Every document with page files, as <document> blocks of <page> blocks, shared ones trimmed.
-    `only` {doc id: set of page numbers} keeps just those pages (one part of a long kit)."""
+    `only` {doc id: set of page numbers} keeps just those pages (one part of a long kit, or the chosen
+    pages of a long document); `cut` {doc: {page: piece indexes}} keeps only those pieces of a page; a
+    document in `maps` also carries the map of what was left out."""
     out = []
     for doc, meta, texts in _page_texts(kit, names, question_words):
+        every = texts
         if only is not None:
             texts = [(n, t) for n, t in texts if n in only.get(doc, ())]
             if not texts:
                 continue
+        kept = (cut or {}).get(doc) or {}
         out.append(_head(doc, meta))
-        out += [_page(n, t) for n, t in texts]
+        out += [_page(n, _render(t, kept.get(n))) for n, t in texts]
+        if maps and doc in maps:
+            sent = {n: kept.get(n) if n in kept else None for n, _ in texts}
+            rest = _left_out([(n, t) for n, t in every if n not in sent or sent[n] is not None],
+                             {n: v for n, v in sent.items() if v is not None})
+            if rest:
+                out += ["<map>"] + _map_lines(rest) + ["</map>"]
         out.append("</document>")
     return "\n".join(out)
+
+
+def long_docs(kit: Path) -> list[str]:
+    """Documents too long to send whole (over LONG_DOC characters of page text), in kit order."""
+    return [doc for doc, meta, texts in _page_texts(kit, set(), []) if sum(len(t) for _, t in texts) > LONG_DOC]
+
+
+def _pieces(text: str) -> list[str]:
+    """A page in pieces of at most PIECE characters, cut between lines (or between words when the page is a
+    few long lines, a web page saved as one). A short page is one piece."""
+    if len(text) <= PIECE:
+        return [text]
+    units, joiner = text.split("\n"), "\n"
+    if len(units) < 20 or max(len(u) for u in units) > PIECE:
+        w = text.split()
+        units, joiner = [" ".join(w[i:i + 40]) for i in range(0, len(w), 40)], " "
+    out, cur, size = [], [], 0
+    for u in units:
+        if cur and size + len(u) + 1 > PIECE:
+            out.append(joiner.join(cur))
+            cur, size = [], 0
+        cur.append(u)
+        size += len(u) + 1
+    if cur:
+        out.append(joiner.join(cur))
+    return out
+
+
+def _label(n: int, i: int, total: int) -> str:
+    return f"p{n}" if total == 1 else f"p{n}/{i + 1}"
+
+
+def _parse_label(item) -> tuple[int, int | None] | None:
+    """"p12" or 12 -> (12, None); "p12/3" -> (12, 2); anything else None."""
+    m = re.fullmatch(r"p?(\d+)(?:/(\d+))?", str(item).strip())
+    if not m:
+        return None
+    return int(m.group(1)), (int(m.group(2)) - 1 if m.group(2) else None)
+
+
+def _first_line(text: str) -> str:
+    for line in text.splitlines():
+        line = " ".join(line.split())
+        if line:
+            return line[:MAP_CHARS]
+    return "(empty)"
+
+
+def _map_lines(entries: list[tuple[str, str]]) -> list[str]:
+    """One line a piece ("p57: PART B FIGURES"), a run of consecutive pieces opening alike as one line."""
+    runs: list[list] = []
+    for label, line in entries:
+        if runs and runs[-1][2] == line:
+            runs[-1][1] = label
+        else:
+            runs.append([label, label, line])
+    return [(a if a == b else f"{a} to {b}") + f": {line}" for a, b, line in runs]
+
+
+def _render(text: str, idxs: set | None) -> str:
+    """The page's text, or only the pieces in `idxs` with [...] where pieces are left out."""
+    pieces = _pieces(text)
+    if idxs is None or set(idxs) >= set(range(len(pieces))):
+        return text
+    out, last = [], -1
+    for i in sorted(i for i in idxs if 0 <= i < len(pieces)):
+        if i != last + 1:
+            out.append("[...]")
+        out.append(pieces[i])
+        last = i
+    if last < len(pieces) - 1:
+        out.append("[...]")
+    return "\n".join(out)
+
+
+def _left_out(texts: list, kept: dict | None) -> list[tuple[str, str]]:
+    """(label, opening line) of every piece of these pages not in `kept` ({page: set of piece indexes})."""
+    out = []
+    for n, t in texts:
+        pieces = _pieces(t)
+        have = (kept or {}).get(n)
+        for i, piece in enumerate(pieces):
+            if have is None or i not in have:
+                out.append((_label(n, i, len(pieces)), _first_line(piece)))
+    return out
+
+
+def page_map(doc: str, meta: dict, texts: list) -> str:
+    """A long document for the look call: its opening pieces whole, then the map of the rest."""
+    opening = _opening(texts)
+    shown = [_page(n, _render(t, opening[n])) for n, t in texts if n in opening]
+    return "\n".join([_head(doc, meta)[:-1] + f' pages="{len(texts)}">'] + shown
+                     + ["<map>"] + _map_lines(_left_out(texts, opening)) + ["</map>", "</document>"])
+
+
+def _opening(texts: list) -> dict[int, set[int]]:
+    """{page: pieces} of a long document's first OPEN_PIECES pieces (its title page and contents)."""
+    out, room = {}, OPEN_PIECES
+    for n, t in texts:
+        k = len(_pieces(t))
+        if room <= 0:
+            break
+        out[n] = set(range(min(k, room)))
+        room -= min(k, room)
+    return out
+
+
+def _add(keep: dict, have: dict, doc: str, item, room: int) -> int:
+    """Add the piece(s) a map label names to keep[doc]; returns the room left (a page named whole adds every
+    piece of it)."""
+    got = _parse_label(item)
+    if not got or got[0] not in have.get(doc, {}):
+        return room
+    n, i = got
+    idxs = range(have[doc][n]) if i is None else ([i] if i < have[doc][n] else [])
+    for i in idxs:
+        if i in keep[doc].get(n, ()):
+            continue
+        if room <= 0:
+            return room
+        keep[doc].setdefault(n, set()).add(i)
+        room -= 1
+    return room
+
+
+def chosen(kit: Path, pages: dict) -> dict[str, dict[int, set[int]]]:
+    """The pieces to read of each long document, {doc: {page: piece indexes}}: its opening always, then those
+    in `pages` ({doc: [map labels]}, the reply to the map) in the order given, at most MAX_LOOK over all."""
+    have, keep = {}, {}
+    for doc, _, texts in _page_texts(kit, set(), []):
+        if sum(len(t) for _, t in texts) > LONG_DOC:
+            have[doc] = {n: len(_pieces(t)) for n, t in texts}
+            keep[doc] = _opening(texts)
+    room = MAX_LOOK
+    for doc, items in (pages or {}).items():
+        doc = str(doc)
+        if doc in keep and isinstance(items, list):
+            for item in items:
+                room = _add(keep, have, doc, item, room)
+    return keep
+
+
+def _only(kit: Path, keep: dict) -> dict[str, set[int]]:
+    """{doc: pages} for every document: all of a short one, the pages `keep` names of a long one."""
+    return {doc: (set(keep[doc]) if doc in keep else {n for n, _ in texts})
+            for doc, _, texts in _page_texts(kit, set(), [])}
+
+
+LOOK = ("\nBefore the reading. The documents with a <map> are too long to send whole; the others will be sent whole. "
+        "Choose the parts of each mapped document that these questions need: at most {max_look} map entries over all "
+        "of them. A map shows the document's opening whole, then every other part by its opening line, labelled by "
+        "page (p57) or by page and piece (p3/4 is the fourth piece of page 3); a run of parts opening alike is one "
+        "entry, and naming its first label takes only that part. Go by the contents and the headings: for a law, "
+        "the pages holding the articles the questions ask about; for a budget book or a register, the summary "
+        "tables and one worked example, not every entry. When two documents are copies of each other, choose from "
+        'one. Reply with only {{"pages": {{"<document id>": ["p12", "p13", "p3/4"]}}}}, nothing else.\n')
+
+
+def _look_text(kit: Path, qids: list[str] | None) -> str:
+    data, qs, rulings, qwords, names = _asked(kit, qids)
+    longs = set(long_docs(kit))
+    blocks = []
+    for doc, meta, texts in _page_texts(kit, names, qwords):
+        blocks.append(page_map(doc, meta, texts) if doc in longs
+                      else _head(doc, meta)[:-1] + f' pages="{len(texts)}" sent="whole, at the reading"/>')
+    return (_brief(kit) + "\n<questions>\n" + json.dumps({**rulings, "questions": qs}, ensure_ascii=False)
+            + "\n</questions>\n\n<documents>\n" + "\n".join(blocks) + "\n</documents>\n" + LOOK.format(max_look=MAX_LOOK))
+
+
+def parse_pages(text: str) -> dict:
+    """{doc: [labels]} from a look reply, {} when it holds none."""
+    text = (text or "").strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
+    body = fenced.group(1) if fenced else text[text.find("{"): text.rfind("}") + 1]
+    try:
+        got = json.loads(body)
+    except ValueError:
+        return {}
+    pages = got.get("pages") if isinstance(got, dict) else None
+    return pages if isinstance(pages, dict) else {}
+
+
+def focus(kit: Path, qids: list[str] | None, model: str, effort: str | None, results: list) -> dict:
+    """The look call: the pieces to read of each long document (`chosen`). A reply that names none is asked
+    once more; a second such reply raises HandbookError (reading the opening alone would miss answers)."""
+    for go in (1, 2):
+        r = ask(_look_text(kit, qids), model, effort, kit)
+        results.append(r)
+        pages = parse_pages(r.get("result"))
+        if pages:
+            r["look"] = pages           # kept in the receipt: what the look chose of each long document
+            return chosen(kit, pages)
+    raise HandbookError(f"The look at {kit.name}'s long documents named no pages to read, twice.")
+
+
+def focus_note(kit: Path, keep: dict) -> str:
+    """What the reading is told about the long documents it sees only chosen pages of."""
+    titles = {doc: (meta.get("title") or doc) for doc, meta, _ in _page_texts(kit, set(), [])}
+    counts = {doc: len(t) for doc, _, t in _page_texts(kit, set(), [])}
+    named = [f"{doc} ({titles.get(doc)}, {_span(set(pages))} of {counts.get(doc)})" for doc, pages in keep.items()]
+    return ("\nThese documents are too long to send whole, so only chosen parts of each are here (their opening, and "
+            "the parts a look at their contents picked; [...] marks a cut inside a page), with a map of the rest by "
+            "opening line: " + "; ".join(named)
+            + ". Answer from what is here. When another part of one of them would settle a cell (the map says where), "
+            "answer what you can and add, beside \"cells\", \"want\": {\"<document id>\": [map labels]}, at most "
+            f"{MORE_PAGES} entries over all; they will be sent once more for the cells still open. Never name one of "
+            "these documents as missing.")
+
+
+def _more(kit: Path, keep: dict, wants: list) -> dict[str, dict[int, set[int]]]:
+    """The pieces the reading asked for ("want" in its replies) that exist and were not sent, at most MORE_PAGES,
+    added to `keep`; returns what was added."""
+    have = {doc: {n: len(_pieces(t)) for n, t in texts} for doc, _, texts in _page_texts(kit, set(), []) if doc in keep}
+    before = {doc: {n: set(v) for n, v in pages.items()} for doc, pages in keep.items()}
+    room = MORE_PAGES
+    for want in wants:
+        for doc, items in (want or {}).items():
+            doc = str(doc)
+            if doc in keep and isinstance(items, list):
+                for item in items:
+                    room = _add(keep, have, doc, item, room)
+    added = {}
+    for doc, pages in keep.items():
+        for n, idxs in pages.items():
+            new = idxs - before[doc].get(n, set())
+            if new:
+                added.setdefault(doc, {})[n] = new
+    return added
+
+
+def _more_text(kit: Path, questions: list[str], cells: dict, added: dict) -> str:
+    """The message for the pages a focused reading asked for: the brief, the cells still open with their first
+    answers, and only the added pieces (the short documents and chosen pages were read already)."""
+    data, qs, rulings, qwords, names = _asked(kit, questions)
+    only = {doc: set(pages) for doc, pages in added.items()}
+    return (_brief(kit) + "\nThese questions were answered from the row's other pages already (the answers are below, "
+            "some with no evidence or unsure). You asked for more of the long documents: only those parts are here, "
+            "[...] marking cuts inside a page. Give one answer per question again: keep an answer unless these parts "
+            "settle or change it, quoting these parts where they do. Reply with only {\"cells\": {...}} for these "
+            "questions.\n<questions>\n" + json.dumps({**rulings, "questions": qs}, ensure_ascii=False)
+            + "\n</questions>\n<first_answers>\n" + json.dumps({q: cells.get(q) for q in questions}, ensure_ascii=False)
+            + "\n</first_answers>\n\n<documents>\n" + _documents(kit, names, qwords, only, None, added) + "\n</documents>\n")
+
+
+def _settled(cell) -> bool:
+    return isinstance(cell, dict) and cell.get("state") in ANSWERED and not cell.get("unsure")
 
 
 def _asked(kit: Path, qids: list[str] | None) -> tuple[dict, list, dict, list, set]:
@@ -196,14 +479,16 @@ def _brief(kit: Path) -> str:
     return brief
 
 
-def message(kit: Path, qids: list[str] | None = None, part: dict | None = None, note: str = "") -> str:
+def message(kit: Path, qids: list[str] | None = None, part: dict | None = None, note: str = "",
+            maps: list[str] | None = None, cut: dict | None = None) -> str:
     """The one message: the brief, the questions (those in `qids`, else all) with the rulings they name,
-    and the documents (only the pages in `part`, with `note` saying what is in the other parts)."""
+    and the documents (only the pages in `part`, with `note` saying what is in the other parts, or what the
+    chosen pages of the long documents in `maps` are)."""
     data, qs, rulings, qwords, names = _asked(kit, qids)
     brief = _brief(kit)
     return (brief + (note + "\n" if note else "") + "\n<questions>\n"
             + json.dumps({**rulings, "questions": qs}, ensure_ascii=False)
-            + "\n</questions>\n\n<documents>\n" + _documents(kit, names, qwords, part) + "\n</documents>\n")
+            + "\n</questions>\n\n<documents>\n" + _documents(kit, names, qwords, part, maps, cut) + "\n</documents>\n")
 
 
 def estimate(kit: Path) -> int:
@@ -214,18 +499,24 @@ def estimate(kit: Path) -> int:
 NOTE_ROOM = 3000                     # tokens kept free in each part for the note on the other parts
 
 
-def parts(kit: Path, qids: list[str] | None = None, limit: int | None = None) -> list[dict]:
+def parts(kit: Path, qids: list[str] | None = None, limit: int | None = None, only: dict | None = None,
+          cut: dict | None = None) -> list[dict]:
     """The kit's pages cut into parts that each fit one message with the brief and the questions:
     [{doc id: set of page numbers}]. A document stays whole when it fits in the part being filled, or
     starts a new part when it fits in one; a document longer than a part is cut into page ranges. One
-    part (every page) when the kit fits."""
+    part (every page) when the kit fits. `only` {doc: pages} cuts only those pages into parts."""
     limit = limit or LIMIT
     data, qs, rulings, qwords, names = _asked(kit, qids)
     overhead = len(message(kit, qids, part={})) / CHARS_PER_TOKEN + NOTE_ROOM
     room = max(limit - overhead, limit // 4) * CHARS_PER_TOKEN       # characters of pages per part
     out, current, size = [], {}, 0.0
     for doc, meta, texts in _page_texts(kit, names, qwords):
-        sizes = [len(_page(n, t)) + 1 for n, t in texts]
+        if only is not None:
+            texts = [(n, t) for n, t in texts if n in only.get(doc, ())]
+            if not texts:
+                continue
+        kept = (cut or {}).get(doc) or {}
+        sizes = [len(_page(n, _render(t, kept.get(n)))) + 1 for n, t in texts]
         whole = sum(sizes) + len(_head(doc, meta)) + 13
         if current and size + whole > room and whole <= room:
             out.append(current)
@@ -303,11 +594,18 @@ def plan(kit: Path) -> dict:
         return {"mode": "full scorer", "parts": 0, "estimate": None, "why": "pictures"}
     if fits(kit):
         return {"mode": "one read", "parts": 1, "estimate": estimate(kit)}
+    longs = long_docs(kit)
+    if longs:
+        # The look, then a reading of the short documents, the opening pages and about MAX_LOOK chosen pages.
+        keep = chosen(kit, {})
+        look = len(_look_text(kit, None)) / CHARS_PER_TOKEN
+        read = (len(message(kit, None, _only(kit, keep), maps=longs, cut=keep)) + MAX_LOOK * PIECE) / CHARS_PER_TOKEN
+        return {"mode": "one read, focused", "parts": max(1, math.ceil(read / LIMIT)), "estimate": int(look + read),
+                "long": len(longs)}
     data = _questions(kit)
     qids = [str(q.get("id")) for q in data["questions"]]
     total, n = 0, 0
-    for i in range(0, len(qids), MAX_QUESTIONS):
-        chunk = qids[i:i + MAX_QUESTIONS] if len(qids) > MAX_QUESTIONS else None
+    for chunk in _chunks(qids):
         cut = parts(kit, chunk)
         n += len(cut)
         total += sum(len(message(kit, chunk, part)) for part in cut) / CHARS_PER_TOKEN + NOTE_ROOM * len(cut) / 4
@@ -350,6 +648,16 @@ def ask(text: str, model: str, effort: str | None, cwd: Path) -> dict:
     if not isinstance(result, dict) or result.get("is_error"):
         raise HandbookError(f"The reading of {cwd.name} failed: {str((result or {}).get('result') or '')[:200]}")
     return result
+
+
+def _chunks(qids: list[str]) -> list[list[str] | None]:
+    """The questions in as few equal chunks as keep each within MAX_QUESTIONS; [None] (every question) when
+    they fit one call."""
+    if len(qids) <= MAX_QUESTIONS:
+        return [None]
+    n = math.ceil(len(qids) / MAX_QUESTIONS)
+    size = math.ceil(len(qids) / n)
+    return [qids[i:i + size] for i in range(0, len(qids), size)]
 
 
 def parse_reply(text: str) -> dict:
@@ -398,8 +706,8 @@ def _same(a: dict, b: dict) -> bool:
 def merge(found: list[dict]) -> tuple[dict, list[str]]:
     """Put the answers of the parts together: ({question: cell}, [questions the parts disagree on]).
     A question answered in one part takes that answer; the same answer in several keeps every quote
-    (and stays unsure only when every part was unsure); no answer anywhere keeps the first no_evidence
-    cell that says what is missing, else the first."""
+    (and stays unsure only when every part was unsure) and every part's contradiction log; no answer
+    anywhere keeps the first no_evidence cell that says what is missing, else the first."""
     out, split = {}, []
     qids = list(dict.fromkeys(q for cells in found for q in cells))
     for q in qids:
@@ -420,6 +728,9 @@ def merge(found: list[dict]) -> tuple[dict, list[str]]:
                         evidence.append(e)
             cell["evidence"] = evidence
             cell["unsure"] = got[0].get("unsure") if all(c.get("unsure") for c in got) else None
+            log = conflicts.merge_logs(*(c.get("conflicts") for c in got))   # what each part saw disagree
+            if log is not None:
+                cell["conflicts"] = log
             out[q] = cell
         else:
             split.append(q)
@@ -451,13 +762,17 @@ def _reconcile_text(kit: Path, questions: list[str], found: list[dict]) -> str:
 
 
 def _ask_cells(text: str, qids: list[str], model: str, effort: str | None, kit: Path, results: list,
-               tries: int = 1) -> dict:
-    """One call's cells for `qids`; a reply that is not an answers file is asked again `tries` more times."""
+               tries: int = 1, wants: list | None = None) -> dict:
+    """One call's cells for `qids`; a reply that is not an answers file is asked again `tries` more times.
+    `wants`, when given, collects the pages the reply asks for ("want", a focused reading)."""
     while True:
         r = ask(text, model, effort, kit)
         results.append(r)
         try:
-            return {str(q): c for q, c in parse_reply(r.get("result"))["cells"].items() if str(q) in qids}
+            got = parse_reply(r.get("result"))
+            if wants is not None and isinstance(got.get("want"), dict):
+                wants.append(got["want"])
+            return {str(q): c for q, c in got["cells"].items() if str(q) in qids}
         except HandbookError:
             if tries <= 0:
                 raise
@@ -471,12 +786,32 @@ def _read(kit: Path, qids: list[str], model: str, effort: str | None, results: l
     if fits(kit):
         info["parts"] += 1
         return _ask_cells(message(kit, chunk), qids, model, effort, kit, results, tries=0)
-    cut = parts(kit, chunk)
+    longs, only, note = long_docs(kit), None, ""
+    if longs:
+        info["focused"] = True
+        keep = focus(kit, chunk, model, effort, results)
+        only, note = _only(kit, keep), focus_note(kit, keep)
+        text = message(kit, chunk, only, note, maps=longs, cut=keep)
+        if len(text) / CHARS_PER_TOKEN <= LIMIT:
+            info["parts"] += 1
+            wants: list = []
+            cells = _ask_cells(text, qids, model, effort, kit, results, wants=wants)
+            more, open_ = _more(kit, keep, wants), [q for q in qids if not _settled(cells.get(q))]
+            if more and open_:
+                try:
+                    cells.update(_ask_cells(_more_text(kit, open_, cells, more), open_, model, effort, kit, results,
+                                            tries=0))
+                except HandbookError:
+                    pass            # the cells keep their first answers
+            return cells
+    else:
+        keep = None
+    cut = parts(kit, chunk, only=only, cut=keep)
     info["parts"] += len(cut)
     # A part whose reply is not an answers file is asked once more: falling back to the full scorer for a
     # kit this long is what cost 3.4 million tokens (sweep round 3).
-    found = [_ask_cells(message(kit, chunk, part, part_note(kit, cut, k)), qids, model, effort, kit, results)
-             for k, part in enumerate(cut)]
+    found = [_ask_cells(message(kit, chunk, part, part_note(kit, cut, k) + note, cut=keep), qids, model, effort, kit,
+                        results) for k, part in enumerate(cut)]
     cells, split = merge(found)
     if split:
         try:
@@ -497,9 +832,13 @@ def run(kit: Path, model: str | None = None, effort: str | None = None) -> dict:
     qids = [str(q.get("id")) for q in data["questions"]]
     whole = fits(kit)
     results, cells, info = [], {}, {"parts": 0}
-    for i in range(0, len(qids), MAX_QUESTIONS):
-        cells.update(_read(kit, qids[i:i + MAX_QUESTIONS], model, effort, results, info))
+    for chunk in _chunks(qids):
+        cells.update(_read(kit, chunk or qids, model, effort, results, info))
     answers = {"row": (data.get("row") or {}).get("id"), "cells": cells}
+    known = set(kit_pages(kit))
+    mend_doc_ids(cells, known)           # a document id typed one character off is the kit's document
+    for c in cells.values():
+        conflicts.mend_docs(c.get("conflicts") if isinstance(c, dict) else None, known)
     write_json(kit / "answers.json", answers)
     problems = check_kit(kit)
     if problems:
@@ -507,7 +846,14 @@ def run(kit: Path, model: str | None = None, effort: str | None = None) -> dict:
             r = ask(_repair_text(kit, problems, cells), model, effort, kit)
             results.append(r)
             fixed = parse_reply(r.get("result"))["cells"]
+            for q, c in fixed.items():          # a re-copied quote keeps the log the first answer gave
+                if isinstance(c, dict) and "conflicts" not in c and isinstance(cells.get(q), dict) \
+                        and "conflicts" in cells[q]:
+                    c["conflicts"] = cells[q]["conflicts"]
             cells.update({q: c for q, c in fixed.items() if q in {p["question"] for p in problems}})
+            mend_doc_ids(cells, known)
+            for c in cells.values():
+                conflicts.mend_docs(c.get("conflicts") if isinstance(c, dict) else None, known)
             write_json(kit / "answers.json", answers)
             problems = check_kit(kit)
         except HandbookError:
@@ -515,14 +861,18 @@ def run(kit: Path, model: str | None = None, effort: str | None = None) -> dict:
     usage = {k: sum(int((r.get("usage") or {}).get(k) or 0) for r in results) for k in USAGE_KEYS}
     states = Counter(c.get("state") for c in cells.values() if isinstance(c, dict))
     unsure = sum(1 for c in cells.values() if isinstance(c, dict) and c.get("unsure"))
-    mode = "one read" if whole else "one read in parts"
+    mode = "one read" if whole else ("one read, focused" if info.get("focused") else "one read in parts")
     return {"type": "result", "subtype": "success", "is_error": False, "mode": mode, "model": model,
             "effort": effort, "num_turns": len(results), "usage": usage,
             "total_cost_usd": round(sum(float(r.get("total_cost_usd") or 0) for r in results), 4),
             "quote_problems": len(problems),
             "parts": None if whole else info["parts"],
+            "look": [r["look"] for r in results if r.get("look")] or None,     # a focused reading's chosen pieces
             "result": (f"Answered {len(cells)} of {len(qids)} questions in one reading"
-                       + ("" if whole else f" in {info['parts']} parts (the documents are too long for one message)")
+                       + ("" if whole else (f" of chosen pages, as {len(long_docs(kit))} document(s) are too long to send "
+                                            f"whole" + (f", in {info['parts']} parts" if info["parts"] > 1 else "")
+                                            if info.get("focused") else
+                                            f" in {info['parts']} parts (the documents are too long for one message)"))
                        + f": {states.get('no_evidence', 0)} "
                        f"with no evidence, {unsure} marked unsure"
                        + (f", {len(problems)} quote{'s' if len(problems) != 1 else ''} still not word for word"

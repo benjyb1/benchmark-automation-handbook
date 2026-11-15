@@ -36,7 +36,9 @@ FLAG_WORDS = {"quote_not_found": "Quote not on saved page", "after_cutoff": "Dat
               "todays_version": "Only today's copy of the page",
               "holds_back": "Holds the row below its next level",
               "needs_document": "Needs a document you can add",
-              "page_gone": "Most of the page has gone"}
+              "page_gone": "Most of the page has gone",
+              "set_aside": "Evidence set aside, for you to check",
+              "sources_disagree": "Sources disagree"}
 REASON_WORDS = {"missing_document": "Missing document", "different_document": "Different document",
                 "document_date": "Document date", "rule_reading": "Rule reading",
                 "open_rule": "Undecided rule", "published_blank": "Blank last edition",
@@ -84,6 +86,16 @@ def _cell(answer: dict | None, check: dict | None, documents: dict, sources=None
                 "evidence": [_evidence(e, documents) for e in answer.get("evidence") or []],
                 "rules": list(answer.get("rules") or []), "judgement": bool(answer.get("judgement")),
                 "out_of_date": bool(answer.get("out_of_date"))}
+        doubt = answer.get("unsure")
+        if isinstance(doubt, dict) and doubt.get("why") == "set_aside" and not doubt.get("handled"):
+            # what was set aside and what it would give, for the panel's "Evidence set aside" flag
+            cell["set_aside"] = {k: doubt.get(k) for k in ("note", "doc", "if_accepted")}
+        if isinstance(answer.get("conflicts"), list) and answer["conflicts"]:
+            # the contradiction log (conflicts.py): which documents disagreed and which the answer went with
+            cell["conflicts"] = [{"sides": [{k: s.get(k) for k in ("doc", "page", "says", "kind")}
+                                            for s in e.get("sides") or [] if isinstance(s, dict)],
+                                  "went_with": e.get("went_with"), "why": e.get("why"), "note": e.get("note")}
+                                 for e in answer["conflicts"] if isinstance(e, dict)]
         if isinstance(answer.get("owner"), dict):      # the owner's answer, and Claude's verdict on it
             cell["owner"] = {k: answer["owner"].get(k) for k in OWNER_KEYS}
         if isinstance(answer.get("feedback"), dict):   # what the feedback round decided about it

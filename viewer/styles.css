@@ -2004,6 +2004,7 @@ textarea.input {
   margin-left: var(--s3);
   color: var(--rule-strong);
 }
+.hb-head__facts > span.is-line-end::after { content: none; }
 
 .hb-head__facts strong {
   color: var(--ink);
@@ -2055,6 +2056,13 @@ a.tabs__tab {
 @media (width < 60rem) {
   .hb-head { flex: 1 1 0; min-width: min(100%, 14rem); }
   .hb-tabs { flex: 1 1 100%; order: 3; }
+}
+
+/* Wide, the name and its facts take the first row and the tabs and links the second, for every
+   project: a short name pulled the tabs up beside it and left the links on a row of their own
+   (a real project, design read, 26 Oct 2026). */
+@media (width >= 60rem) {
+  .hb-head { flex: 1 1 100%; }
 }
 
 /* On a phone the head's two lines become items of the bar: the name beside the

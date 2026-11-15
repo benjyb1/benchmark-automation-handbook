@@ -39,6 +39,9 @@ def main(argv) -> int:
         print(f"  {key}: {n} of {summary['of'][key]} agree")
     if len(summary["agree"]) > SHOW:
         print(f"  Showing {SHOW} of {len(summary['agree'])} keys.")
+    blank = sum((summary.get("both_blank") or {}).values())
+    if blank:
+        print(f"  {blank} answer{'s' if blank != 1 else ''} blank in both editions, left out of the counts above.")
     found = data["disagreements"]
     by_reason: dict[str, int] = {}
     for d in found:

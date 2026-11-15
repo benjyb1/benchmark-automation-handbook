@@ -807,7 +807,7 @@
       h("p", { class: "small muted" }, "Add what you have: your questions, the list you score, how scores are worked out, last " +
         "edition's results (strongly advised: it makes the results far more accurate), the methodology and last year's sources."),
       materialDrop(box),
-      files === null ? h("p", { class: "small muted" }, "Looking\u2026")
+      files === null ? h("p", { class: "small muted" }, "Reading the list of your files\u2026")
         : files.length ? h("ul", { class: "su-files small" }, files.map((f) => h("li", null, f.name + " (" + f.kind + ")" +
             (f.chars == null ? ": can't be read" : "")))) : null,
       files && files.length && !job ? (redraft()

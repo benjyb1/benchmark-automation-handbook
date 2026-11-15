@@ -11,7 +11,7 @@ import re
 from datetime import date, datetime
 from pathlib import Path
 
-from . import answers
+from . import answers, conflicts
 from . import edition as editions
 from .folder import CHECKLIST_KEYS, CHECKLIST_STATUSES, ID_RE, Project
 
@@ -35,15 +35,15 @@ RAISED_BY = ("setup", "trial", "run", "owner")
 VIA = ("chat", "viewer")
 NEED_STATUSES = ("needed", "supplied", "waived")
 HOW = ("plan", "search", "last_year", "provided")
-DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture", "url")
+DATE_BASES = ("pdf metadata", "page text", "http header", "owner", "finder", "archive capture", "url", "law text")
 HOST_TYPES = ("issuer", "repository", "third_party", "test_server", "none")
-TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr")
+TEXT_SOURCES = ("rendered", "archive", "archive_rendered", "ocr", "data_service")
 RECHECK_RESULTS = ("same", "unreachable")      # a change is a new copy of its own, not a check on this one
 CELL_STATES = ("answered", "no_evidence", "not_applicable", "not_run")
-UNSURE_WHY = ("rule", "document")
+UNSURE_WHY = ("rule", "document", "set_aside")
 FLAGS = ("quote_not_found", "after_cutoff", "reads_disagree", "group_differs", "judgement",
          "weak_source", "document_changed", "owner_changed", "todays_version", "holds_back",
-         "needs_document", "page_gone")
+         "needs_document", "page_gone", "set_aside", "sources_disagree")
 RUN_KINDS = ("trial", "full", "rerun")
 USAGE_STEPS = ("find", "second_find", "score", "second")
 RECEIPT_KEYS = ("fresh", "cache_read", "output", "turns")
@@ -1011,9 +1011,12 @@ def _check_cell(out, qid, c, q):
         out.text(unsure, "note", f"{w}: unsure", empty_ok=True)
         out.boolean(unsure, "handled", f"{w}: unsure", required=False)
         out.text(unsure, "missing", f"{w}: unsure", required=False)   # the document the scorer needed (ingest.py)
+        out.text(unsure, "doc", f"{w}: unsure", required=False)       # set_aside: the document set aside (kit.py)
     out.text(c, "note", w, required=False, nullable=True, empty_ok=True)
     out.text(c, "run", w, required=False, nullable=True)
     out.boolean(c, "out_of_date", w, required=False)
+    for problem in conflicts.problems(c.get("conflicts"), w):     # the contradiction log, when the reader kept one
+        out.append(problem)
 
 
 def _check_owner(out, o, w, value):

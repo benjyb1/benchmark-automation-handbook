@@ -578,7 +578,7 @@ def compare(project: Project) -> dict:
         n["text"] = NOT_COMPARED_TEXT[n["why"]]
 
     keep = _kept(previous, ours_by_row, theirs_by_row)
-    disagreements, agree_counts, of_counts = [], {}, {}
+    disagreements, agree_counts, of_counts, both_blank = [], {}, {}, {}
     for unit in units:
         row = unit.get("id")
         if row not in ours_by_row:
@@ -586,13 +586,21 @@ def compare(project: Project) -> dict:
         cells = cells_by_row[row]
         scored = [q for q in project.questions_for(unit)
                   if isinstance(cells.get(q["id"]), dict) and cells[q["id"]].get("state") in SCORED]
-        ours, theirs = ours_by_row[row], theirs_by_row[row]
+        ours, theirs = dict(ours_by_row[row]), dict(theirs_by_row[row])
+        # Both blank: last edition left the question blank and this edition found no answer either. That agrees with
+        # nothing, so it is counted apart and left out of the rate, top and bottom (29 Oct 2026: a run that answered
+        # none of 8 questions read as 7 of 8 agreeing, because 7 were blank in the key).
+        for k in [k for k in ours if theirs[k] is None and (cells.get(k) or {}).get("state") != "answered"]:
+            both_blank[k] = both_blank.get(k, 0) + 1
+            del ours[k], theirs[k]
+        if not ours:
+            continue
         qmap = {q["id"]: q for q in project.questions_for(unit)}
         tol = results.get("tolerance")
 
         def agrees(k):
-            if theirs[k] is None:                  # left blank last edition: agrees only with no answer found
-                return (cells.get(k) or {}).get("state") != "answered"
+            if theirs[k] is None:                  # left blank last edition and answered here (both blank is apart)
+                return False
             # A tolerance (last results that are a panel's mean, as Food-EPI's are) applies to answers.
             if k in qmap and _number(tol) and _number(ours[k]) and _number(theirs[k]):
                 return abs(ours[k] - theirs[k]) <= tol + 1e-9
@@ -627,6 +635,8 @@ def compare(project: Project) -> dict:
            "summary": {"rows": len(rows),
                        "agree": {k: agree_counts[k] for k in key_order},
                        "of": {k: of_counts[k] for k in key_order},
+                       "both_blank": {k: both_blank[k] for k in sorted(both_blank, key=lambda k: order.index(k)
+                                                                     if k in order else len(order))},
                        "not_compared": not_compared,
                        "as_at": as_at},
            "history": history,

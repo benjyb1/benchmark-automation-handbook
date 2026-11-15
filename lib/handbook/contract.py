@@ -5,6 +5,8 @@ keys, no scorer's note or last-year material in cells, page under 16 MB, at most
 """
 from __future__ import annotations
 
+import re
+
 from .bundle import CONTRACT
 from .custom_charts import bundle_problems
 from .folder import applies
@@ -21,6 +23,9 @@ TOP_KEYS = {"contract": _STR, "generated": _STR, "project": _DICT, "provided": _
             "applied_edits": _LIST, "corrections": _LIST}
 NEVER_ANYWHERE = ("held_back",)
 NEVER_IN_CELLS = ("note", "last_year", "last_year_note", "unsure")
+# A cell's own note is the scorer's private working; these notes are written for the owner and the
+# cell panel shows them: evidence set aside under a rule, and each entry of the contradiction log.
+_SHOWN_NOTE = re.compile(r"\.(set_aside|conflicts\[\d+\])$")
 
 
 def _keys(obj, where: str):
@@ -61,7 +66,7 @@ def validate(bundle: dict, page_size: int | None = None, data_files: dict | None
             probs.append(f"{where} holds the key {key!r}; held-back results reach the viewer only "
                          "through compare")
     for key, where in _keys(bundle["cells"], "cells"):
-        if key in NEVER_IN_CELLS:
+        if key in NEVER_IN_CELLS and not (key == "note" and _SHOWN_NOTE.search(where)):
             probs.append(f"{where} holds the key {key!r}, which must not reach the viewer")
 
     units = {u.get("id"): u for u in bundle["units"] if isinstance(u, dict)}

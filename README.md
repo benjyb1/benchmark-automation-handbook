@@ -15,7 +15,7 @@ For charities and NGOs that run a benchmark by hand: a ranking, scorecard or ind
 1. Get a paid Claude plan (Pro or Max) and install the Claude desktop app from claude.com/download. The free plan doesn't include the Code tab.
 2. Open the Claude app and click the **Code** tab.
 3. Copy the prompt at the top of this page and paste it in.
-4. Answer its questions. It asks before installing anything. If it asks to run a step, click **Allow**. After about ten minutes, your benchmark's page opens in your browser.
+4. Answer its questions. It asks before installing anything. If it asks to run a step, click **Allow**. It doesn't take over your screen, mouse or keyboard unless you say yes. If a step can't run from the chat, it gives you a line to paste into Terminal instead. After about ten minutes, your benchmark's page opens in your browser.
 
 From then on everything happens in that page, and its Claude button (bottom right) walks you through the rest, starting with whether your benchmark suits the tool. To come back another day, double-click **Open <your benchmark>** on your Desktop.
 

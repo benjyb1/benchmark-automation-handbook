@@ -49,7 +49,8 @@ def _faults(text: str, what: str, limit: int | None, owners: bool = False) -> li
     if SNAKE.search(t) or CAMEL.search(t):
         bad = (SNAKE.search(t) or CAMEL.search(t)).group(0)
         out.append(f"The {what} has a programmer's word (\"{bad}\"): use ordinary words.")
-    if len(t) > 12 and t.upper() == t and re.search(r"[A-Z]{3}", t):
+    cased = [c for c in t if c.lower() != c.upper()]    # letters that have capitals at all (not Arabic, Chinese)
+    if len(cased) >= 8 and all(c.isupper() for c in cased):
         out.append(f"The {what} is all in capitals.")
     if limit and len(t.strip()) > limit:
         out.append(f"The {what} is long ({len(t.strip())} characters; at most {limit} fits well).")
@@ -70,7 +71,9 @@ def _case(text: str) -> str | None:
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower().replace("&", "and"))
+    # Letters and digits of any script: a-z alone made every Arabic or Chinese name "" and so "the same"
+    # (stress test, 27 Oct 2026).
+    return re.sub(r"[\W_]+", "", str(text or "").casefold().replace("&", "and"))
 
 
 def review(project) -> list[dict]:
@@ -163,4 +166,19 @@ def review(project) -> list[dict]:
                                                "say what it means for the owner instead."])
             if word != "row" and GENERIC_ROW.search(text):
                 add("rule", rid, field, text, [f"Rule {rid}'s {field.replace('_', ' ')} says \"rows\"; the owner calls them {word}s."])
+    # Names the page found don't fit where it shows them, on any tab (layout.py: the page checks every
+    # tab once the names change), so set-up shortens its own before handing over.
+    from . import layout
+    words = {"broken_word": "breaks a word across two lines", "cut_off": "is cut off",
+             "spills": "runs out of its box"}
+    seen = set()
+    for f in layout.problems(project, own_words_only=True):
+        src, key = f.get("source") or {}, (f.get("text"), f.get("kind"))
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append({"where": {"kind": src.get("kind"), "id": src.get("id"), "field": src.get("field")},
+                      "text": f.get("text") or "",
+                      "problem": f"\"{f.get('text')}\" {words.get(f.get('kind'), 'does not fit')} on the "
+                                 f"{f.get('view') or 'page'} tab; a shorter name would fit."})
     return found

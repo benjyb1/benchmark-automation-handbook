@@ -33,11 +33,12 @@ a last-year address cannot get through in any form.
 """
 from __future__ import annotations
 import json
+import re
 import shutil
 from collections import Counter
 from pathlib import Path
 
-from . import answers, needs
+from . import answers, conflicts, needs, system
 from .folder import HandbookError, Project, write_json
 from .quotecheck import capture_id, page_hash
 
@@ -232,7 +233,7 @@ def late_documents(project: Project, row: str) -> dict[str, str]:
     if not is_date(cutoff):
         return {}
     metas = project.documents()
-    return {d: str(metas[d].get("date")) for d in project.found(row).get("documents") or []
+    return {d: str(metas[d].get("date") or (metas[d].get("law") or {}).get("year")) for d in project.found(row).get("documents") or []
             if d in metas and _after_cutoff(metas[d], cutoff)}
 
 
@@ -294,6 +295,106 @@ def contained(project: Project, docs: list[str]) -> dict[str, str]:
     return out
 
 
+# Two saves of the same text at different addresses (a gazette scan, an archive's scan of the same gazette, a law
+# database's retyped copy) share only some of their lines and word runs, because scanning and retyping differ, so
+# `contained` misses them. One copy goes in the kit: the owner's, else one not marked weak, else one on the row's
+# own country domain, else the cleanest text. the open-data benchmark Senegal, 4 Nov 2026: the budget law (LOLF) three times and the
+# accounting decree twice, about 95k tokens a read, and the reader quoted article 70 from one copy and missed
+# articles 43 and 44 in another, a scan whose text was too garbled to search.
+COPY_SHARE = 0.4             # share of the smaller text's three-word runs that are in the larger
+COPY_SIZE = 0.6              # the smaller text has at least this share of the larger's runs
+COPY_MIN_RUNS = 2000         # texts with fewer different three-word runs (landing pages, menus, a scan read only on
+                             # its cover page) are never paired as copies
+COPY_SAME_SITE = 0.95        # two pages on one site share menus and footers: copies only when this alike both ways
+NOT_A_DATE = ("pdf metadata", None, "")    # date bases that may be a file's save date, not the text's version
+
+
+def _words_of(project: Project, doc: str) -> list[str]:
+    import unicodedata
+    text = " ".join(str(p.get("text") or "") for p in project.pages(doc) if isinstance(p, dict))
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _home_tld(project: Project, docs: list[str]) -> str | None:
+    """The two-letter country domain most of the row's documents not marked weak sit on, if any."""
+    from urllib.parse import urlparse
+    from .fetch import is_weak
+    metas = project.documents()
+    tlds = Counter()
+    for d in docs:
+        host = urlparse(str((metas.get(d) or {}).get("url") or "")).hostname or ""
+        last = host.rsplit(".", 1)[-1]
+        if len(last) == 2 and last.isalpha() and not is_weak(metas.get(d)):
+            tlds[last] += 1
+    return tlds.most_common(1)[0][0] if tlds else None
+
+
+def _host(meta) -> str:
+    from urllib.parse import urlparse
+    host = urlparse(str((meta or {}).get("url") or "")).hostname or ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _versions_differ(a: dict, b: dict) -> bool:
+    """True when both copies carry a stated date (not a file's save date) and the years differ: an Act and its
+    later consolidated version are two texts."""
+    if a.get("date_basis") in NOT_A_DATE or b.get("date_basis") in NOT_A_DATE:
+        return False
+    return str(a.get("date") or "")[:4] != str(b.get("date") or "")[:4]
+
+
+def copies(project: Project, docs: list[str], keep=()) -> dict[str, str]:
+    """{doc: the copy kept in its place} for documents that are another copy of the same text: their three-word
+    runs overlap by COPY_SHARE or more and their sizes by COPY_SIZE (two pages on one site: COPY_SAME_SITE both ways),
+    and they are not two dated versions (_versions_differ). In each group one copy stays:
+    the owner's, one not marked weak, one on the row's own country domain, then the cleanest (the most of its words
+    found in the other copies, so a garbled scan loses), then the longest. Documents in `keep` always stay."""
+    from .fetch import is_weak
+    metas = project.documents()
+    words = {d: _words_of(project, d) for d in docs}
+    runs = {d: {" ".join(w[i:i + 3]) for i in range(len(w) - 2)} for d, w in words.items()}
+    runs = {d: r for d, r in runs.items() if len(r) >= COPY_MIN_RUNS}
+    group = {d: d for d in runs}
+
+    def top(d):
+        while group[d] != d:
+            d = group[d]
+        return d
+    ids = list(runs)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            small, large = sorted((len(runs[a]), len(runs[b])))
+            if small < COPY_SIZE * large or _versions_differ(metas.get(a) or {}, metas.get(b) or {}):
+                continue
+            share = COPY_SAME_SITE * large if _host(metas.get(a)) == _host(metas.get(b)) else COPY_SHARE * small
+            if len(runs[a] & runs[b]) >= share:
+                group[top(a)] = top(b)
+    groups: dict[str, list[str]] = {}
+    for d in ids:
+        groups.setdefault(top(d), []).append(d)
+    home = _home_tld(project, docs)
+    out: dict[str, str] = {}
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        vocab = {d: set(words[d]) for d in members}
+
+        def clean(d):
+            mine = {w for w in vocab[d] if len(w) >= 3 and not w.isdigit()}
+            others = set().union(*(vocab[o] for o in members if o != d))
+            return len(mine & others) / max(1, len(mine))
+
+        def rank(d):
+            meta = metas.get(d) or {}
+            host = _host(meta)
+            return (meta.get("provided_by_owner") is True, not is_weak(meta),
+                    bool(home) and (host.endswith("." + home) or host == home), round(clean(d), 2), len(words[d]), -docs.index(d))
+        best = max(members, key=rank)
+        out.update({d: best for d in members if d != best and d not in keep})
+    return out
+
+
 def _write_docs(project: Project, row: str, docs_dir: Path, qwords: set | None = None,
                 skip=(), keep=()) -> tuple[dict, dict]:
     """Copy the row's found documents into `docs_dir`; returns ({"kept": n, "not_kept": n, "pictures": n,
@@ -308,7 +409,10 @@ def _write_docs(project: Project, row: str, docs_dir: Path, qwords: set | None =
                         for d in set(project.found(u["id"]).get("documents") or []))
     inside = {a: b for a, b in contained(project, [d for d in found if d in metas]).items() if a not in keep}
     found = [d for d in found if d not in inside]
-    counts["inside"] = len(inside)
+    copy_of = copies(project, [d for d in found if d in metas], keep)
+    found = [d for d in found if d not in copy_of]
+    inside = {a: copy_of.get(b, b) for a, b in inside.items()}    # name the copy that stays
+    counts["inside"], counts["copies"] = len(inside), len(copy_of)
     plan, counts["pictures_left_out"] = _picture_plan(project, [d for d in found if d in metas], qwords)
     counts["poor_pictures"] = [[doc, number] for (doc, number) in plan
                                if any(p.get("poor") and (p.get("page") or 0) == number for p in project.pages(doc))]
@@ -355,6 +459,8 @@ def _write_docs(project: Project, row: str, docs_dir: Path, qwords: set | None =
     text = index_text(index, counts["pictures_left_out"])
     if inside:
         text += "\n" + "".join(f"{a} is left out: its text is in {b}.\n" for a, b in inside.items())
+    if copy_of:
+        text += "\n" + "".join(f"{a} is left out: it is another copy of {b}.\n" for a, b in copy_of.items())
     (docs_dir / INDEX).write_text(text, encoding="utf-8")
     return counts, captures
 
@@ -378,7 +484,8 @@ def index_text(index, left_out: int = 0) -> str:
     picture says so, and says when its words were read from a picture by a text reader."""
     lines = ["# What is in docs/", "",
              "One line per page: the page file and its first words. Search the page files for the "
-             "words you need (grep -il), then read the pages that match.", ""]
+             + ("words you need (grep -il), then read the pages that match." if system.sandboxed() else
+              "words you need with the Grep tool, then read the pages that match."), ""]
     for doc, meta, pages in index:
         lines.append(f"## {doc}: {meta.get('title') or 'untitled'} ({meta.get('language') or 'language unknown'}, "
                      f"{len(pages)} page{'s' if len(pages) != 1 else ''})")
@@ -423,12 +530,22 @@ EXAMPLE = {"row": "ROW", "cells": {
                           "quote": "Exact words copied from p004.txt.",
                           "quote_en": "Your English translation, or the same words if the page is English.",
                           "language": "da"}],
-            "note": "One sentence on why this level fits.", "unsure": None},
+            "note": "One sentence on why this level fits.", "unsure": None, "conflicts": []},
     "4.3": {"state": "no_evidence", "value": None, "evidence": [],
             "note": "One sentence on what you searched for.",
             "unsure": {"why": "document", "note": "The definition this turns on is in another act, which is not here.",
-                       "missing": "The Example Act 2019"}},
+                       "missing": "The Example Act 2019"}, "conflicts": []},
 }}
+
+
+# An open-data benchmark, 30 Oct 2026: undated course pages and a 2018 land layer were set aside under the dating rule, and every answer
+# that hung off them went to No with nothing to show a person what had been found (Kenya land use, 15 of 19).
+SET_ASIDE = ("A question can turn on evidence you found but set aside under a rule: a page with no date, or a date outside the study period, where the rules ask for one; a copy not from an official source, where the rules ask for one. Answer by the rule, and when that evidence would have given a different value, add unsure {\"why\": \"set_aside\", \"note\": what you set aside and why, \"doc\": its document id, \"if_accepted\": the value it would give}. A person then decides, and every answer resting on that document moves with the decision, so give it wherever it applies, including questions that only follow from the one it settles.")
+
+
+# An open-data benchmark, 30 Oct 2026: procurement answers on identifiers, document links and bulk downloads rested on pages that
+# describe the data; a project with "probe": true files what opening it showed (cmd_probe.py) and asks for proof.
+PROBE = ("A document titled \"Probe of ...\" records what this tool saw on the date it gives when it opened links on a saved portal or list page and read the first part of its data files: which links opened, and the columns or fields each file holds. For a question on whether data has a field or identifier, whether its links or documents open, or whether it comes as a download or in a machine-readable format, answer from the probe and quote it. A page that only says the data has a feature is a claim, not proof: without a probe line that shows it, do not give the top level, and mark the cell unsure (why \"document\") with the data file as missing.")
 
 
 def _example(row_id: str) -> str:
@@ -440,7 +557,7 @@ def _example(row_id: str) -> str:
     for i, (qid, c) in enumerate(items):
         lines.append(f' {d(qid)}: {{"state": {d(c["state"])}, "value": {d(c["value"])},')
         lines.append(f'  "evidence": {d(c["evidence"])},')
-        lines.append(f'  "note": {d(c["note"])}, "unsure": {d(c["unsure"])}}}'
+        lines.append(f'  "note": {d(c["note"])}, "unsure": {d(c["unsure"])}, "conflicts": {d(c["conflicts"])}}}'
                      + ("," if i < len(items) - 1 else ""))
     lines.append("}}")
     return "\n".join(lines)
@@ -504,9 +621,13 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         f"2. Read {qfile} first and follow each question's coding rule and the rulings its rules list "
         f"names. A ruling marked \"decided\" is settled. A ruling marked \"{UNDECIDED}\" is still open "
         "with the owner: apply that reading.",
-        "3. Read docs/index.md, then search the page files before reading them, from this folder, for "
-        "example grep -il \"policy\" docs/*/p*.txt, then read the pages the search finds. Do not read every "
-        "page of every document. Work in few steps: one search over all the pages for the words of "
+        ("3. Read docs/index.md, then search the page files before reading them, from this folder, for "
+         "example grep -il \"policy\" docs/*/p*.txt, then read the pages the search finds. Do not read every "
+         if system.sandboxed() else
+         "3. Read docs/index.md, then search the page files before reading them with the Grep tool (for example "
+         "the pattern policy, case-insensitive, over docs/ with the glob p*.txt, listing file names), then read "
+         "the pages the search finds. You cannot run commands here. Do not read every ")
+        + "page of every document. Work in few steps: one search over all the pages for the words of "
         "several questions at once, then read whole pages.",
         *(["   Look at a picture (open the .jpg with the Read tool) only when where something sits or how it "
            "looks is what matters: which column a figure is in, which logos are in a row, what a chart shows, "
@@ -546,6 +667,9 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         "expect seems to be missing, still give your best answer and add "
         "unsure: {\"why\": \"rule\", \"note\": \"...\"} or {\"why\": \"document\", \"note\": \"...\"}. "
         "Otherwise unsure is null. Never give a confidence score or a percentage.",
+        "   " + SET_ASIDE,
+        "   " + conflicts.BRIEF,
+        *(["   " + PROBE] if project.read("project").get("probe") else []),
         "   A question can turn on a document that is not in this folder: another law, regulations, a definition "
         "set out elsewhere, a form. Search this folder for it once. If it is not here, stop looking: answer from "
         "what you have, add \"missing\": the document's name (with its year and country when you know them) to "
@@ -562,10 +686,13 @@ def brief_text(project: Project, row: dict, kit: Path, n_questions: int, counts:
         example,
         "```",
         "",
-        f"Before you finish, run python3 {SELF_CHECK} {afile} from this folder. It lists every quote "
-        "that is not word for word on a page of its document. Fix each one by copying the words from "
-        "the page file, or by citing the page that holds them, and run it again until it lists none. "
-        f"Then check that every question in {qfile} has an entry and {afile} is valid JSON.",
+        (f"Before you finish, run python3 {SELF_CHECK} {afile} from this folder. It lists every quote "
+         "that is not word for word on a page of its document. Fix each one by copying the words from "
+         "the page file, or by citing the page that holds them, and run it again until it lists none. "
+         if system.sandboxed() else
+         "Copy every quote exactly from the page file. When you finish, the tool checks that each quote is "
+         "word for word on a page of its document and sends back any that are not. ")
+        + f"Then check that every question in {qfile} has an entry and {afile} is valid JSON.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -634,6 +761,9 @@ def reading_text(project: Project, row: dict, n_questions: int, counts: dict, fi
         "\"missing\": its name, with its year and country when you know them; give the same name wherever it is "
         "missing. A question about what a list, register or file holds, answered only from a page that describes it, "
         "is unsure (why \"document\") with the file as missing. Never give a confidence score or a percentage.",
+        SET_ASIDE,
+        conflicts.BRIEF,
+        *([PROBE] if project.read("project").get("probe") else []),
         "",
         "Reply with only the answers file, in exactly this shape (the ids, documents and words here are made up; use "
         "the ids from the questions):",

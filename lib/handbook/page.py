@@ -175,6 +175,30 @@ def _copy_out(viewer: Path, out: Path, names: list[str]) -> None:
             old.unlink()
 
 
+def too_big_words(bundle, page_bytes: int, biggest_file: int) -> list[str]:
+    """What an owner reads when the benchmark is too big for the page: how big, the limit, what to do."""
+    rows, qs = len(bundle.get("units") or []), len(bundle.get("questions") or [])
+    size = max(page_bytes, biggest_file) / 1_000_000
+    return [f"This benchmark is too big to show on one page. Its data would come to {size:.1f} MB, and a page can "
+            f"hold 16 MB.",
+            f"It has {rows:,} rows and {qs:,} questions, which is up to {rows * qs:,} answers to show at once.",
+            "Split the rows into two or more projects, for example by region or by sector, and each one will "
+            "open. Your set-up, documents and answers are safe in the project folder."]
+
+
+_TOO_BIG = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<style>
+  body {{ margin: 0; background: #f4f4ef; color: #1d2320; font: 16px/1.55 -apple-system, "Segoe UI", system-ui, sans-serif; }}
+  main {{ max-width: 38rem; margin: 12vh auto; padding: 0 1.25rem; }}
+  h1 {{ margin: 0 0 1rem; font: 600 1.5rem/1.3 Georgia, serif; }}
+  p {{ margin: 0 0 .9rem; }}
+</style></head>
+<body><main><h1>{title}</h1>{words}</main></body></html>
+"""
+
+
 def build(project: Project, now: datetime, out=None) -> dict:
     """Write `viewer/` and return the publish info (also written as `viewer/publish.json`):
 
@@ -202,6 +226,14 @@ def build(project: Project, now: datetime, out=None) -> dict:
                   scripts=join_scripts(VIEWER_SRC / "js")[0])
     problems = validate(bundle, page_size=len(page.encode("utf-8")),
                         data_files={k: len(v.encode("utf-8")) for k, v in data_files.items()})
+    if problems and all("16 MB limit" in p for p in problems):
+        # Too big for the page: say so on the page itself. It stayed blank before, showing the last build
+        # or none (400 questions by 1,500 rows, stress test, 27 Oct 2026).
+        said = too_big_words(bundle, len(page.encode("utf-8")), max(len(v.encode("utf-8")) for v in data_files.values()))
+        _write(viewer / "page.html", _TOO_BIG.format(title=html.escape(page_title(bundle["project"])),
+                                                     words="".join(f"<p>{html.escape(w)}</p>" for w in said)))
+        _write(viewer / "index.html", _PREVIEW.format(page=_read(viewer / "page.html")))
+        raise HandbookError("The page was not built: " + " ".join(said))
     if problems:
         raise HandbookError("The viewer was not built; the bundle breaks its contract:\n"
                             + "\n".join(f"  {p}" for p in problems))

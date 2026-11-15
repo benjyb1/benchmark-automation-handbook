@@ -4,6 +4,8 @@ This is the only file that is specific to Claude. The skills say "build and publ
 
 In the commands below, `<lib>` is the plugin's `lib` folder and `<project>` is the project folder (see the skills).
 
+Never take control of the owner's screen, mouse or keyboard (computer use, Claude in Chrome, screenshots, scripts that click or type in their apps) unless they say yes to it. Run commands with your own command tool. When something cannot be done that way, tell them exactly what to type or click first, and only then offer, once and as a choice, to do that one step on their screen. Many owners and their IT teams are wary of an AI working their computer.
+
 ## The page on the owner's own computer (`hb serve`)
 
 The page can also run in the owner's normal browser, served from their computer, with no published artifact: `"<lib>/hb" serve --project "<project>"`. It prints the address and opens the browser; with `--no-browser` it only prints it. Run a second time for a project already being served, it opens the running page and exits. Started with no project, it opens the last one used.

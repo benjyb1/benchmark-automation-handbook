@@ -15,6 +15,9 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+# Python reads and writes UTF-8 whatever the computer's language settings (Linux can be set otherwise).
+export PYTHONUTF8=1
+
 # Only uv's own Python, never the Mac's python3: without Apple's developer tools that one opens a
 # 1-2 GB install dialog.
 UV_PYTHON_PREFERENCE=only-managed exec uv run --quiet --script "$here/hb.py" "$@"

@@ -69,6 +69,7 @@
     if (!id) return null;
     const t = teamState();
     if (t.members && t.members[id]) return t.members[id];
+    if (t.reviewers && t.reviewers[id]) return t.reviewers[id];      // a colleague who reviewed in Excel (review.py)
     const me = st().user || {};
     return me.id === id ? me.name || null : null;
   }
@@ -107,7 +108,8 @@
   function tickText(checked) {
     const by = checked && typeof checked === "object" ? checked.by : null;
     const n = nameOf(by);
-    return "✓" + (n && teamState().on ? initials(n) : "");
+    const reviewer = Boolean(by) && String(by).indexOf("r-") === 0;
+    return "✓" + (n && (teamState().on || reviewer) ? initials(n) : "");
   }
 
   /* ---- The cell panel ------------------------------------------------------------ */
@@ -199,7 +201,7 @@
   async function open(section) {
     if (!local() || !HB.drawer) return;
     const body = h("div", { class: "ht-panel" }, h("p", { class: "muted" }, "Loading..."));
-    HB.drawer.open(teamState().on ? "Team" : "Share and snapshots", body, { kicker: teamState().on ? "Working together" : "This project" });
+    HB.drawer.open(teamState().on ? "Team" : "Share and review", body, { kicker: teamState().on ? "Working together" : "This project" });
     await fill(body, section);
   }
 
@@ -224,9 +226,11 @@
       parts.push(clashesPart(info, redo));
       if (info.online_only) parts.push(folderPart(info));
       parts.push(peoplePart(info, redo));
+      parts.push(await reviewPart(redo));
       parts.push(logPart(info));
     } else {
       parts.push(namePart(info, redo));
+      parts.push(await reviewPart(redo));
       parts.push(await sharePart());
     }
     parts.push(backupsPart(backups.backups || [], redo));
@@ -387,6 +391,105 @@
       places.length ? h("div", { class: "ht-places", role: "radiogroup", "aria-label": "Shared folders on this computer" }, radios)
         : h("p", { class: "muted" }, "No Dropbox, Google Drive or OneDrive folder was found on this computer. Install one, or paste the path of a shared folder."),
       other, h("div", { class: "ht-acts" }, btn), msg);
+  }
+
+  /* ---- Review in Excel (review.py) ------------------------------------------------------------ */
+
+  function reviewItems(list, withWhy) {
+    return h("ul", { class: "ht-log" }, list.map((x) => h("li", null,
+      h("b", null, x.unit + ", " + x.question), " ",
+      h("span", { class: "muted" }, (x.name ? x.name + ". " : "") + (withWhy && x.why ? x.why + " " : "") +
+        (x.comment ? "“" + x.comment + "”" : "")))));
+  }
+
+  function reviewSummary(s) {
+    if (!s) return null;
+    const bits = [];
+    if ((s.checked || []).length) bits.push(s.checked.length + " checked");
+    if ((s.corrected || []).length) bits.push(s.corrected.length + " changed");
+    if ((s.to_look_at || []).length) bits.push(s.to_look_at.length + " to look at");
+    if ((s.skipped || []).length) bits.push(s.skipped.length + " left alone");
+    const who = Object.entries(s.people || {}).map(([n, c]) => n + " (" + c + ")").join(", ");
+    return h("div", { class: "stack", id: "ht-review-last" },
+      h("p", null, h("b", null, "From the workbook " + (s.made ? "made " + when(s.made) : s.file) + ". "), bits.length ? bits.join(", ") + "." : "Nothing was marked yet.",
+        who ? " Reviewed by " + who + "." : ""),
+      (s.corrected || []).length ? h("details", { open: true }, h("summary", null, "Changed (" + s.corrected.length + ")"),
+        h("ul", { class: "ht-log" }, s.corrected.map((x) => h("li", null, h("b", null, x.unit + ", " + x.question), " ",
+          h("span", { class: "muted" }, (x.from != null ? x.from + " to " : "now ") + x.to + ", by " + x.name +
+            (x.comment ? ". “" + x.comment + "”" : "")))))) : null,
+      (s.to_look_at || []).length ? h("details", { open: true }, h("summary", null, "To look at (" + s.to_look_at.length + ")"),
+        reviewItems(s.to_look_at, true)) : null,
+      (s.skipped || []).length ? h("details", null, h("summary", null, "Left alone (" + s.skipped.length + ")"),
+        reviewItems(s.skipped, true)) : null);
+  }
+
+  let reviewNote = null;      // the last send's message, shown again after the panel redraws
+
+  async function reviewPart(redo) {
+    let info = { workbooks: [] };
+    try {
+      info = await getJSON("team/review");
+    } catch (err) {
+      info = { workbooks: [] };
+    }
+    const books = info.workbooks || [];
+    const msg = h("div", { role: "status" });
+    const send = h("button", { type: "button", class: "btn btn--primary btn--small", id: "ht-review-send" }, "Send for review");
+    send.addEventListener("click", async () => {
+      send.disabled = true;
+      msg.replaceChildren(HB.notice("neutral", "Making the workbook..."));
+      try {
+        const r = await local().post("team/review/send", {});
+        reviewNote = "Saved a workbook of " + r.answers + " answers in the review folder" +
+          (r.opened ? ", which has opened. " : ". ") + "Share it with your colleagues. If this project is in OneDrive, SharePoint, " +
+          "Google Drive or Dropbox, they can all work in it at once.";
+        await redo();
+      } catch (err) {
+        send.disabled = false;
+        msg.replaceChildren(HB.notice("warning", err.message));
+      }
+    });
+    const acts = [send];
+    let pick = null;
+    if (books.length) {
+      pick = h("select", { class: "input", id: "ht-review-file", "aria-label": "Which review workbook" },
+        books.map((b, i) => h("option", { value: b.file, selected: i === 0, title: b.file },
+          (i === 0 ? "Newest workbook, saved " : "Workbook saved ") + when(b.modified))));
+      const bring = h("button", { type: "button", class: "btn btn--small", id: "ht-review-bring" }, "Bring in reviews");
+      bring.addEventListener("click", async () => {
+        bring.disabled = true;
+        msg.replaceChildren(HB.notice("neutral", "Reading the workbook..."));
+        try {
+          const r = await local().post("team/review/bring-in", { file: pick.value });
+          msg.replaceChildren(reviewSummary(r));
+          await local().refresh();
+        } catch (err) {
+          msg.replaceChildren(HB.notice("warning", err.message));
+        }
+        bring.disabled = false;
+      });
+      const show = h("button", { type: "button", class: "btn btn--small btn--quiet", id: "ht-review-open" }, "Show the folder");
+      show.addEventListener("click", async () => {
+        try {
+          const r = await local().post("team/review/open", {});
+          if (!r.opened) msg.replaceChildren(HB.notice("neutral", "The review folder is " + r.path + "."));
+        } catch (err) {
+          msg.replaceChildren(HB.notice("warning", err.message));
+        }
+      });
+      acts.push(bring, show);
+    }
+    if (reviewNote) {
+      msg.replaceChildren(HB.notice("good", reviewNote));
+      reviewNote = null;
+    }
+    return h("section", { id: "ht-review" }, h("h3", null, "Review in Excel"),
+      h("p", null, "Send every answer to colleagues as one Excel workbook, with the evidence for each. They don't need the tool " +
+        "or a Claude plan. They mark what they agree with and what should change, and you bring their marks back in here."),
+      h("p", { class: "small muted" }, "A tick shows as checked under the reviewer's name. A different answer goes in as a correction, " +
+        "and the earlier answer stays in that answer's history. Anything they weren't sure about is listed for you to look at."),
+      pick, h("div", { class: "ht-acts" }, acts), msg,
+      info.last ? h("details", null, h("summary", null, "Last time reviews were brought in"), reviewSummary(info.last)) : null);
   }
 
   function backupsPart(list, redo) {

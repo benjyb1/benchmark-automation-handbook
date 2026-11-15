@@ -18,13 +18,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import edition
+from . import edition, system
 from .claude_cli import MIN_VERSION, MODEL, too_old
 from .cli import command_parser
 from .folder import default_root, protected_folder, synced_folder_warning
 
 OK, WARN, BLOCKED = "ok", "attention", "blocked"
 INSTALL_CLAUDE = "curl -fsSL https://claude.ai/install.sh | bash"
+INSTALL_CLAUDE_WINDOWS = "irm https://claude.ai/install.ps1 | iex"     # in PowerShell
+LINUX_SANDBOX = ("bwrap", "socat")       # Claude Code's Bash sandbox on Linux: bubblewrap and socat
 SIGN_IN = "claude auth login --claudeai"
 PROBE_URL = "https://example.com"
 PROBE_WORDS = "Example Domain"
@@ -51,10 +53,11 @@ def python_checks() -> list[dict]:
     from . import ocr
     reader = ocr.engine()
     found.append(check("Words in pictures", OK, "Ready (the Mac's own text reader)." if reader == "vision"
+                       else "Ready (Windows' own text reader)." if reader == "windows"
                        else "Ready (tesseract)." if reader else "", None) if reader else
                  check("Words in pictures", WARN, "No program on this computer can read the words in a picture, so "
                        "pictures and scanned pages are kept and shown to the scorer but their text is empty.",
-                       "On a Mac this is built in. Elsewhere, install tesseract."))
+                       "On a Mac and on Windows this is built in. On Linux, install tesseract (sudo apt install tesseract-ocr)."))
     return found
 
 
@@ -77,9 +80,9 @@ def edition_checks() -> list[dict]:
         found.append(check("Download key", WARN, "No download key is saved on this computer, so the tool cannot "
                            "fetch updates of the Full version.",
                            "Ask whoever gave you the Full version for your key, then paste the set-up line again."))
-    elif mode & 0o077:
+    elif mode & 0o077 and not system.windows():     # Windows keeps the home folder per person instead
         found.append(check("Download key", WARN, "Your download key is saved, but other people on this computer "
-                           "could read the file.", f"Run chmod 600 {path} in Terminal, or ask Claude to do it."))
+                           "could read the file.", f"Run chmod 600 {path} in {terminal()}, or ask Claude to do it."))
     else:
         found.append(check("Download key", OK, "A download key is saved for updates (it is not shown)."))
     return found
@@ -105,7 +108,11 @@ def render_checks() -> list[dict]:
     web archive when it has them, and are otherwise left out: every quote from such a page would
     then be a quote not found."""
     from . import render
-    has_chrome = any(p.is_dir() for p in CHROME_APPS)
+    if system.mac():
+        has_chrome = any(p.is_dir() for p in CHROME_APPS)
+    else:
+        browser = system.app_browser()
+        has_chrome = bool(browser) and "chrom" in Path(browser).name.lower()
     if not has_chrome:
         return [check("Reading script-built pages", WARN, "Google Chrome is not installed, so pages that build "
                       "their text with a script can only come from the web archive, and some will be left out.",
@@ -118,8 +125,32 @@ def render_checks() -> list[dict]:
 
 
 def claude_path() -> str | None:
+    local = Path.home() / ".local" / "bin"
     return shutil.which("claude") or next(
-        (str(p) for p in [Path.home() / ".local" / "bin" / "claude"] if p.is_file()), None)
+        (str(p) for p in [local / "claude", local / "claude.exe"] if p.is_file()), None)
+
+
+def terminal() -> str:
+    """What the owner's command window is called here."""
+    return "PowerShell" if system.windows() else "Terminal"
+
+
+def sandbox_checks() -> list[dict]:
+    """Whether the fence round the commands Claude runs is there. On a Mac it is built in. Linux needs
+    bubblewrap and socat; without them every scorer would refuse to start. Native Windows has no such
+    fence, so there the scorer runs no commands at all and the file rules keep it in the row's folder."""
+    if system.windows():
+        return [check("Keeping scoring blind", OK, "On Windows Claude runs no commands while it scores: it reads "
+                      "and searches each row's folder with its own tools, and the tool's rules keep it out of "
+                      "your other folders.")]
+    if system.linux():
+        missing = [t for t in LINUX_SANDBOX if shutil.which(t) is None]
+        if missing:
+            return [check("Keeping scoring blind", BLOCKED, "Claude Code fences in the commands Claude runs with "
+                          "bubblewrap and socat, and " + " and ".join(missing) + (" is" if len(missing) == 1 else " are")
+                          + " not installed, so no scorer can start.",
+                          "Install them: sudo apt install bubblewrap socat (or sudo dnf install bubblewrap socat).")]
+    return []
 
 
 def auth_status(path: str) -> dict | None:
@@ -154,7 +185,7 @@ def claude_checks(env=os.environ) -> list[dict]:
     path = claude_path()
     if path is None:
         found.append(check("Claude Code command line", BLOCKED, "Not installed. The tool runs Claude through it, "
-                           "on your own Claude plan.", f"Install it: {INSTALL_CLAUDE}"))
+                           "on your own Claude plan.", f"Install it: {INSTALL_CLAUDE_WINDOWS if system.windows() else INSTALL_CLAUDE}"))
     else:
         try:
             version = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
@@ -163,7 +194,7 @@ def claude_checks(env=os.environ) -> list[dict]:
         if too_old(version):
             found.append(check("Claude Code command line", BLOCKED, f"{version}: too old for the model the tool "
                                f"uses ({MODEL}), which needs {'.'.join(map(str, MIN_VERSION))} or later.",
-                               "Update it: run `claude update` in Terminal, or ask Claude to do it for you."))
+                               f"Update it: run `claude update` in {terminal()}, or ask Claude to do it for you."))
         else:
             found.append(check("Claude Code command line", OK, version or f"Installed at {path}."))
         found += sign_in_checks(auth_status(path))
@@ -278,7 +309,7 @@ def main(argv) -> int:
                              "(uses a few thousand tokens of your plan)")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    checks = edition_checks() + python_checks() + tool_checks() + render_checks() + claude_checks() + folder_checks(args.folder)
+    checks = edition_checks() + python_checks() + tool_checks() + render_checks() + claude_checks() + sandbox_checks() + folder_checks(args.folder)
     if args.probe and not any(c["state"] == BLOCKED and c["check"] == "Claude Code command line" for c in checks):
         checks += probe()
     ready = not any(c["state"] == BLOCKED for c in checks)

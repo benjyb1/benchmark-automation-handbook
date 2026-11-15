@@ -16,6 +16,7 @@ page is a shell (`prepare.is_stub`), fetch tries, in order:
 Standard library only here; the browser lives in the other interpreter.
 """
 from __future__ import annotations
+import html
 import json
 import os
 import re
@@ -104,11 +105,9 @@ with sync_playwright() as p:
         browser = p.chromium.launch(channel="chrome", headless=True)
     except Exception:
         browser = p.chromium.launch(headless=True)
-    # Asked for as Chrome asks, not "HeadlessChrome": some sites abort that (Hamburg's law portal, 21 Oct 2026).
-    probe = browser.new_page()
-    agent = probe.evaluate("() => navigator.userAgent").replace("HeadlessChrome", "Chrome")
-    probe.close()
-    page = browser.new_page(user_agent=agent)
+    # The browser keeps its own name ("HeadlessChrome"). A site that refuses it is not asked again as another
+    # browser: the caller reads the web archive's capture instead (an open-data benchmark, 9 Nov 2026).
+    page = browser.new_page()
     try:
         page.goto(url, wait_until="networkidle", timeout=60000)
     except Exception:
@@ -280,6 +279,26 @@ def _past(before: Optional[str]) -> bool:
         return False
 
 
+CAPTURES_TRIED = 6     # captures asked of the index when one may be a PDF cut off part way
+
+
+def _raw_captures(stamps, url: str, tried: list, keep: int = 2):
+    """(stamp, raw capture) for the first `keep` captures that are not a PDF cut off part way. Some captures the
+    Wayback Machine took in from Common Crawl stop at exactly 1,048,576 bytes (its header
+    x-archive-orig-x-crawler-content-length gives the real size): Angola's APD statute, 4.7 MB, was saved at 1 MiB
+    on 5 Nov 2026 from its 18 July 2024 capture while earlier captures held it whole. Such a capture is skipped
+    and the next one tried, as archive_copy and near_copy already did."""
+    for stamp in stamps:
+        if keep <= 0:
+            return
+        raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+        if raw.ok and fetch.cut_short(raw.content, raw.content_type, url):
+            tried.append(f"the archive's {stamp[:8]} capture is a PDF cut off part way ({len(raw.content):,} bytes)")
+            continue
+        keep -= 1
+        yield stamp, raw
+
+
 def recover(url: str, before: Optional[str] = None, python: Optional[str] = None,
             prefer_archive: Optional[bool] = None) -> dict:
     """What to keep for a page whose fetched text is a shell. When the cut-off (`before`) has passed,
@@ -295,8 +314,8 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
     if prefer_archive is None:
         prefer_archive = _past(before)
     if prefer_archive and before:
-        for stamp in [x for x in archive_captures(url, before) if _near(x, before)][:2]:
-            raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+        for stamp, raw in _raw_captures([x for x in archive_captures(url, before, limit=CAPTURES_TRIED) if _near(x, before)],
+                                        url, tried):
             if raw.ok and fetch.kind_of(raw.content, raw.content_type) == "pdf":     # the file the link is for
                 out.update(kind="pdf", content=raw.content, title="", text_source="archive",
                            archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
@@ -327,11 +346,10 @@ def recover(url: str, before: Optional[str] = None, python: Optional[str] = None
             out.update(kind="text", content=got["text"].encode("utf-8"), title=got["title"], text_source="rendered",
                        links=got.get("links") or [])
             return out
-    stamps = archive_captures(url, before)
+    stamps = archive_captures(url, before, limit=CAPTURES_TRIED)
     if not stamps:
         tried.append("the archive has no capture of it")
-    for stamp in stamps[:2]:
-        raw = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
+    for stamp, raw in _raw_captures(stamps, url, tried):
         if raw.ok and fetch.kind_of(raw.content, raw.content_type) == "pdf":
             out.update(kind="pdf", content=raw.content, title="", text_source="archive",
                        archive_url=ARCHIVE_PAGE.format(stamp=stamp, url=url))
@@ -415,9 +433,13 @@ def navigation_only(text: str) -> bool:
 
 
 _ANCHOR = re.compile(r"(?is)<a\b[^>]*?href\s*=\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a>")
-_PRINT = re.compile(r"(?i)(?:\.pdf(?:$|[?#])|\b(?:pdf|print|printable|printversion|druck|drucken|druckansicht|"
+# A download button whose file address is in an attribute, not its href (WordPress Download Manager, the open-data benchmark 2 Nov 2026:
+# the Land Commission's Kenya Natural Resource Atlas pages, refused as menus, link "#" with data-downloadurl).
+_DATA_URL = re.compile(r"(?i)\bdata-(?:downloadurl|durl|download-url)\s*=\s*[\"']([^\"']+)[\"']")
+_PRINT = re.compile(r"(?i)(?:\.pdf(?:$|[?#])|[?&]wpdmdl=|\b(?:pdf|print|printable|printversion|druck|drucken|druckansicht|"
                     r"druckversion|imprimer|imprimir|stampa|afdrukken)\b)")
 PRINT_TRIES = 2          # links followed at most, for one page
+PRINT_TOO_LARGE = None   # the last print_view's link to a file over fetch.MAX_BYTES, if any
 
 
 def page_links(content: bytes | str, url: str) -> list[list[str]]:
@@ -428,6 +450,8 @@ def page_links(content: bytes | str, url: str) -> list[list[str]]:
     for href, inner in _ANCHOR.findall(content or "")[:500]:
         text = re.sub(r"\s+", " ", re.sub(r"(?s)<[^>]+>", " ", inner)).strip()[:80]
         out.append([urllib.parse.urljoin(url, href.strip()), text])
+    for href in _DATA_URL.findall(content or "")[:20]:
+        out.append([urllib.parse.urljoin(url, html.unescape(href.strip())), "Download"])
     return out
 
 
@@ -448,8 +472,12 @@ def print_view(url: str, links) -> Optional[dict]:
             seen.add(href)
             picks.append(href)
     picks.sort(key=lambda h: 0 if urllib.parse.urlsplit(h).path.lower().endswith(".pdf") else 1)
+    global PRINT_TOO_LARGE
+    PRINT_TOO_LARGE = None
     for href in picks[:PRINT_TRIES]:
         got = fetch.fetch_bytes(href)
+        if got.failure == "too-large":
+            PRINT_TOO_LARGE = href         # said in the page's not-kept reason (cmd_fetch.save_url)
         if not got.ok:
             continue
         name = urllib.parse.urlsplit(href).path.rsplit("/", 1)[-1]
@@ -524,6 +552,9 @@ def near_copy(url: str, before: Optional[str]) -> Optional[fetch.FetchResult]:
                 is_shell(fetch.extract_text_html(raw.content)) or is_challenge(raw.content)):
             met.append(f"the archive's {_day(stamp)} copy, before the cut-off, is a script shell or a robot check")
             continue
+        if fetch.cut_short(raw.content, raw.content_type, url):
+            met.append(f"the archive's {_day(stamp)} copy, before the cut-off, is a PDF cut off part way")
+            continue
         return fetch.FetchResult(ARCHIVE_PAGE.format(stamp=stamp, url=url), 200, raw.content, raw.content_type)
     return None
 
@@ -535,8 +566,9 @@ def archive_copy(url: str, before: Optional[str] = None) -> Optional[fetch.Fetch
     for stamp in archive_captures(url, before, limit=6):
         got = fetch.fetch_bytes(ARCHIVE_RAW.format(stamp=stamp, url=url))
         # A capture of a robot check or an error is not the page (Planalto's 30-31 Dec 2019 captures,
-        # 14 Oct 2026): try an earlier one.
+        # 14 Oct 2026), nor is a PDF the archive cut off part way (fetch.cut_short): try an earlier one.
         if got.ok and not (fetch.kind_of(got.content, got.content_type) == "html"
-                           and (is_shell(fetch.extract_text_html(got.content)) or is_challenge(got.content))):
+                           and (is_shell(fetch.extract_text_html(got.content)) or is_challenge(got.content))) \
+                and not fetch.cut_short(got.content, got.content_type, url):
             return got
     return None

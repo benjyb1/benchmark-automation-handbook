@@ -39,10 +39,11 @@ import sys
 import threading
 from pathlib import Path
 
-from . import oneread
+from . import oneread, system
 from .claude_cli import MODEL
 from .cli import command_parser
 from .folder import HandbookError, read_json, write_json
+from .quotecheck import check_kit
 
 CAP = 200_000
 TIMEOUT_S = 1800
@@ -63,12 +64,26 @@ NO_TOOLS = "WebFetch,WebSearch"
 # the Read, Grep and Glob tools, which the sandbox does not cover. Checked 11 Oct 2026: cat, Read
 # and Grep outside the kit were all refused, cat inside it worked, and the turn count held.
 OFF_LIMITS = ("/Users", "/Volumes", "/home")
+# Native Windows has no such sandbox (Claude Code runs commands there unfenced), so there the scorer
+# gets no shell at all: it searches with the Grep tool, and the permission rules, which do work on
+# Windows, keep the file tools out of every folder beside the kit's own path (system.off_limits_windows).
+# The kit's quote check, which the scorer runs itself elsewhere, is run by `run_scorer` after the
+# session instead, and any quote not word for word goes back to a short second session to fix.
+TOOLS_NO_SHELL = "Read,Write,Edit,Glob,Grep"
+NO_SHELL = "Bash,PowerShell"
+TOOL_DIR = Path(__file__).resolve().parents[2]
+FIX_TURNS = 12
 
 
 def settings(kit: Path) -> dict:
     """The one-session settings: hooks off, the Bash sandbox on and failing closed, no network,
     reads allowed in the kit and refused under OFF_LIMITS, and the same roots denied to the file
-    tools."""
+    tools. On Windows: hooks off and the file tools denied everything beside the kit's path."""
+    if not system.sandboxed():
+        roots = system.off_limits_windows(kit, also=[TOOL_DIR])
+        return {"disableAllHooks": True,
+                "permissions": {"deny": [f"{tool}(/{root}/**)" for root in roots
+                                         for tool in ("Read", "Grep", "Glob", "Edit", "Write")]}}
     return {"disableAllHooks": True,
             "sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
                         "autoAllowBashIfSandboxed": True,
@@ -87,11 +102,24 @@ def prompt_for(kit: Path, cap: int = CAP) -> str:
             "many you marked unsure.")
 
 
-def command(kit: Path, model: str | None, effort: str | None, max_turns: int | None, cap: int = CAP) -> list[str]:
-    cmd = ["claude", "-p", prompt_for(kit, cap), "--safe-mode", "--strict-mcp-config", "--mcp-config",
-           '{"mcpServers":{}}', "--settings", json.dumps(settings(kit)), "--disable-slash-commands",
+def settings_arg(kit: Path) -> str:
+    """--settings as JSON text; on Windows a file beside the kit, since the rules there can run past
+    the 32,767 characters Windows allows on a command line."""
+    text = json.dumps(settings(kit))
+    if system.sandboxed():
+        return text
+    path = kit.parent / f"{kit.name}.settings.json"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def command(kit: Path, model: str | None, effort: str | None, max_turns: int | None, cap: int = CAP,
+            prompt: str | None = None) -> list[str]:
+    tools, no_tools = (TOOLS, NO_TOOLS) if system.sandboxed() else (TOOLS_NO_SHELL, f"{NO_TOOLS},{NO_SHELL}")
+    cmd = [system.claude(), "-p", prompt or prompt_for(kit, cap), "--safe-mode", "--strict-mcp-config", "--mcp-config",
+           '{"mcpServers":{}}', "--settings", settings_arg(kit), "--disable-slash-commands",
            "--no-session-persistence", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk",
-           "--tools", TOOLS, "--allowed-tools", TOOLS, "--disallowed-tools", NO_TOOLS]
+           "--tools", tools, "--allowed-tools", tools, "--disallowed-tools", no_tools]
     cmd += ["--model", model or MODEL]
     if effort:
         cmd += ["--effort", effort]
@@ -171,7 +199,8 @@ def run_scorer(kit: Path, model=None, effort=None, max_turns=None, timeout_s: in
     lim = limits(kit, budget, max_turns)
     cap = max(CAP, lim["budget"] or 0)
     proc = subprocess.Popen(command(kit, model, effort, lim["max_turns"], cap), cwd=kit, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace")
     fired: list[bool] = []
 
     def time_up():
@@ -199,11 +228,80 @@ def run_scorer(kit: Path, model=None, effort=None, max_turns=None, timeout_s: in
         # Stopped from here (its budget, or the time limit): the usage is what the stream showed.
         result = {"type": "result", "subtype": "stopped", "is_error": False, "result": "",
                   "num_turns": seen["calls"], "usage": seen["usage"], "usage_from_stream": True}
+    if not system.sandboxed():
+        result = _fix_quotes(kit, result, model, effort, timeout_s)
     stopped = seen["stopped"] or ("time" if fired else "turns" if result.get("subtype") == "error_max_turns" else None)
     result.update({"kit": str(kit), "model": model, "effort": effort, "budget": lim["budget"],
                    "max_turns": lim["max_turns"], "stopped": stopped, "left": left_questions(kit)})
     write_json(kit / RECEIPT, result)
     return result
+
+
+def _session(kit: Path, cmd: list[str], timeout_s: int) -> dict:
+    """One short session (the quote fix on Windows), run to its end; returns its result event."""
+    try:
+        proc = subprocess.run(cmd, cwd=kit, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout_s, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        raise HandbookError(f"The scorer for {kit.name} ran for more than {timeout_s // 60} minutes and was "
+                            "stopped. Whatever it wrote to answers.json can still be ingested.") from None
+    result = watch((proc.stdout or "").splitlines(), None, lambda: None)["result"]
+    if result is None:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        raise HandbookError(f"The scorer session for {kit.name} ended without a result"
+                            + (f": {tail[-1][:200]}" if tail else ".")) from None
+    return result
+
+
+def fix_prompt(kit: Path, problems: list[dict]) -> str:
+    """The second session's prompt: the quotes the check found, nothing about the owner's answers."""
+    lines = [f"Your folder is {kit}. Work only inside it and do not use the web. The answers in {kit}/answers.json "
+             "have quotes that are not word for word on the page they cite:"]
+    for p in problems[:40]:
+        quote = p["quote"] if len(p["quote"]) <= 200 else p["quote"][:197] + "..."
+        lines.append(f"- question {p['question']}, evidence {p['evidence']} ({p['doc']} p{p['page']}): {p['why']}. "
+                     f"Quote: {quote!r}")
+    lines.append("For each, read the page file in docs/ and copy the words exactly, or cite the page that holds "
+                 "them, or drop that piece of evidence if no page has it. Change nothing else in answers.json, keep "
+                 "it valid JSON, and reply in one line with how many quotes you fixed.")
+    return "\n".join(lines)
+
+
+def _add_usage(a: dict, b: dict) -> dict:
+    out = dict(a)
+    usage = dict(a.get("usage") or {})
+    for k, v in (b.get("usage") or {}).items():
+        if isinstance(v, (int, float)):
+            usage[k] = (usage.get(k) or 0) + v
+    out["usage"] = usage
+    out["num_turns"] = (a.get("num_turns") or 0) + (b.get("num_turns") or 0)
+    if a.get("total_cost_usd") is not None or b.get("total_cost_usd") is not None:
+        out["total_cost_usd"] = (a.get("total_cost_usd") or 0) + (b.get("total_cost_usd") or 0)
+    return out
+
+
+def _fix_quotes(kit: Path, result: dict, model, effort, timeout_s: int) -> dict:
+    """Without a shell (Windows) the scorer cannot run the kit's quote check itself, so it is run here,
+    and any quote that is not word for word goes to one short session to fix. Its tokens are added to
+    the receipt, which notes how many quotes were sent back."""
+    answers = kit / "answers.json"
+    if not answers.is_file():
+        return result
+    try:
+        problems = check_kit(kit, answers)
+    except (ValueError, OSError):
+        return result                    # not valid JSON: ingest says so, as it does on a Mac
+    if not problems:
+        return {**result, "quote_check": {"sent_back": 0}}
+    try:
+        fixed = _session(kit, command(kit, model, effort, FIX_TURNS, prompt=fix_prompt(kit, problems)), timeout_s)
+    except HandbookError:
+        return {**result, "quote_check": {"sent_back": len(problems), "fixed": False}}
+    try:
+        left = len(check_kit(kit, answers))
+    except (ValueError, OSError):
+        left = None
+    return {**_add_usage(result, fixed), "quote_check": {"sent_back": len(problems), "left": left}}
 
 
 MODES = ("auto", "one-read", "full")
@@ -288,6 +386,10 @@ def plan_words(kit: Path, mode: str = "auto", budget: int | None = None) -> str:
     if mode == "full":
         return f"Reading {kit.name} with {full} (--mode full)."
     got = oneread.plan(kit)
+    if got["mode"] == "full scorer" and mode == "one-read":
+        # --mode one-read never falls back, so saying "the full scorer" here misled (unseen-es, 5 Nov 2026)
+        return (f"Reading {kit.name} in one read, as asked (--mode one-read)" + (": its pictures of pages read poorly "
+                "are not looked at, only their words." if got.get("why") == "pictures" else "."))
     if got["mode"] == "full scorer":
         return f"Reading {kit.name} with {full} (" + ("it holds pictures of pages read poorly, which only the full "
                                                      "scorer can look at" if got.get("why") == "pictures"
@@ -295,6 +397,11 @@ def plan_words(kit: Path, mode: str = "auto", budget: int | None = None) -> str:
     size = f"about {round(got['estimate'], -3):,} tokens"
     if got["mode"] == "one read":
         return f"Reading {kit.name} in one go: {size}."
+    if got["mode"] == "one read, focused":
+        n = got.get("long") or 1
+        return (f"Reading {kit.name} by choosing pages first, as {n} of its documents "
+                f"{'is' if n == 1 else 'are'} too long to send whole: {size} in all"
+                + (f", in {got['parts']} parts" if got["parts"] > 1 else "") + ".")
     return f"Reading {kit.name} in {got['parts']} parts, as its documents are too long for one message: {size} in all."
 
 
@@ -318,6 +425,34 @@ def stop_words(result: dict) -> str | None:
             + (": " + ", ".join(left) if left else "") + ".")
 
 
+def search_usage(result: dict) -> tuple[int, int]:
+    """(tokens, searches) of the search tool's own model: Claude Code answers a web search by running a smaller
+    model over the results, and those tokens are in the result's `modelUsage` under that model but never in
+    `usage`, so no receipt counted them (an open-data benchmark's Senegal finder, 29 Oct 2026: 328,000 Haiku tokens over 5
+    searches beside 153,000 of its own). Every model in `modelUsage` but the session's own, the one whose
+    figures match `usage`, is the search tool's."""
+    usage = result.get("usage") or {}
+    own = (usage.get("input_tokens"), usage.get("output_tokens"))
+    tokens = searches = 0
+    for name, m in (result.get("modelUsage") or {}).items():
+        if not isinstance(m, dict):
+            continue
+        searches += int(m.get("webSearchRequests") or 0)
+        if (m.get("inputTokens"), m.get("outputTokens")) == own:
+            continue
+        tokens += sum(int(m.get(k) or 0) for k in ("inputTokens", "outputTokens", "cacheReadInputTokens",
+                                                   "cacheCreationInputTokens"))
+    return tokens, searches
+
+
+def search_words(tokens: int, searches: int) -> str:
+    """The clause a receipt adds for the search tool's own model, or nothing."""
+    if not tokens:
+        return ""
+    return (f" The search tool's own model read {tokens:,} more over {searches} search{'es' if searches != 1 else ''}, "
+            "not counted in that figure.")
+
+
 def describe(result: dict) -> str:
     usage = result.get("usage") or {}
     fresh = (usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
@@ -325,7 +460,7 @@ def describe(result: dict) -> str:
     calls = "call" if str(result.get("mode") or "").startswith("one read") and "full" not in str(result.get("mode")) else "turn"
     n = result.get("num_turns") or 0
     return (f"{fresh + read + out:,} tokens processed ({read:,} cache reads, {fresh:,} fresh input, {out:,} output) "
-            f"over {n} {calls}{'s' if n != 1 else ''}.")
+            f"over {n} {calls}{'s' if n != 1 else ''}." + search_words(*search_usage(result)))
 
 
 def main(argv) -> int:

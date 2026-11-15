@@ -87,6 +87,7 @@ PATTERNS = {
         "reads_disagree": ("A second read came out differently", "grid"),
         "document_changed": ("Saved documents that changed after the answer was scored", "grid"),
         "page_gone": ("Web pages that lost most of their text since they were saved", "grid"),
+        "set_aside": ("Evidence I found but set aside under a rule (no date in the period, not an official copy)", "grid"),
     },
     "results": {
         "big_change": ("Big changes since last edition", "results"),
@@ -118,6 +119,8 @@ HELP = {
                                   "you would rather I kept the answers from the old one."),
     "page_gone": ("check", "Should I look for where the text went, or use the new page as it is? Open one of "
                            "these answers and choose under its source."),
+    "set_aside": ("check", "Should this evidence count? Open one of these answers, look at the source, and correct the "
+                           "answer if it should."),
     "big_change": ("check", "Can you check a few against what you know of these {plural}?"),
     "band_jump": ("check", "Can you check a few against what you know of these {plural}?"),
     "nothing_found": ("send", "Did they publish something I missed? Upload it or paste a link."),

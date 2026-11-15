@@ -10,7 +10,7 @@ import html
 import re
 from pathlib import Path
 
-from . import fetch, readers
+from . import fetch, ocr, readers
 from .folder import Project
 
 FOLDER = ("inbox", "uploads")
@@ -143,14 +143,29 @@ def read_text(path: Path) -> str:
     return readers.text_of(path)
 
 
+# Each file's length in characters, by path, size and time: reading every PDF again on each look at the
+# Set-up tab took 4.5 seconds for GLAAD's three, and the tab sat at "Looking..." (design read, 26 Oct 2026).
+_CHARS: dict[tuple, int | None] = {}
+
+
 def listing(project: Project) -> list[dict]:
     """[{id, name, kind, chars}] for every uploaded file (chars None when it cannot be read)."""
     out = []
     for p in files(project):
         try:
-            chars = len(read_text(p))
-        except Exception:  # noqa: BLE001 (a damaged file is listed, not fatal)
-            chars = None
+            st = p.stat()
+            key = (str(p), st.st_size, st.st_mtime_ns, id(ocr.engine))     # a different picture reader reads again
+        except OSError:
+            key = None
+        if key is not None and key in _CHARS:
+            chars = _CHARS[key]
+        else:
+            try:
+                chars = len(read_text(p))
+            except Exception:  # noqa: BLE001 (a damaged file is listed, not fatal)
+                chars = None
+            if key is not None:
+                _CHARS[key] = chars
         out.append({"id": p.name.split("--")[0], "name": name_of(p), "kind": KINDS.get(p.suffix.lower(), "other"),
                     "chars": chars})
     return out

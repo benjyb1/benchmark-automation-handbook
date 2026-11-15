@@ -33,7 +33,7 @@ import tempfile
 import urllib.parse
 from pathlib import Path
 
-from . import fetch, readers, render
+from . import fetch, mapread, readers, render
 from .folder import HandbookError, now_stamp, write_json
 from .hosts import on_results_site
 
@@ -233,7 +233,13 @@ def live_copy(project, meta: dict) -> dict:
         title = fetch.html_title(content) or ""
         if fetch.dead_page(title, words):
             return {"ok": False, "why": f"it now shows a placeholder page (\"{title.strip()[:80]}\") where the page was"}
-        if meta.get("text_source") in ("rendered", "archive_rendered") or render.is_shell(words):
+        if meta.get("text_source") == "data_service":
+            # The saved words are the record the site's data service gave (mapread.py): so must today's.
+            got = mapread.read(meta.get("url"), content)
+            if got is None:
+                return {"ok": False, "why": "the site's data service did not give the record today"}
+            kind, content, text_source, title = "text", got["text"].encode("utf-8"), "data_service", got["title"]
+        elif meta.get("text_source") in ("rendered", "archive_rendered") or render.is_shell(words):
             # The saved words came from the page as a browser shows it: so must today's, or every line differs.
             got = render.render_text(meta.get("url")) if render.renderer() else None
             if got is None or render.is_shell(got.get("text") or ""):

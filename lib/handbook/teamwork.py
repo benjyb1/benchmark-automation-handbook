@@ -26,7 +26,7 @@ import time
 from datetime import date, datetime
 from pathlib import Path
 
-from . import team
+from . import review, team
 from .folder import HandbookError, now_stamp, read_json
 
 TICK_S = float(os.environ.get("HB_TEAM_TICK_S") or 15.0)   # how often a team project looks for colleagues' changes
@@ -356,7 +356,8 @@ class TeamSide:
 
     def state(self) -> dict:
         me = self.person()
-        out = {"on": self.on, "me": {"id": me["id"], "name": me.get("name")}, "machine": self.machine}
+        out = {"on": self.on, "me": {"id": me["id"], "name": me.get("name")}, "machine": self.machine,
+               "reviewers": review.reviewers(self.project)}
         if not self.on:
             return out
         open_ = team.clashes(self.project, only_open=True)
@@ -383,8 +384,30 @@ class TeamSide:
             return 200, {"places": team.places(), "service": team.sync_service(p.path), "advice": team.ADVICE}
         if method == "GET" and parts == ["backups"]:
             return 200, {"backups": team.list_backups(p)}
+        if method == "GET" and parts == ["review"]:
+            return 200, review.status(p)
         if method != "POST":
             return 404, {"error": "No such call."}
+        if parts == ["review", "send"]:
+            with self.w.cmd.lock:
+                out = review.send(p, sender=self.person().get("name"))
+            return 200, {**out, "opened": _show_folder(Path(out["folder"]))}
+        if parts == ["review", "bring-in"]:
+            pick = str(body.get("file") or "").strip()
+            path = None
+            if pick:
+                path = (p.path / review.REVIEW_DIR / Path(pick).name)
+                if not path.is_file():
+                    raise HandbookError("That workbook is not in the review folder any more.")
+            with self.w.cmd.lock:
+                out = review.bring_in(p, path)
+            self.w.build()
+            self.w.note(review.summary_words(out), "good")
+            return 200, out
+        if parts == ["review", "open"]:
+            folder = p.path / review.REVIEW_DIR
+            folder.mkdir(parents=True, exist_ok=True)
+            return 200, {"opened": _show_folder(folder), "path": str(folder)}
         if parts == ["check"]:
             row, qid = str(body.get("row") or ""), str(body.get("qid") or "")
             if not re.fullmatch(r"[a-z0-9-]+", row) or not qid:
@@ -459,3 +482,14 @@ class TeamSide:
 def copy_name(project) -> str:
     slug = re.sub(r"[^a-z0-9-]+", "-", str(project.read("project").get("slug") or project.slug).lower())
     return f"{slug}-copy-{datetime.now():%Y-%m-%d}.zip"
+
+
+def _show_folder(path: Path) -> bool:
+    """Show a folder in the computer's file manager (Finder, Explorer). False when that can't be done."""
+    cmd = ["open", str(path)] if sys.platform == "darwin" else ["explorer", str(path)] if sys.platform.startswith("win") \
+        else ["xdg-open", str(path)]
+    try:
+        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+    except OSError:
+        return False
+    return True

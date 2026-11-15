@@ -6,8 +6,13 @@ and more, with language correction on and its accurate setting. The script cuts 
 pieces (see vision_ocr.js), so a poster 4,500 pixels wide is read in full; this module joins the
 pieces and sets the words back into rows, a tab between table cells.
 
-Where the Mac's Vision is not there (another system) tesseract is used if it is installed. With
-neither, `recognise` returns None and the caller keeps the picture and says plainly that its words
+On Windows the same is done by Windows' own reader (Windows.Media.Ocr, built into Windows 10 and 11,
+offline), run through Windows PowerShell (`windows_ocr.ps1`), which cuts a big picture into pieces
+the same way and prints the same JSON, so the pieces are joined here alike. It reads the languages
+installed in Windows' language settings and gives no confidence.
+
+Where neither is there (Linux) tesseract is used if it is installed. With
+none, `recognise` returns None and the caller keeps the picture and says plainly that its words
 could not be read.
 
 `recognise(path)` is the one call: {"text", "engine", "confidence", "pieces"} or None. Tests patch
@@ -22,6 +27,7 @@ import sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).with_name("vision_ocr.js")
+WINDOWS_SCRIPT = Path(__file__).with_name("windows_ocr.ps1")
 TIMEOUT_S = 240
 _OSASCRIPT = "/usr/bin/osascript"
 
@@ -32,14 +38,17 @@ def have(tool: str) -> bool:
 
 
 def engine() -> str | None:
-    """What reads pictures here: "vision" (macOS), else "tesseract" if installed, else None."""
+    """What reads pictures here: "vision" (macOS), "windows" (Windows), else "tesseract" if installed,
+    else None."""
     if sys.platform == "darwin" and (Path(_OSASCRIPT).is_file() or have("osascript")) and SCRIPT.is_file():
         return "vision"
+    if sys.platform.startswith("win") and have("powershell") and WINDOWS_SCRIPT.is_file():
+        return "windows"
     return "tesseract" if have("tesseract") else None
 
 
 def missing_note() -> str:
-    return ("No program on this computer can read the words in a picture (the Mac's built-in reader was not "
+    return ("No program on this computer can read the words in a picture (no built-in reader was "
             "found, and tesseract is not installed), so the picture was kept but its text could not be read.")
 
 
@@ -58,6 +67,25 @@ def _vision(path: Path) -> dict | None:
     pieces = merge_passes(got["passes"])
     return {"text": assemble(pieces), "engine": "vision", "pieces": len(pieces),
             "confidence": round(statistics.fmean(p["c"] for p in pieces), 3) if pieces else None}
+
+
+def windows_command(path: Path) -> list[str]:
+    return ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
+            str(WINDOWS_SCRIPT), str(path)]
+
+
+def _windows(path: Path) -> dict | None:
+    try:
+        proc = subprocess.run(windows_command(path), capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=TIMEOUT_S)
+        got = json.loads((proc.stdout or "").lstrip("\ufeff").strip() or "null")
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return None
+    if not isinstance(got, dict) or got.get("error") or not isinstance(got.get("passes"), list):
+        return None
+    passes = [p if isinstance(p, list) else [p] for p in got["passes"]]      # PowerShell unwraps a one-item list
+    pieces = merge_passes(passes)
+    return {"text": assemble(pieces), "engine": "windows", "pieces": len(pieces), "confidence": None}
 
 
 def _tesseract(path: Path) -> dict | None:
@@ -79,6 +107,8 @@ def recognise(path: Path) -> dict | None:
     kind = engine()
     if kind == "vision":
         return _vision(Path(path))
+    if kind == "windows":
+        return _windows(Path(path))
     if kind == "tesseract":
         return _tesseract(Path(path))
     return None

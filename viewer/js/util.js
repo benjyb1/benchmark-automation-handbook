@@ -490,7 +490,7 @@
 (function (HB) {
   "use strict";
 
-  const FACTUAL = ["needs_document", "quote_not_found", "document_changed", "page_gone", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "owner_changed", "holds_back"];
+  const FACTUAL = ["needs_document", "quote_not_found", "document_changed", "page_gone", "group_differs", "after_cutoff", "todays_version", "reads_disagree", "weak_source", "set_aside", "sources_disagree", "owner_changed", "holds_back"];
   const WORDS = {
     quote_not_found: "Quote not on saved page",
     document_changed: "Document changed since scored",
@@ -500,6 +500,8 @@
     page_gone: "Most of the page has gone",
     reads_disagree: "Second read differs",
     weak_source: "Not from its own source",
+    set_aside: "Evidence set aside",
+    sources_disagree: "Sources disagree",
     owner_changed: "Changed by the owner",
     needs_document: "Needs a document",
     judgement: "Rests on an open rule",
@@ -521,6 +523,10 @@
       HB.svg("path", { d: "M6 2.6a3.4 3.4 0 0 1 0 6.8z", fill: "currentColor" })],
     weak_source: () => [HB.svg("path", Object.assign({ d: "M3.4 9V6.6" }, LINE, { "stroke-width": "1.8" })),
       HB.svg("path", Object.assign({ d: "M6 9V4.8M8.6 9V3", opacity: "0.4" }, LINE, { "stroke-width": "1.8" }))],
+    set_aside: () => [HB.svg("rect", Object.assign({ x: 3.2, y: 2.6, width: 5.6, height: 6.8, rx: 0.8 }, LINE)),
+      HB.svg("path", Object.assign({ d: "M6 4.4v2.4" }, LINE)), HB.svg("circle", { cx: 6, cy: 8.2, r: 0.7, fill: "currentColor" })],
+    sources_disagree: () => [HB.svg("path", Object.assign({ d: "M2.8 4.2h4.4M9.2 7.8H4.8" }, LINE)),
+      HB.svg("path", Object.assign({ d: "M6 2.6l1.6 1.6L6 5.8M6 6.2 4.4 7.8 6 9.4" }, LINE))],
     owner_changed: () => [HB.svg("path", Object.assign({ d: "M4 8 8.4 3.6" }, LINE, { "stroke-width": "1.8" })),
       HB.svg("path", { d: "M2.8 9.2l.6-2 1.4 1.4z", fill: "currentColor" })],
     holds_back: () => [HB.svg("path", Object.assign({ d: "M3 4.2h6M6 9.4V5.6M4.2 7.4 6 5.6l1.8 1.8" }, LINE))],

@@ -420,7 +420,8 @@ def read_image(path: Path) -> Reading:
 
 
 def _engine_name(engine: str) -> str:
-    return "the Mac's own text reader (Apple Vision)" if engine == "vision" else engine
+    return ("the Mac's own text reader (Apple Vision)" if engine == "vision"
+            else "Windows' own text reader" if engine == "windows" else engine)
 
 
 # --- PDFs --------------------------------------------------------------------------------------

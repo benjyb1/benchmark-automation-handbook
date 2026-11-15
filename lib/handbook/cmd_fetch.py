@@ -1,8 +1,8 @@
 """hb fetch URL --row ROW [--group LABEL=VALUE] --how plan|search|last_year|provided [--weak WHY]: fetch a
 document politely into `documents/` and add it to the row's `found/` file (and to every row whose
-label matches the group). A web address already in `documents/` is not fetched again; it is just
-added to the row's `found/` (the latest copy when `hb recheck` saved a later one). To look at a saved page
-again for changes, use `hb recheck`. `--weak WHY` marks it a weak source (not in the organisation's own
+label matches the group). A web address already in `documents/` is not fetched again (unless it was filed
+with no copy, as a shell or menus); it is just added to the row's `found/` (the latest copy when `hb recheck`
+saved a later one). To look at a saved page again for changes, use `hb recheck`. `--weak WHY` marks it a weak source (not in the organisation's own
 words), also when it was saved before, unless someone cleared it. Run `hb prepare` afterwards.
 """
 from __future__ import annotations
@@ -11,9 +11,9 @@ import hashlib
 import re
 import urllib.parse
 
-from . import fetch, readers, render
+from . import fetch, mapread, readers, render
 from .cli import command_parser, open_project
-from .folder import HandbookError, write_json
+from .folder import HandbookError, read_json, write_json
 from .hosts import classify_host, on_results_site
 
 
@@ -60,12 +60,15 @@ def main(argv) -> int:
     parser.add_argument("--weak", default=None, metavar="WHY", type=_why,
                         help="mark it a weak source and say why in one line, for example "
                              "\"A news report, not the organisation's own words\"")
+    parser.add_argument("--from-list", action="store_true",
+                        help="it was picked from a saved list page's links, so a page of short lines is kept as a list")
     args = parser.parse_args(argv)
     if not args.row and not args.group:
         parser.error("give --row ROW, --group LABEL=VALUE, or both")
     project = open_project(args.project)
     rows = fetch.resolve_rows(project, args.row, args.group)       # checked before any fetching
-    doc = save_url(project, args.url, rows, args.how, args.weak, named=args.row or [] if args.group else None)
+    doc = save_url(project, args.url, rows, args.how, args.weak, named=args.row or [] if args.group else None,
+                   from_list=args.from_list)
     if args.date:
         fetch.set_as_at(project, doc, args.date, args.dated_by)
         print(f"Dated {doc} {args.date}: the date it speaks as at.")
@@ -76,7 +79,8 @@ def main(argv) -> int:
     return 0
 
 
-def save_url(project, url: str, rows: list, how: str, weak: str | None = None, say=print, named=None) -> str:
+def save_url(project, url: str, rows: list, how: str, weak: str | None = None, say=print, named=None,
+             from_list: bool = False) -> str:
     """Fetch `url` into documents/ (or find it there already) and file it for `rows`; returns the
     document id. What happened goes to `say`, one sentence at a time. Raises HandbookError when the
     page does not load or is not something the handbook can read; nothing is saved then. `named`: the
@@ -87,8 +91,20 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         raise HandbookError(f"{url} is on {site}, where the benchmark publishes its results, so it was not "
                             "saved: the scorer must answer from the organisation's own documents.")
     doc = fetch.doc_id_for_url(url)
+    before = read_json(project.doc_dir(doc) / "meta.json") if fetch.has_document(project, doc) else None
+    if before is not None and before.get("not_kept_why"):
+        # Filed before by its address only, with no copy (a shell, menus, a site that was down): it is fetched again,
+        # since a fix or the site coming back may now give its words (an open-data benchmark, 2 Nov 2026: the Kenya map pages refused as
+        # menus could not be tried again once mapread.py could read them). A weak mark it had stays, and so does a
+        # clearing of one.
+        if not weak and isinstance(before.get("weak"), dict):
+            weak = before["weak"].get("why")
+        cleared = before.get("weak") is False
+        before = None
+    else:
+        cleared = False
 
-    if fetch.has_document(project, doc):
+    if before is not None:
         from . import recheck
         docs = project.documents()
         # A later copy saved by a re-check (recheck.py), unless it is held because most of its text had gone:
@@ -128,6 +144,9 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     result = fetch.fetch_bytes(url)
     if result.failure == "too-large":
         raise HandbookError(f"Could not fetch {url}: {fetch.TOO_LARGE}.")
+    if result.ok and fetch.cut_short(result.content, result.content_type, urllib.parse.urlsplit(url).path):
+        # a PDF the site sent cut off part way: the archive may hold it whole
+        result = fetch.FetchResult(url, 0, b"", result.content_type, failure="cut-short")
     archived_note = None
     # A robot check, captcha or access-denied page is not the document and is never kept as one (nrdc-tissue,
     # 21 Oct 2026: Walmart's "Robot or human?" was filed as a product's document; the fashion index, sweep round 3:
@@ -175,9 +194,21 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
     cutoff = project.cutoff_for(rows)
     todays_why = None          # set when today's page is kept although the cut-off is long past
     links = None               # the links of a page as a browser drew it, when its words came from one
+    # A map viewer or data catalogue page draws its record with a script, so the page is a shell or menus (the open-data benchmark,
+    # 2 Nov 2026: RCMRD's Kenya Land Use 2010 layer, the benchmark's own source, refused as "menus" in both Kenya runs). The
+    # record the site's own data service gives for it is kept instead (mapread.py).
+    record = mapread.read(url, content) if kind == "html" and not archived_note else None
     if archived_note:
         archive_url = archive_from_copy
         notes.append(archived_note)
+    elif record is not None:
+        kind, content, text_source = "text", record["text"].encode("utf-8"), "data_service"
+        title = record["title"] or title
+        notes.append(f"The page draws its record with a script ({record['platform']}), so the record was read from "
+                     f"the site's data service instead: {record['source']}")
+        if render.wants_dated_copy(cutoff):
+            todays_why = ("it was read from the site's data service today, which keeps no copy from before the "
+                          "cut-off; the record's own dates say when the data was made and last changed")
     elif kind == "html" and not archive_url and render.wants_dated_copy(cutoff) \
             and not render.is_shell(fetch.extract_text_html(content)):
         # A web page changes: today's is not the one that stood at a past cut-off. The archive's capture
@@ -206,7 +237,8 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         else:
             kind, content, text_source = got["kind"], got["content"], got["text_source"]
             links = got.get("links")
-            title = got["title"] or title
+            # a PDF from the archive has no title of its own; the shell's (Angola's "Under Maintenance") is not its
+            title = got["title"] or (fetch.title_from_url(url) if got["kind"] == "pdf" else title)
             archive_url = got["archive_url"] or archive_url
             notes.append({"rendered": "The page drew its words with a script, so its text was taken from the "
                                       "page as a browser shows it.",
@@ -221,24 +253,31 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         if got is not None and not render.is_shell(got["text"]) and len(got["text"]) >= max(1.3 * len(plain), len(plain) + 1000):
             kind, content, text_source = "text", got["text"].encode("utf-8"), "rendered"
             links = got.get("links")
-            title = got["title"] or title
+            # a PDF from the archive has no title of its own; the shell's (Angola's "Under Maintenance") is not its
+            title = got["title"] or (fetch.title_from_url(url) if got["kind"] == "pdf" else title)
             notes.append("Some of the page's words were behind buttons or tabs, so its text was taken from the page as "
                          "a browser shows it with those sections opened.")
     print_url = None
     if not_kept_why is None and kind in ("html", "text"):
         words_now = fetch.extract_text_html(content) if kind == "html" else content.decode("utf-8", "replace")
-        if render.navigation_only(words_now):
+        # A page the finder asked for from a list's links (cmd_find.listing_links) is itself a list of items (a tender
+        # list, a course catalogue's section): its lines are the evidence, not menus (an open-data benchmark, 29 Oct 2026: Senegal's
+        # tender, plan and notice lists were all refused as "menus and a contents list").
+        if render.navigation_only(words_now) and not from_list and text_source != "data_service":
             # Menus and a contents list, not the document (Hamburg's law portal, 22 Oct 2026): a failed fetch,
             # unless the page links to a PDF or print view of the same document that holds its text.
-            view = render.print_view(url, render.page_links(content, url) if kind == "html" else links)
+            page_l = render.page_links(content, url) if kind == "html" else links
+            view = render.print_view(url, page_l)
             if view is not None:
+                links = links or page_l          # the print view replaces the page, whose links are kept in meta
                 kind, content, print_url = view["kind"], view["content"], view["url"]
                 title = view["title"] or title
                 notes.append(f"The page held only menus and a contents list, so its "
                              f"{'PDF' if kind == 'pdf' else 'print view'} was kept instead: {print_url}")
             else:
-                not_kept_why = ("It holds only the site's menus and a contents list, not the document's text, and "
-                                "links to no PDF or print view of it.")
+                not_kept_why = ("It holds only the site's menus and a contents list, not the document's text, and " + (
+                    f"the file it links to is over the {fetch.MAX_BYTES // 1_000_000} MB the tool saves: "
+                    f"{render.PRINT_TOO_LARGE}." if render.PRINT_TOO_LARGE else "links to no PDF or print view of it."))
                 notes.append(f"Not kept: {not_kept_why} Record it as not found for the row and look for another "
                              "copy (a PDF, a print view, another site that gives the full text).")
     same = fetch.same_content(project, hashlib.sha1(content).hexdigest()) if not_kept_why is None else None
@@ -257,6 +296,8 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         meta["text_source"] = text_source
     if print_url:
         meta["print_url"] = print_url
+    if links:
+        meta["links"] = links[:500]      # the page's links when its HTML is not kept (drawn by a browser, or printed)
     stamp = re.search(r"/(?:web|ukgwa)/(\d{8})\d*", archive_url or "")
     captured = f"{stamp.group(1)[:4]}-{stamp.group(1)[4:6]}-{stamp.group(1)[6:8]}" if stamp else None
     said = fetch.page_date(content, captured or meta["fetched"][:10]) if kind == "html" and not_kept_why is None else None
@@ -269,7 +310,11 @@ def save_url(project, url: str, rows: list, how: str, weak: str | None = None, s
         # An archive copy existed on its capture date, so it was published by then: a date to check the
         # cut-off against when the page gives none (four format tests, 15 Oct 2026, had null dates here).
         meta["date"], meta["date_basis"] = captured, "archive capture"
-    if weak:
+    if cleared:
+        if weak:
+            notes.append("It was cleared as not weak before, so it was left as it is.")
+        weak, meta["weak"] = None, False             # someone cleared it as not weak: that stands
+    elif weak:
         meta["weak"] = {"why": weak}
     if todays_why and not_kept_why is None:
         meta["todays_version"] = {"fetched": meta["fetched"][:10], "why": todays_why}

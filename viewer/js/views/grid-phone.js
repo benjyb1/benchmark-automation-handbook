@@ -22,10 +22,13 @@
   const STYLE = `
 .hbg-pl { display: grid; margin-inline: calc(-1 * var(--gutter-start)) calc(-1 * var(--gutter-end)); border-top: 1px solid var(--rule); }
 .hbg-pl__gh { position: sticky; top: 0; z-index: 4; display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); padding: var(--s2) var(--gutter-end) var(--s1) var(--gutter-start); border-bottom: 1px solid var(--rule); background: var(--paper); }
-.hbg-pl__gh h3 { min-width: 0; overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.hbg-pl__gh h3 { min-width: 0; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; }   /* wraps, never cut: "Lands with one Untern..." (stress test, 27 Oct 2026) */
 .hbg-pl__gh span { flex: none; color: var(--ink-2); font-size: var(--fs-12); font-variant-numeric: tabular-nums; }
 .hbg-li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px var(--s2); padding: var(--s2) var(--gutter-end) var(--s3) var(--gutter-start); border-bottom: 1px solid var(--rule); background: var(--surface); }
 .hbg-li__name { font-size: var(--fs-14); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+/* The band on a line of its own under the score: in the score's column it widened that column to its
+   text and squeezed the name to "Compan/y 01" (stress test, 27 Oct 2026). */
+.hbg-li > .hbg-tier { grid-column: 1 / -1; justify-self: end; max-width: 100%; overflow: visible; text-align: right; white-space: normal; }
 .hbg-li__tot { justify-self: end; font-size: var(--fs-16); font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .hbg-li__flags { display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); color: var(--ink-2); font-size: var(--fs-12); }
 .hbg-li__flags .flag-glyph { width: 0.8125rem; height: 0.8125rem; color: var(--critical); }
@@ -40,6 +43,7 @@
 .hbg-sq.is-wait { box-shadow: inset 0 0 0 1px var(--rule-strong); }
 .hbg-sq.is-owner { box-shadow: none; outline: 1px dashed var(--ink-2); outline-offset: -1px; }
 .hbg-sq.is-na { box-shadow: none; }
+.hbg-sq.is-value { box-shadow: inset 0 0 0 1.5px var(--accent); }
 /* Many questions (RTI has 61): the sections wrap onto more lines and the squares keep a size a finger can
    hit, with no numbers in them (the shade carries the score; a tap opens the cell). */
 .hbg-li__strip--many { flex-wrap: wrap; gap: 4px 8px; }
@@ -48,7 +52,16 @@
 .hbg-pl__key { position: sticky; top: 0; z-index: 5; padding: var(--s1) var(--gutter-end) 2px var(--gutter-start); border-bottom: 1px solid var(--rule); background: var(--paper); }
 .hbg-pl__key .hbg-li__strip { margin-top: 0; }
 .hbg-sq.hbg-sq--num { height: auto; box-shadow: none; color: var(--ink-2); font-size: 0.625rem; font-weight: 500; }
-.hbg-pl__key ~ .hbg-pl__g .hbg-pl__gh { top: 1.25rem; }
+.hbg-pl__ksec { flex-direction: column; gap: 1px; }
+/* Two lines at most, broken between words ("Foo…" and "L… LEV…" cut names to nothing, design read, 26 Oct 2026). */
+.hbg-pl__kname { display: -webkit-box; width: 0; min-width: 100%; overflow: hidden; color: var(--ink); font-size: 0.625rem; font-weight: 600; line-height: 1.15; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: normal; }
+.hbg-pl__knums { display: flex; gap: 2px; width: 100%; }
+.hbg-li__strip--many .hbg-pl__knums { flex-wrap: wrap; }
+.hbg-li__strip--many .hbg-sq.hbg-sq--num { font-size: 0.5rem; }
+.hbg-pl__key ~ .hbg-pl__g .hbg-pl__gh { top: var(--key-h, 2.25rem); }
+/* Many questions make a tall key: it scrolls away instead of staying over the cards. */
+.hbg-pl__key:has(.hbg-li__strip--many) { position: static; }
+.hbg-pl:has(.hbg-pl__key .hbg-li__strip--many) .hbg-pl__gh { top: 0; }
 .hbg-sq .flag-glyph { position: absolute; top: -4px; right: -4px; z-index: 1; width: 0.6875rem; height: 0.6875rem; color: var(--critical); }
 `;
 
@@ -61,7 +74,7 @@
     const kinds = HB.flagKinds.factual.filter((k) => per[k]);
     if (!kinds.length) return h("span", { class: "hbg-li__flags" });
     return h("span", { class: "hbg-li__flags" }, kinds.map((k) =>
-      h("span", { class: "hbg-li__flag" }, HB.flagGlyph(k), HB.flagKinds.words[k] + " " + fmtInt(per[k]))));
+      h("span", { class: "hbg-li__flag" }, HB.flagGlyph(k), HB.flagKinds.words[k] + " (" + fmtInt(per[k]) + ")")));   // "Quote not on saved page (6)": the count apart from the words (design read, 26 Oct 2026)
   }
 
   function square(ctx, m, unit, q) {
@@ -70,6 +83,7 @@
     const cls = ["hbg-sq"];
     if (x.state === "answered" || x.state === "no_evidence") cls.push("hbg-s" + x.step);
     if (x.state === "no_evidence") cls.push("is-ne");
+    if (x.valued) cls.push("is-value");             // answered, worth no points: never the empty look of a zero
     if (x.state === "not_run") cls.push("is-wait");
     if (x.owner) cls.push("is-owner");          // waits for data only the owner holds
     if (x.hl) cls.push("is-hl");
@@ -112,24 +126,32 @@
   // The question numbers once, over the first card's squares, laid out as the squares are: without them
   // nobody could tell which square was which question (design read, 23 Oct 2026). Not with many
   // questions, whose squares wrap differently on each card.
+  // With each section's name over its numbers, since the numbers start again in each section; and with
+  // many questions too, whose squares wrap the same way on every card (design read, 26 Oct 2026).
   function key(m) {
-    if (stripClass(m).includes("--many")) return null;
     return h("div", { class: "hbg-pl__key", "aria-hidden": "true" },
-      h("span", { class: "hbg-li__strip" }, m.sections.map((sec) => {
+      h("span", { class: stripClass(m) }, m.sections.map((sec) => {
         const nums = m.shortIds(sec);
-        return h("span", { class: "hbg-li__sec", title: sec.name || sec.id || "" },
-          sec.qs.map((q, i) => h("span", { class: "hbg-sq hbg-sq--num", title: String(q.short || q.id) }, String(nums[i]))));
+        // A section of one or two questions is too narrow for a name: its id, with the name on hover.
+        const name = sec.qs.length <= 2 && sec.id ? String(sec.id) : sec.name || sec.id || "";
+        return h("span", { class: "hbg-li__sec hbg-pl__ksec", title: sec.name || name },
+          name ? h("span", { class: "hbg-pl__kname" }, name) : null,
+          h("span", { class: "hbg-pl__knums" },
+            sec.qs.map((q, i) => h("span", { class: "hbg-sq hbg-sq--num", title: String(q.short || q.id) }, String(nums[i])))));
       })));
   }
 
   function gridPhone(ctx, m) {
     HB.addStyles("grid-phone", STYLE);
-    return h("div", { class: "hbg-pl" }, key(m), m.groups.map((g) => {
+    const k = key(m);
+    // The group headings stick just under the numbers, however tall the names make them.
+    setTimeout(() => { if (k.isConnected && k.parentElement) k.parentElement.style.setProperty("--key-h", k.offsetHeight + "px"); }, 0);
+    return h("div", { class: "hbg-pl" }, k, m.groups.map((g) => {
       const head = [];
       if (m.grouped) {
         const mean = m.groupMean(g.rows);
         head.push(h("div", { class: "hbg-pl__gh" }, h("h3", null, g.title),
-          h("span", null, fmtInt(g.rows.length) + (mean === null ? "" : " · mean " + m.overallText({ overall: Math.round(mean) })))));
+          h("span", null, HB.data.unitWords(g.rows.length) + (mean === null ? "" : " · average " + m.overallText({ overall: Math.round(mean) })))));   // "7 assessments", not a bare 7
       }
       return h("section", { class: "hbg-pl__g", "aria-label": g.title }, head,
         h("div", { role: "list" }, g.rows.map((u) => card(ctx, m, u))));

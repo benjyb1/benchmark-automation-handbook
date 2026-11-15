@@ -337,7 +337,7 @@
         n + (n === 1 ? " number in the draft is" : " numbers in the draft are") + " not in the figures, so it can't be saved " +
           "yet. Change " + (n === 1 ? "it" : "them") + " in the draft, or try again.",
         h("ul", { class: "rd-fails" }, r.unbacked.slice(0, 40).map((u) => h("li", null,
-          "Line " + u.line + ": ", h("strong", null, u.number), " (in: " + (u.text.length > 100 ? u.text.slice(0, 97) + "..." : u.text) + ")"))),
+          "Line " + u.line + ": ", h("strong", null, u.number), " (in: " + HB.shortText(u.text, 100) + ")"))),
       ]));
     }
     if (dashes) {

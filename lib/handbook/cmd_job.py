@@ -17,6 +17,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import system
 from .claude_cli import MODEL
 from .cli import command_parser, open_project
 from .folder import HandbookError
@@ -29,7 +30,8 @@ MAX_TURNS = 80
 
 
 def prompt_for(project: Path, python: str, brief: str) -> str:
-    hb = f'"{python}" "{LIB / "hb.py"}"'
+    hb = system.hb_call(python, LIB / "hb.py")
+    shell = system.sandboxed()
     return "\n".join([
         f"You are doing one task on a benchmark project for its owner, in the background. The project folder is {project}.",
         "The owner asked for it in the page's chat and confirmed it; nobody is here to answer questions, so do the task "
@@ -50,14 +52,16 @@ def prompt_for(project: Path, python: str, brief: str) -> str:
         "- viewer/ and page-data/ are built from the rest: never edit them; build rebuilds them.",
         f"- Run hb commands as {hb} COMMAND --project \"{project}\" ... ; {hb} help lists them and COMMAND --help explains one. "
         "Prefer a command to editing a file by hand where one exists (add-instruction, raise-rule, locate, check, validate).",
-        f"- For a script, run it with \"{python}\", never python3.",
+        (f"- For a script, run it with \"{python}\", never python3." if shell else
+         "- You can run hb commands and nothing else here: no scripts. Change files with Edit and Write."),
         "",
         "Rules:",
         "- Evidence is only ever words copied exactly from a saved page (documents/<doc>/pages.json). Never invent or "
         "paraphrase a quote, a page or a section. If something cannot be found in the saved pages, say so.",
         "- Do not use the web, do not publish anything, and work only inside the project folder.",
         "- Work in few, large steps: every step re-reads everything before it, so the number of steps is the cost. "
-        "Use one script for a change across many files rather than many edits.",
+        + ("Use one script for a change across many files rather than many edits." if shell else
+           "Write a file whole in one go rather than many small edits to it."),
         f"- When you have finished, run {hb} validate --project \"{project}\" and fix what it lists. The page then checks "
         "and rebuilds by itself.",
         f"Token cap: {CAP:,}. If you get near it, save what you have, validate and stop.",
@@ -71,12 +75,18 @@ def command(project: Path, python: str, brief: str) -> list[str]:
     settings = {"disableAllHooks": True,
                 "sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False,
                             "autoAllowBashIfSandboxed": True, "filesystem": {"allowWrite": [str(project)]},
-                            "network": {"allowedDomains": []}}}
+                            "network": {"allowedDomains": []}},
+                "permissions": {"deny": system.key_deny_rules()}}
     allowed = ",".join(["Read", "Glob", "Grep", "Bash", f"Edit({project}/**)", f"Write({project}/**)"])
-    return ["claude", "-p", prompt_for(project, python, brief), "--safe-mode", "--strict-mcp-config", "--mcp-config",
+    tools = TOOLS
+    if not system.sandboxed():          # Windows: no fence, so only hb commands (system.HB_ONLY)
+        settings = {"disableAllHooks": True, "permissions": {"deny": system.key_deny_rules()}}
+        allowed = ",".join(["Read", "Glob", "Grep", *system.HB_ONLY, *system.edit_rules([project])])
+        tools = TOOLS + ",PowerShell"
+    return [system.claude(), "-p", prompt_for(project, python, brief), "--safe-mode", "--strict-mcp-config", "--mcp-config",
             '{"mcpServers":{}}', "--settings", json.dumps(settings), "--disable-slash-commands",
             "--no-session-persistence", "--output-format", "json", "--permission-mode", "dontAsk",
-            "--tools", TOOLS, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
+            "--tools", tools, "--allowed-tools", allowed, "--disallowed-tools", "WebFetch,WebSearch",
             "--max-turns", str(MAX_TURNS), "--add-dir", lib, "--model", MODEL]
 
 
@@ -92,7 +102,8 @@ def main(argv) -> int:
     if not brief.strip():
         raise HandbookError("The job has no task.")
     proc = subprocess.run(command(project.path, sys.executable, brief), cwd=project.path, capture_output=True,
-                          text=True, timeout=TIMEOUT_S, stdin=subprocess.DEVNULL)
+                          text=True, timeout=TIMEOUT_S, stdin=subprocess.DEVNULL,
+                          env=system.session_env(LIB))
     try:
         result = json.loads(proc.stdout)
     except json.JSONDecodeError:

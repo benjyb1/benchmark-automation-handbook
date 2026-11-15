@@ -25,6 +25,7 @@ fresh input, output) come from the session's own result and are reported with th
 """
 from __future__ import annotations
 from .claude_cli import MODEL
+from .system import claude as claude_exe
 import difflib
 import hashlib
 import json
@@ -279,7 +280,8 @@ class Sampler:
         system = LOCAL_SYSTEM + ("\n\n" + extra if extra else "")
         if json_mode:
             system += "\n\n" + JSON_NOTE
-        cmd = [self.claude, "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        cmd = [claude_exe() if self.claude == "claude" else self.claude, "-p", "--output-format", "stream-json",
+               "--verbose", "--include-partial-messages",
                "--setting-sources", "", "--settings", json.dumps({"disableAllHooks": True}),
                "--strict-mcp-config", "--mcp-config", str(mcp_file) if mcp_file else '{"mcpServers":{}}',
                "--tools", "", "--permission-mode", "dontAsk", "--disable-slash-commands",

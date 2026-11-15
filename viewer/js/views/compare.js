@@ -188,7 +188,9 @@
       return name ? shortWords(name.replace(/\s*\([^)]*\)\s*$/, "")) : String(key);   // words, not the id ("EC")
     }
     const q = HB.data.question(key);
-    if (q && q.short) return shortWords(String(q.short));      // "Contact waiting time", not "QEC1" (design read, 23 Oct 2026)
+    // The whole short name: "Contact waiting time", not "QEC1" (design read, 23 Oct 2026), and not cut, since
+    // "Milk alternatives in the…" twice made two questions look like one (design read, 26 Oct 2026).
+    if (q && q.short) return String(q.short).trim();
     return q && /^\d/.test(String(key)) ? `Q${key}` : String(key);   // "Q1.1", but "N1" stays as it is
   }
 
@@ -533,12 +535,14 @@
     const set = parts().bandSets()[0];
     const word = set ? parts().bandWord(set) : "band";
     return h("section", { class: "section cmp-top", "aria-labelledby": "cmp-head" },
-      h("div", { class: "section__head" }, h("h3", { id: "cmp-head" }, `How far we agree with ${them}`)),
+      // "This run", not "we": the page speaks of Claude's run, as the other tabs do (design read, 26 Oct 2026).
+      h("div", { class: "section__head" }, h("h3", { id: "cmp-head" }, `How far this run agrees with ${them}`)),
       h("p", { class: "small muted cmp-measure" },
         `${plural(s.rows != null ? s.rows : (c.rows || []).length, nouns.one, nouns.many)} compared with ${theirResults}, ` +
         `which go down to ${level} level.` +
         (notCompared ? ` ${plural(notCompared, nouns.one, nouns.many)} not compared (listed at the end).` : "")),
-      h("div", { class: "table-scroll cmp-agree-wrap", role: "region", tabindex: "0", "aria-labelledby": "cmp-head" },
+      // No table when nothing is in both: its header alone looked like a switch left half set.
+      !m.levels.some((L) => ((s.of || {})[L] || 0) > 0) ? null : h("div", { class: "table-scroll cmp-agree-wrap", role: "region", tabindex: "0", "aria-labelledby": "cmp-head" },
         h("table", { class: "table cmp-agree" },
           h("thead", null, h("tr", null, h("th", { scope: "col" }, "Figure"), h("th", { scope: "col" }, "Same score"),
             anyBand ? h("th", { scope: "col" }, `Same ${word}`) : null)),
@@ -620,7 +624,7 @@
         h("td", { class: "num" }, h("span", { class: "cmp-reason" }, gap, d ? glyph(d.reason) : null,
           d ? h("span", { class: "visually-hidden" }, `: ${reasonWord(d)}`) : null)));
     });
-    const table = h("div", { class: "table-scroll", role: "region", tabindex: "0", "aria-label": "Every figure, both years" },
+    const table = h("div", { class: "table-scroll", role: "region", tabindex: "0", "aria-label": "Every figure, both editions" },
       h("table", { class: "table cmp-detail" },
         h("thead", null, h("tr", null, ["What", Them, "This edition", "Gap"].map((t, i) =>
           h("th", { scope: "col", class: i ? "num" : null }, t)))),
@@ -687,7 +691,7 @@
       legendExtra: reasonLegend(list),
       onPick: v.open,
       empty: v.state.show === "diff" ? `No ${nouns.one} differs from ${them} at this level.` : "Nothing to show at this level.",
-      caption: `Largest gap first. The gap is this edition minus ${them}${v.sc.pct ? ", in points" : ""}. ` +
+      caption: `Largest gap first. The gap is this edition minus ${them}${v.sc.pct ? ", in percentage points" : ""}. ` +
         "Click a row for its details. With the keyboard, Tab to the chart, move with the arrow keys and press Enter.",
     });
   }
@@ -708,7 +712,7 @@
       legendExtra: reasonLegend(list),
       onPick: v.open,
       empty: v.state.show === "diff" ? `No ${nouns.one} differs from ${them} at this level.` : "Nothing to show at this level.",
-      note: left ? `Not shown, without a figure in both years: ${plural(left, nouns.one, nouns.many)}.` : null,
+      note: left ? `Not shown, without a figure in both editions: ${plural(left, nouns.one, nouns.many)}.` : null,
       caption: "Largest gap first. Bars run left of zero where this edition is lower and right where it is higher. " +
         "Click a row for its details. With the keyboard, Tab to the chart, move with the arrow keys and press Enter.",
     });
@@ -731,12 +735,12 @@
       pointLabel: v.state.show === "diff" ? `Differs from ${them}` : capital(nouns.one),
       mutedLabel: `Same score as ${them}`,
       guides: bands.map((b) => b.min).filter((x) => x > 0),
-      zones, zonesLabel: bands.length ? `Same ${v.sc.word} both years` : null,
+      zones, zonesLabel: bands.length ? `Same ${v.sc.word} both editions` : null,
       diagonalLabel: `Same as ${them}`,
       labelHeader: capital(nouns.one),
       onPick: v.open,
       caption: `Each dot is one ${nouns.one}: above the dashed line, higher this edition; below it, lower.` +
-        (bands.length ? ` Inside a shaded square the ${v.sc.word} is the same both years.` : "") +
+        (bands.length ? ` Inside a shaded square the ${v.sc.word} is the same both editions.` : "") +
         (far.length ? " The largest gaps are named; point at or focus any dot for its name." : " Point at or focus a dot for its name.") +
         " Click a dot for its details.",
     });
@@ -765,7 +769,7 @@
       count: (ri, ci) => inCell(ri, ci).length,
       rowTitle: `${W} ${when}`,
       colTitle: `${W} this edition`,
-      diagonalLabel: `Same ${sc.word} both years`,
+      diagonalLabel: `Same ${sc.word} both editions`,
       selected: pick,
       cellLabel: (ri, ci, n) => `${plural(n, nouns.one, nouns.many)}: ${bands[ri].name} ${when}, ${bands[ci].name} this edition, ${move(ri, ci)}`,
       onPick: (ri, ci) => { v.state.pick = [ri, ci]; v.redraw('.cx__cell[aria-pressed="true"]'); },
@@ -773,9 +777,9 @@
         `their ${sc.word}; left of it, a higher ${sc.word} this edition; right of it, a lower one. Pick a cell to list its ${nouns.many}.`,
     });
     return h("div", { class: "stack" },
-      h("p", { class: "cmp-sum" }, `Of ${plural(both.length, nouns.one, nouns.many)} with a ${sc.word} in both years, ` +
+      h("p", { class: "cmp-sum" }, `Of ${plural(both.length, nouns.one, nouns.many)} with a ${sc.word} in both editions, ` +
         `${fmtInt(sameN)} kept it, ${fmtInt(up)} moved up to a higher ${sc.word} and ${fmtInt(down)} moved down to a lower one.` +
-        (without ? ` ${plural(without, nouns.one, nouns.many)} without a ${sc.word} in both years.` : "")),
+        (without ? ` ${plural(without, nouns.one, nouns.many)} without a ${sc.word} in both editions.` : "")),
       fig,
       pick ? pickedList(`${bands[pick[0]].name} ${when}, ${bands[pick[1]].name} this edition`, inCell(pick[0], pick[1]), v) : null);
   }
@@ -855,7 +859,7 @@
       h("div", { class: "cmp-tools cmp-tools--inner" }, pickLabel.node),
       h("p", { class: "small muted cmp-measure" },
         `For each ${words(label)}: how many ${nouns.many} keep their ${v.sc.word} and score, how many moved up or down, ` +
-        `and the mean gap (this edition minus ${them}${v.sc.pct ? ", in points" : ""}). ` + (v.sc.set ? `${W} counts leave out ${nouns.many} without a ${v.sc.word} in both years.` : "")),
+        `and the mean gap (this edition minus ${them}${v.sc.pct ? ", in percentage points" : ""}). ` + (v.sc.set ? `${W} counts leave out ${nouns.many} without a ${v.sc.word} in both editions.` : "")),
       table,
       picked ? pickedList(`${picked.name}: ${plural(picked.n, nouns.one, nouns.many)}`, picked.items, v) : null);
   }
@@ -1098,7 +1102,9 @@
     const nowValue = isNum(now) ? now : isNum(mv.ours) ? mv.ours : null;
     const trend = isFree() ? null : mv.trend === "breaks" ? HB.statusChip("warning", "Outside its past range")
       : h("span", { class: "small muted" }, mv.trend === "within" ? "Within its past range" : "Too few past editions for a trend");
-    const figures = editions.map((e) => `${e} ${figureText(past[e], key)}`).concat(isNum(nowValue) ? [`this run ${figureText(nowValue, key)}`] : []);
+    // An edition that reads like this one ("2026" beside "April to June 2026") is "last edition" here too.
+    const edName = (e) => { const n = pastNoun(e); return n === String(e) ? String(e) : n.replace(/^the /, ""); };
+    const figures = editions.map((e) => `${edName(e)} ${figureText(past[e], key)}`).concat(isNum(nowValue) ? [`this run ${figureText(nowValue, key)}`] : []);
     return h("li", { class: "cmp-first__move" },
       h("div", { class: "cmp-first__what" }, h("strong", null, levelLong(mv.key)), h("span", { class: "cmp-first__why" }, whyWord(mv)), trend),
       h("p", { class: "cmp-first__text" }, mv.text),
@@ -1195,7 +1201,7 @@
     return h("div", { class: "cmp-answers" },
       shown.map((x) => h("button", { type: "button", class: "cmp-answer", onclick: () => ctx.openCell(row, x.q) },
         h("span", { class: "visually-hidden" }, "Open the answer to "),
-        h("span", { class: "cmp-answer__q" }, `Q${x.q}`),
+        h("span", { class: "cmp-answer__q" }, /^\d/.test(String(x.q)) ? `Q${x.q}` : String(x.q)),   // "Q1.1", but "BM1", not "QBM1"
         what(x) ? h("span", { class: "cmp-answer__pts" }, what(x)) : null,
         x.flags.map((f) => h("span", { class: "cmp-answer__flag" }, ANSWER_FLAGS[f])))),
       list.length > shown.length
@@ -1336,8 +1342,9 @@
       .map(({ rule, rows }) => {
         const words = ruleWords(rule);
         const n = rows.size;
-        const q = capital(words.question);
-        const title = words.topic || HB.shortText(q, 80);   // no topic: its question, short
+        // No topic: its question, short, without a leading code ("Q2.3: ") (design read, 26 Oct 2026).
+        const q = capital(String(words.question || "").replace(/^\s*[A-Z]{0,3}\d+(?:\.\d+)*[a-z]?\s*[:.)\-]\s*/, ""));
+        const title = words.topic || HB.shortText(q, 80);
         const chose = ownerChoice(rule);
         const rowIds = Array.from(rows.keys());
         return Object.assign(firstCard("rule:" + rule.id, chose ? {
@@ -1347,7 +1354,7 @@
         } : {
           kind: "Open rule", title, cta: "Decide this rule",
           summary: n === 1 ? `One ${nouns.one} with a big difference rests on it`
-            : `${fmtInt(n)} ${nouns.many} with a big difference rest on it, so one decision reaches all of them`,
+            : `${fmtInt(n)} ${nouns.many} with a big difference depend on it, so one decision reaches all of them`,
         },
         chose
           ? actBox("Re-run to apply your decision.", `You chose: ${chose.text}`, rerunButton(rule, rowIds, ctx),
@@ -1355,7 +1362,7 @@
           : actBox("Decide this rule.", `${capital(words.question)} (rule ${rule.id})`,
             ruleStakes(rule) ? h("p", { class: "small muted cmp-act__note" }, ruleStakes(rule)) : null, ruleDecision(rule, ctx)),
         h("div", { class: "cmp-card__details" },
-          h("p", { class: "small muted" }, `Resting on it, with their difference from ${pastNoun(latest)}:`),
+          h("p", { class: "small muted" }, `The ${nouns.many} it touches, with their difference from ${pastNoun(latest)}:`),
           h("ul", { class: "cmp-card__rows" }, Array.from(rows, ([row, x]) => h("li", null,
             nameButton(row), " ", h("span", null, movesSummary(x.list, mLatest)),
             h("span", { class: "small muted" }, ` (${questionWords(Array.from(x.qs).sort((a, b) => a.localeCompare(b, "en-GB", { numeric: true })))})`)))))), { decided: Boolean(chose) });
@@ -1409,7 +1416,7 @@
           h("div", { class: "cmp-card__details" },
             h("p", { class: "cmp-card__meta" },
               h("button", { type: "button", class: "btn btn--small btn--quiet", onclick: () => latestWords(() => openDetail(row, mLatest, ctx)) },
-                "Every figure, both years", h("span", { class: "visually-hidden" }, `: ${name}`)),
+                "Every figure, both editions", h("span", { class: "visually-hidden" }, `: ${name}`)),
               ...Array.from(new Set(list.map(whyWord)), (w) => h("span", { class: "cmp-first__why" }, w))),
             h("ul", { class: "cmp-first__moves" }, list.map((mv) => moveLine(mv, hist)))));
       });
@@ -1559,9 +1566,12 @@
     const nouns = parts().unitNouns();
     return h("section", { class: "section", "aria-labelledby": "cmp-not" },
       h("div", { class: "section__head" }, h("h3", { id: "cmp-not" }, `Not compared (${fmtInt(list.length)})`)),
-      h("p", { class: "small muted" }, `${plural(list.length, nouns.one, nouns.many)} left out of every figure above.`),
+      h("p", { class: "small muted" }, `${plural(list.length, nouns.one, nouns.many)} left out of the comparison.`),
+      // The name, then why, in the words the rest of the page uses for what is compared ("not in last
+      // edition's results" under a heading about the published 2026 scores read as a contradiction).
       h("ul", { class: "cmp-not" }, list.map((x) => h("li", null,
-        h("strong", null, rowName(x.row)), " ", x.text || x.why))));
+        h("strong", null, rowName(x.row)), ": ",
+        String(x.text || x.why || "").replace(/^It is /, "").replace(/last edition's results/g, theirResults)))));
   }
 
   function render(root, ctx) {

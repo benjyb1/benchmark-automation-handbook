@@ -206,7 +206,21 @@
       facts.length ? h("p", { class: "hb-head__facts" }, facts) : null,
       HB.nextStep ? HB.nextStep.node() : null,     // the next step, on the local page only (views/nextstep.js)
     ].filter(Boolean));
+    setTimeout(tidyFacts, 0);
   }
+
+  /* A fact that ends a line drops its dot: "Stage Scoring ·" with the count on the next line read as
+     unfinished (design read, 26 Oct 2026). */
+  function tidyFacts() {
+    const line = document.querySelector(".hb-head__facts");
+    if (!line) return;
+    const items = Array.from(line.children);
+    items.forEach((el, i) => {
+      const next = items[i + 1];
+      el.classList.toggle("is-line-end", Boolean(next) && next.offsetTop > el.offsetTop + 2);
+    });
+  }
+  window.addEventListener("resize", () => tidyFacts(), { passive: true });
 
   /* The colour theme: always light (decided 11 Oct 2026), whatever the device prefers.
      data-theme="light" switches off the dark token blocks in styles.css, which stay for later. */
@@ -319,6 +333,32 @@
       }
     }
   }
+
+  // One tab drawn off screen at the page's width, for the self-check on every tab (views/layoutcheck.js
+  // scanAll), so a name that only breaks on Results is found without anyone opening Results. Its
+  // context moves nothing and redraws nothing; the caller removes the box. Null for an unknown tab.
+  HB.drawOffscreen = function (id) {
+    const view = bundle ? tabs().find((v) => v.id === id) : null;
+    const main = document.getElementById("main");
+    if (!view || !main) return null;
+    const box = h("div", { class: "hb-main hb-offscreen", inert: "",
+      style: { position: "absolute", left: "-40000px", top: "0", width: main.clientWidth + "px" } });
+    const root = h("div", { class: "hb-view", "data-view": view.id });
+    box.append(root);
+    document.body.append(box);
+    const quiet = () => {};
+    const ctx = Object.assign(context(), { state: Object.assign({}, HB.state, { openCell: null }),
+      route: { tab: view.id, parts: [] }, go: quiet, openCell: quiet, closeCell: quiet, setGroupBy: quiet,
+      highlight: quiet, render: quiet });
+    try {
+      const made = view.render(root, ctx);
+      if (made instanceof Node && !made.isConnected) root.append(made);
+    } catch (err) {
+      box.remove();
+      return null;
+    }
+    return box;
+  };
 
   function syncCell() {
     const cell = HB.state.openCell;

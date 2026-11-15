@@ -513,7 +513,7 @@
         class: "btn btn--small",
         "aria-pressed": compare === onCompare ? "true" : "false",
         onclick: () => (compare ? (onCompare ? null : ctx.go("results", "compare")) : ctx.go("results")),
-      }, compare ? "Compare with last edition" : "Summary");
+      }, compare ? "Comparison" : "Summary");      // not "with last edition": some runs re-score the published edition
       top.appendChild(h("div", { class: "segmented res-switch", role: "group", "aria-label": "Results view" }, pick(false), pick(true)));
     }
     if (onCompare) HB.compareView.render(root, ctx);

@@ -10,6 +10,7 @@ import copy
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -354,6 +355,8 @@ def protected_folder(path, home: Path | None = None) -> str | None:
     """"Desktop", "Documents" or "Downloads" when `path` is inside one of them, else None. macOS
     guards these folders: the double-click "Open ..." app is refused ("Operation not permitted")
     when the tool or the project sits in one, so neither should."""
+    if sys.platform != "darwin":         # only macOS guards them this way
+        return None
     given, home = Path(path).expanduser(), home or Path.home()
     for name in PROTECTED:
         if given == home / name or home / name in given.parents:
