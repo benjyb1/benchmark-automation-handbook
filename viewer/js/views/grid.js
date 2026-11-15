@@ -157,7 +157,7 @@
 .hbg-ov__sec { display: grid; grid-template-rows: 1fr auto; gap: 2px; min-width: 0; }   /* the numbers sit on one line under names of any height */
 .hbg-ov__sec > .hbg-ov__secname { align-self: end; }
 .hbg-ov__secname.is-short { font-size: 0; line-height: 0; }   /* partly behind a pinned column: see edgeNames */
-.hbg-ov__secname.is-short::after { content: attr(data-short); font-size: var(--fs-12); line-height: 1.2; white-space: nowrap; }
+.hbg-ov__secname.is-short::after { content: attr(data-short); display: block; width: var(--short-w, auto); font-size: var(--fs-12); line-height: 1.2; white-space: normal; overflow-wrap: normal; }   /* wraps in the part in view, on the header's own lines */
 .hbg-ov__secname.is-cut { visibility: hidden; }
 .hbg-ov__secname { width: 0; min-width: 100%; color: var(--ink); line-height: 1.2; overflow-wrap: anywhere; }   /* wraps as far as it needs: never cut (22 Oct 2026); no hyphens: the section is as wide as its longest word, and "hyphens: auto" still broke "com-mitment" to fill a line (GLAAD, 23 Oct) */
 /* A section is as wide as its marks or its name's longest word, whichever is wider, so a two-mark
@@ -868,6 +868,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     names.forEach((el) => {
       el.classList.remove("is-cut", "is-short");
       el.style.transform = "";
+      el.style.removeProperty("--short-w");
     });
     head.style.minHeight = "";
     head.style.minHeight = head.getBoundingClientRect().height + "px";   // the header keeps its height as names shorten
@@ -887,20 +888,38 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
         pen = wordCanvas.getContext("2d");
         pen.font = getComputedStyle(el).font;
       }
-      // Shorter forms, in this order: the name up to its colon ("Pillar 2"), the name cut at a whole word,
-      // then the section's own code when it has a letter in it ("P2", "IV"; a bare "6" says nothing).
+      // The name wraps in the part in view, on as many lines as the header has above the numbers: the
+      // whole name if it fits there, else the name cut at a whole word (the longest that fits), the name up
+      // to its colon ("Pillar 2"), then the section's own code when it has a letter in it ("P2", "IV"; a bare "6" says nothing).
+      // On one line only, a GLAAD section three marks wide was "5b" under four-line names (design read,
+      // 15 Nov 2026); wrapped, it says "Indicator 5b: User data...".
       const full = el.textContent, room = right - left;
-      const tries = [];
-      const colon = full.indexOf(":");
-      if (colon > 0) tries.push(full.slice(0, colon).trim());
-      for (let chars = Math.floor(room / 6.5); chars >= 6; chars -= 2) {
+      const sec = el.parentElement, nums = sec && sec.lastElementChild !== el ? sec.lastElementChild : null;
+      const lineH = parseFloat(getComputedStyle(el).fontSize || "12") * 1.2 || 14.4;
+      const tall = nums ? nums.getBoundingClientRect().top - sec.getBoundingClientRect().top - 2 : lineH;
+      const most = Math.max(1, Math.floor((tall + 1) / lineH));
+      const space = pen.measureText(" ").width;
+      const lines = (text) => {
+        let n = 1, cur = 0;
+        for (const w of String(text).split(" ")) {
+          const ww = pen.measureText(w).width;
+          if (ww > room - 1) return Infinity;
+          if (!cur) cur = ww; else if (cur + space + ww <= room - 1) cur += space + ww; else { n++; cur = ww; }
+        }
+        return n;
+      };
+      const tries = [full];
+      for (let chars = Math.min(full.length - 1, Math.floor(room / 6.5) * most); chars >= 6; chars -= 2) {
         const cut = HB.shortText(full, chars);
         if (/\s/.test(cut.replace(/\u2026.*$/, ""))) tries.push(cut);   // keeps a whole word, not "Indicat..."
       }
+      const colon = full.indexOf(":");
+      if (colon > 0) tries.push(full.slice(0, colon).trim());
       if (el.dataset.id && el.dataset.id.length <= 4 && /[a-z]/i.test(el.dataset.id)) tries.push(el.dataset.id);
-      const fits = tries.find((t) => pen.measureText(t).width <= room - 1);
+      const fits = tries.find((t) => lines(t) <= most);
       if (fits) {
         el.dataset.short = fits;
+        el.style.setProperty("--short-w", Math.floor(room - 1) + "px");
         el.classList.add("is-short");
         if (shift) el.style.transform = "translateX(" + Math.round(shift) + "px)";
       } else {

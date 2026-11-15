@@ -551,12 +551,19 @@
 
   // Text cut to at most about n characters for a line that can't hold it all: at a whole word ("publicly
   // avai..." read as a typo, design read 26 Oct 2026), with no stray stop or comma before the "...", and a
-  // quote or bracket opened in the kept part closed again ("(e.g...." had four dots and no close).
+  // quote or bracket opened in the kept part closed again ("(e.g...." had four dots and no close). A cut that
+  // would land inside a bracket ends before it instead, when enough is left: "the focus list if that is the...)"
+  // read as broken text (design read, 15 Nov 2026), "the companies in this round..." does not.
   function shortText(t, n) {
     const x = String(t == null ? "" : t).replace(/\s+/g, " ").trim();
     if (x.length <= n) return x;
     let cut = x.slice(0, n).replace(/\s+\S*$/, "");
     if (cut.length < n / 2) cut = x.slice(0, n - 1);   // one long word: cut inside it rather than say nothing
+    let depth = 0, open = -1;
+    for (let i = 0; i < cut.length; i++) {
+      if (cut[i] === "(") { if (depth === 0) open = i; depth++; } else if (cut[i] === ")" && depth > 0) depth--;
+    }
+    if (depth > 0 && open >= n * 0.25) cut = cut.slice(0, open);
     cut = cut.replace(/[\s.,;:!?\-\u2013\u2014('"\u2018\u201c]+$/, "");
     let close = "";
     if ((cut.match(/\(/g) || []).length > (cut.match(/\)/g) || []).length) close = ")";
