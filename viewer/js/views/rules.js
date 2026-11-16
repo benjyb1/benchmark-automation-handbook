@@ -256,6 +256,14 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
     return sentences.slice(first, last + 1).join(" ");
   }
 
+  /* The rule's text without its question, which is shown as the heading above it. */
+  function backgroundOf(ask, line) {
+    if (!ask || !line || ask === line) return ask === line ? "" : ask;
+    const at = ask.indexOf(line);
+    if (at < 0) return ask;
+    return (ask.slice(0, at).trim() + " " + ask.slice(at + line.length).trim()).trim();
+  }
+
   function sortRules(rules, by, order) {
     const qKey = (r) => Math.min(...(r.question_ids || []).map((q) => (order.has(String(q)) ? order.get(String(q)) : 1e6)), 1e6);
     const cells = new Map(rules.map((r) => [r.id, cellsOf(r).length]));
@@ -514,8 +522,9 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
       const cells = cellsOf(rule);
       const resting = restingByRule(bundle).get(rule.id) || [];
       const ask = String(rule.ask || "").trim();
-      /* Under the question, the rest of the ask; all of it when the question is not where it starts. */
-      const background = !ask || ask === line ? "" : ask.startsWith(line) ? ask.slice(line.length).trim() : ask;
+      /* Under the question, the rest of the ask without the question itself, wherever the question
+         sits in it (start, middle or end), so it is never said twice. */
+      const background = backgroundOf(ask, line);
       const qs = questionsWords(rule, questionOrder(bundle));
       const pts = pointsOf(rule);
       const stat = (value, label, cls) => h("div", null, h("dt", null, label), h("dd", { class: cls }, value));
@@ -536,10 +545,13 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
         h("dl", { class: "rl-stats" },
           // Answers, not "cells", and words that don't read as a contradiction ("1,700 cells affected" beside
           // "0 answers cite this rule", design read, 26 Oct 2026).
-          stat(fmtInt(cells.length), cells.length === 1 ? "answer it can change" : "answers it can change"),
+          // "Covers" for every answer under the rule, and for a decided rule only those whose answer rested
+          // on it: "1,700 answers it can change" beside "0 answers used it" read as a decision that did
+          // nothing (design read, 15 Nov 2026).
+          stat(fmtInt(cells.length), cells.length === 1 ? "answer it covers" : "answers it covers"),
           pts == null ? null : stat(fmtInt(pts), "points at most"),
           stat(fmtInt(resting.length), awaiting ? (resting.length === 1 ? "uses Claude's reading for now" : "use Claude's reading for now")
-            : (resting.length === 1 ? "answer used it" : "answers used it")),
+            : (resting.length === 1 ? "answer it decided" : "answers it decided")),
           stat(qs.text, qs.n === 1 ? "question" : "questions", qs.all ? null : "rl-stats__q")),
         h("p", { class: "rl-cells" },
           show(cells, "Show " + plural(cells.length, "answer")),
@@ -684,11 +696,15 @@ label.rl-opt:hover { border-color: var(--rule-strong); }
 
   function progress(order) {
     const t = { open: 0, waiting: 0, skipped: 0, decided: 0 };
-    const segs = order.map((r) => {
-      const st = statusOf(r);
-      t[st] += 1;
-      return h("span", { class: "rl-prog__seg", "data-s": st, title: r.id + ": " + STATUS[st].word });
-    });
+    /* The bar fills from the left: decided first, then waiting, skipped and open, each in list order.
+       In list order the decided segments sat scattered through the bar and it looked broken. */
+    const rank = { decided: 0, waiting: 1, skipped: 2, open: 3 };
+    const segs = order.map((r, i) => ({ r, i, st: statusOf(r) }))
+      .sort((a, b) => (rank[a.st] ?? 4) - (rank[b.st] ?? 4) || a.i - b.i)
+      .map(({ r, st }) => {
+        t[st] += 1;
+        return h("span", { class: "rl-prog__seg", "data-s": st, title: r.id + ": " + STATUS[st].word });
+      });
     const words = [h("strong", null, fmtInt(t.decided) + " of " + fmtInt(order.length)), " decided"];
     if (t.waiting) words.push(" · " + fmtInt(t.waiting) + " waiting for Claude");
     if (t.skipped) words.push(" · " + fmtInt(t.skipped) + " skipped");

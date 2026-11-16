@@ -407,8 +407,26 @@
       unit: nouns,
       labelHeader: word.charAt(0).toUpperCase() + word.slice(1),
       caption: `Counts of ${nouns.many} with every question scored, best ${word} first. ` +
-        (set.bands.map((b) => `${b.name} from ${fmtInt(b.min)}`).join(", ")) + ".",
+        bandRules(set) + ".",
     });
+  }
+
+  /* What each band needs, in the order shown: "Tier 1 from 70", and for a band reached by meeting
+     sections in full, how many ("Level 5* with the first 6 sections in full"). "Level 5* from 0,
+     Level 5 from 0" said nothing about what the star meant (TPI, design read 15 Nov 2026). */
+  function bandRules(set) {
+    const order = ((bundle().scoresheet || {}).sections || []).map((x) => x && x.id);
+    return set.bands.map((b, i) => {
+      const need = Array.isArray(b.requires_full) ? b.requires_full : [];
+      const first = need.length && need.every((id) => order.indexOf(id) > -1 && order.indexOf(id) < need.length);
+      const sections = need.length === 1 ? (first ? "the first section" : sectionName(need[0]))
+        : (first ? "the first " : "") + fmtInt(need.length) + " sections";
+      const bits = [];
+      if (isNum(b.min) && b.min > 0) bits.push("from " + fmtInt(b.min));
+      if (need.length) bits.push("with " + sections + " in full");
+      if (!bits.length) bits.push(i === set.bands.length - 1 && i > 0 ? "otherwise" : "from " + fmtInt(b.min || 0));
+      return `${b.name} ${bits.join(", ")}`;
+    }).join("; ");
   }
 
   function perQuestion() {

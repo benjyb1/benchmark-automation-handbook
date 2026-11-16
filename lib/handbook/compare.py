@@ -49,7 +49,7 @@ NOT_COMPARED_TEXT = {
     "total_only": "Last edition's results give only a total for it, so it is compared once all its questions are scored.",
     "not_in_last_edition": "It is not in last edition's results.",
     "not_in_units": "It is in last edition's results but not among this edition's rows.",
-    "rank_only": "Last edition gives it only a rank, so it is checked in the rank order, not figure by figure.",
+    "rank_only": "Last edition's results give it only a rank, so it is checked in the rank order, not figure by figure.",
 }
 
 

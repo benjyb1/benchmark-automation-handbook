@@ -5,7 +5,7 @@
 
    HB.gridGaps.marker(unit)   a small quiet button for the end of a row's name,
                               or null when Claude got everything for the row. It
-                              reads "2 missing" (what Claude expected but could
+                              reads "2 docs missing" (what Claude expected but could
                               not find, plus the documents it found but could
                               not keep a copy of) and opens a short list in a
                               dialog: "Couldn't find: ..." and "Couldn't get a
@@ -136,7 +136,7 @@
       type: "button", class: "hbg-gap", title: say, "aria-haspopup": "dialog",
       "aria-label": (unit.name || unit.id) + ": " + say + ". Open the list.",
       onclick: () => open(unit),
-    }, fmtInt(n) + " missing");
+    }, fmtInt(n) + (n === 1 ? " doc missing" : " docs missing"));   // says what: "5 missing" beside a row Results calls fully scored read as missing answers (CA, design read 15 Nov 2026)
   }
 
   // Whether the row has at least one answer.

@@ -106,7 +106,7 @@
     const mine = String((bundle().project || {}).edition ?? "").trim();
     if (ed && ed === mine) {
       them = `the published ${ed} scores`; Them = `Published ${ed}`;
-      when = `in the published ${ed} scores`; theirResults = `the published ${ed} results`;
+      when = `in the published ${ed} scores`; theirResults = `the published ${ed} scores`;
     } else if (ed && mine && (mine.includes(ed) || ed.includes(mine))) {
       them = "last edition"; Them = "Last edition"; when = "in the last edition"; theirResults = "last edition's results";
     } else {
@@ -1562,6 +1562,13 @@
         `${plural(unexplained, "difference", "differences")} at this level ${unexplained === 1 ? "is" : "are"} not explained yet. Open ${unexplained === 1 ? "it" : "one"} below and press Ask Claude why.`) : null);
   }
 
+  /* A reason in the heading's name for the results compared with, at the start of a sentence too
+     ("Last edition's results give only a total" under "published 2026 scores", GLAAD, 15 Nov 2026).
+     Older compare files said "Last edition gives it only a rank". */
+  function sameName(text) {
+    return text.replace(/\blast edition gives\b/gi, "last edition's results give").replace(/\blast edition's results\b/gi, theirResults);
+  }
+
   function notCompared(c) {
     const list = (c.summary || {}).not_compared || [];
     if (!list.length) return null;
@@ -1573,7 +1580,7 @@
       // edition's results" under a heading about the published 2026 scores read as a contradiction).
       h("ul", { class: "cmp-not" }, list.map((x) => h("li", null,
         h("strong", null, rowName(x.row)), ": ",
-        capital(String(x.text || x.why || "").replace(/^It is /, "").replace(/last edition's results/g, theirResults))))));   // every reason starts the same way (TPI, 15 Nov 2026)
+        capital(sameName(String(x.text || x.why || "").replace(/^It is /, "")))))));   // every reason starts the same way (TPI, 15 Nov 2026)
   }
 
   function render(root, ctx) {
