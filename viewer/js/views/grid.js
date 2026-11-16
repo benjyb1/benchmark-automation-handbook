@@ -78,7 +78,6 @@
 
   const STYLE = `
 .hb-view[data-view="grid"] { gap: var(--s2); }
-.hbg-more { margin: 0 0 var(--s1); }
 .hbg-bar { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); }
 .hbg-key.hbg-view { position: static; }   /* the panel hangs from the bar's right edge, wherever View wraps to */
 .hbg-bar__grow { flex: 1 1 0; min-width: 0; }
@@ -140,11 +139,13 @@
    names sit in the same column as their marks, so they move together. The name column is as wide
    as the longest row or group name (fitNames, at most 28rem), so short names such as producers
    don't leave a gap before the marks and long names such as trial titles are not cut. */
-.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: 8rem; --name-cap: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --name-max: min(var(--name-fit, var(--name-cap)), var(--name-cap)); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
+.hbg-ov { --mk-w: 18px; --mk-gap: 3px; --sec-gap: 14px; --strip-w: calc(var(--nq) * var(--mk-w) + (var(--nq) - var(--ns)) * var(--mk-gap) + (var(--ns) - 1) * var(--sec-gap)); --name-min: min(var(--name-max), 15rem); --name-cap: clamp(15rem, 100cqi - var(--strip-w) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad) - 2px, 28rem); --name-max: min(var(--name-fit, var(--name-cap)), var(--name-cap)); --num-w: 3.5rem; --tier-w: 7rem; --ov-gap: var(--s4); --ov-pad: var(--s3); --ov-cols: minmax(var(--name-min), var(--name-max)) var(--strip-w) var(--num-w) minmax(var(--tier-w), 1fr); --ov-w: calc(var(--name-max) + var(--strip-w) + var(--num-w) + var(--tier-w) + 3 * var(--ov-gap) + 2 * var(--ov-pad)); position: relative; max-height: calc(100dvh - 2rem); overflow: auto; overscroll-behavior-x: contain; container-type: inline-size; border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); font-size: var(--fs-14); }
 .hbg-ov > * { min-width: var(--ov-w); }
 .hbg-ov__head, .hbg-ov__r, .hbg-ov__gh { display: grid; grid-template-columns: var(--ov-cols); align-items: center; gap: 0 var(--ov-gap); padding-inline: var(--ov-pad); }
 .hbg-ov__head { position: sticky; top: 0; z-index: 5; align-items: end; padding-block: var(--s2) var(--s1); border-bottom: 1px solid var(--rule-strong); border-radius: var(--radius) var(--radius) 0 0; background: var(--surface); color: var(--ink-2); font-size: var(--fs-12); font-weight: 600; }
 .hbg-ov__head > .hbg-num { text-align: right; }
+.hbg-ov__corner { display: flex; flex-direction: column; gap: var(--s1); min-width: 0; }
+.hbg-restkey { color: var(--ink-2); font-size: var(--fs-12); font-weight: 400; line-height: 1.3; }
 .hbg-ov__pin-l, .hbg-ov__pin-n, .hbg-ov__pin-r { position: sticky; z-index: 4; align-self: stretch; background: inherit; }
 .hbg-ov__pin-l { left: 0; margin-inline: calc(-1 * var(--ov-pad)) calc(-1 * var(--ov-gap)); padding-inline: var(--ov-pad) var(--ov-gap); box-shadow: inset -1px 0 0 var(--rule); }
 /* While questions go on past an edge, that edge's pinned column casts a soft shade over the marks sliding under it,
@@ -178,7 +179,7 @@
    one line cut "Coca-Cola Consolidated" to "Coca-Cola Conso..." (all-projects sweep, 27 Oct 2026). A name
    longer than two lines still ends in "..." with the whole name on hover. */
 .hbg-ov__gname { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-family: var(--serif); font-size: var(--fs-16); font-weight: 600; line-height: 1.25; overflow-wrap: anywhere; }
-.hbg-ov__gmeta { min-width: 0; padding-left: var(--s2); color: var(--ink-2); font-size: var(--fs-12); }   /* clear of the column line, not against it (design read, 15 Nov 2026) */
+.hbg-ov__gmeta { min-width: 0; max-width: max(6rem, 100cqi - var(--name-max) - var(--num-w) - var(--tier-w) - 3 * var(--ov-gap) - 2 * var(--ov-pad)); padding-left: var(--s2); color: var(--ink-2); font-size: var(--fs-12); white-space: normal; overflow-wrap: anywhere; }   /* wraps inside the strip in view: with the answer panel open the strips scroll under the pinned Overall, and "2 companies in the food and drin" was covered (sweep, 16 Nov 2026) */
 .hbg-ov__gh .hbg-num { font-weight: 600; }
 .hbg-ov__open { justify-self: end; white-space: nowrap; }
 .hbg-ov__rows { padding-block: 2px; }
@@ -253,6 +254,8 @@
 .hbg-table .hbg-pin-r { width: var(--band-w); min-width: var(--band-w); max-width: var(--band-w); overflow: hidden; text-overflow: ellipsis; }
 .hbg-table :is(.hbg-pin-n, .hbg-pin-end) { box-shadow: inset 1px 0 0 var(--rule-strong); }
 .hbg-table thead :is(.hbg-pin-n, .hbg-pin-r, .hbg-pin-end) { z-index: 4; }
+.hbg-scroll.is-more-right .hbg-table :is(.hbg-pin-n, .hbg-pin-end) { box-shadow: inset 1px 0 0 var(--rule-strong), -10px 0 10px -8px color-mix(in srgb, var(--ink) 35%, transparent); }
+.hbg-scroll.is-more-left .hbg-table .hbg-rh { box-shadow: 10px 0 10px -8px color-mix(in srgb, var(--ink) 35%, transparent); }
 .hbg-partial { display: block; color: var(--ink-2); font-size: var(--fs-12); font-weight: 400; }
 
 /* Marks of state shared by every view */
@@ -264,7 +267,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
   .hbg-ov { --name-min: 6rem; --name-cap: 12rem; --num-w: 3rem; --tier-w: 4.5rem; }
   .hbg-ov__gmeta { white-space: normal; }
 }
-@media all { .hb.has-dock .hbg-ov { --name-min: 6rem; --name-cap: 11rem; --num-w: 3rem; --tier-w: 7.5rem; } }   /* the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
+@media all { .hb.has-dock .hbg-ov { --name-min: min(var(--name-max), 14rem); --name-cap: 14rem; --num-w: 3rem; --tier-w: 7.5rem; } }   /* names keep the room they need up to 14rem, the strips scroll (6rem to 11rem cut "Coca-Cola Consolida…" and wrapped "General Mills", design read 16 Nov 2026); the docked cell panel takes ~31rem; one line starting "@" so scoped() leaves the selector alone */
 @media (width < 52rem) {
   .hbg-ov { --mk-w: 15px; --mk-gap: 2px; --sec-gap: 10px; }
   .hbg-ov .hbg-rm { min-width: 0; width: var(--mk-w); padding: 0; font-size: 0.5625rem; letter-spacing: -0.02em; }
@@ -725,6 +728,13 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
       h("span", { class: "hbg-tip" + (end ? " hbg-tip--end" : ""), role: "tooltip" }, words + "."));
   }
 
+  /* Words beside the dashed boxes, under the name column's heading, whenever there are any: on their own
+     the numbers read as a second count of flags (Pecking Order, design read 16 Nov 2026). */
+  function restLegend(m) {
+    const any = Array.from(m.restsByQ.values()).some((r) => r && r.n);
+    return any ? h("span", { class: "hbg-restkey" }, "Numbers in dashed boxes count answers resting on open rules") : null;
+  }
+
   function qidTip(q, text, end) {
     return h("span", { class: "hbg-qid", tabindex: "0", "aria-label": q.id + (q.short ? " " + q.short : "") }, text,
       q.short || text !== q.id ? h("span", { class: "hbg-tip" + (end ? " hbg-tip--end" : ""), "aria-hidden": "true" }, q.id + (q.short ? " " + q.short : "")) : null);
@@ -794,7 +804,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     let col = 0;
     const total = m.sections.reduce((n, s) => n + s.qs.length, 0);
     return h("div", { class: "hbg-ov__head" },
-      h("span", { class: "hbg-ov__pin-l" }, unitWord),
+      h("span", { class: "hbg-ov__pin-l" }, h("span", { class: "hbg-ov__corner" }, unitWord, restLegend(m))),
       h("span", { class: "hbg-ov__secs" }, m.sections.map((sec, si) => {
         const nums = m.shortIds(sec);
         const full = sec.name ? sec.id + " " + sec.name : sec.id;
@@ -1039,6 +1049,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     const range = document.createRange();
     let widest = 0;
     live.querySelectorAll(".hbg-ov__pin-l").forEach((el) => {
+      if (el.closest(".hbg-ov__head")) return;   // the heading's words wrap to the names' width, not the other way
       range.selectNodeContents(el);
       widest = Math.max(widest, range.getBoundingClientRect().width);
     });
@@ -1110,7 +1121,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 
   function tableHead(m, sections) {
     const unitWord = cap(m.p.unit_word || "row");
-    const secRow = [h("th", { class: "hbg-corner", scope: "col", rowspan: "2" }, unitWord)];
+    const secRow = [h("th", { class: "hbg-corner", scope: "col", rowspan: "2" }, h("span", { class: "hbg-ov__corner" }, unitWord, restLegend(m)))];
     const qRow = [];
     const qCount = sections.reduce((n, g) => n + g.qs.length, 0);
     let col = 0;
@@ -1410,16 +1421,19 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
 
   /* ---- The tab ----------------------------------------------------------------- */
 
-  /** A line over the grid when questions are off to the right, so nobody takes the visible ones for all
-      of them (the box's own scrollbar sits at its foot, often off screen). It goes once scrolled to the end. */
-  function moreToTheRight(root) {
-    requestAnimationFrame(() => {
-      const box = root.querySelector(".hbg-desk .hbg-ov, .hbg-desk .hbg-scroll");
-      if (!box || box.scrollWidth <= box.clientWidth + 4) return;
-      const note = h("p", { class: "hbg-more small muted" }, "More questions to the right: scroll the grid sideways (Shift and the mouse wheel, or swipe) to see them.");
-      box.parentNode.insertBefore(note, box);
-      box.addEventListener("scroll", () => { note.hidden = box.scrollLeft + box.clientWidth >= box.scrollWidth - 4; }, { passive: true });
-    });
+  /** The Table's edge shades, as the strips have (edgeNames): a soft shade on the pinned Overall column while
+      questions go on to the right, and on the name column once scrolled. They replace a line of words over
+      the grid ("More questions to the right: scroll the grid sideways...", taken out 16 Nov 2026). */
+  function tableEdges(root) {
+    const box = root.querySelector(".hbg-desk .hbg-scroll");
+    if (!box) return;
+    const mark = () => {
+      if (!box.isConnected) return;
+      box.classList.toggle("is-more-left", box.scrollLeft > 1);
+      box.classList.toggle("is-more-right", box.scrollLeft + box.clientWidth < box.scrollWidth - 1);
+    };
+    box.addEventListener("scroll", mark, { passive: true });
+    setTimeout(mark, 0);
   }
 
   function render(root, ctx) {
@@ -1455,7 +1469,7 @@ a[data-row][data-q].is-open { z-index: 3; outline: 2px solid var(--ink); outline
     } else {
       root.append(h("div", { class: "hbg-desk" }, view === "table" ? allTable(ctx, m) : strips(ctx, m)));
       if (typeof HB.gridPhone === "function") root.append(h("div", { class: "hbg-phone" }, HB.gridPhone(ctx, m)));
-      moreToTheRight(root);
+      tableEdges(root);
     }
     const inView = new Set(m.shown.map((u) => u.id));
     const hidden = (Array.isArray(state.highlight) ? state.highlight : []).filter((c) => !inView.has(String(c[0]))).length;

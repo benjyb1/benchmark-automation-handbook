@@ -716,6 +716,10 @@ class Worker:
                 continue
             req = {"id": d["id"], "kind": d["kind"], "rows": [str(r) for r in d.get("rows") or []],
                    "questions": [str(q) for q in d.get("questions") or []], "asked": now_iso()}
+            busy = self.team.colleague_scoring(req["rows"]) if self.team is not None else None
+            if busy:                          # a colleague is scoring these rows on their own computer and plan
+                self.note(busy, "warning")
+                continue
             title = ("Trying a few " if req["kind"] == "trial" else "Scoring ") + self._plural()
             # Finding the documents is priced too, for each row not looked for yet (21 Oct 2026: trials came in at
             # 3 to 14 times the top of an estimate that left it out). A trial with no rows chosen picks its own
@@ -802,7 +806,9 @@ class Worker:
             first = next(iter(self.project.read("questions").get("questions") or []), {}).get("id")
             rows = (self._json_out("cover", "--question", str(first), "--size", str(TRIAL_ROWS)).get("rows") or [])[:TRIAL_ROWS] if first else []
         with self.cmd.lock:
-            open_full = next((r for r in self.project.runs() if r.get("kind") == "full" and r.get("finished") is None), None)
+            # In a team, only this person's own open run is carried on: a colleague's is theirs to pause and stop.
+            open_full = next((r for r in self.project.runs() if r.get("kind") == "full" and r.get("finished") is None
+                              and (self.team is None or self.team.owns(r.get("by")))), None)
             # Carrying on a paused trial (the run bar's Resume, the chat's resume) goes on in the same trial run
             # rather than opening a second one beside it.
             open_trial = next((r for r in self.project.runs() if r.get("kind") == "trial" and r.get("finished") is None

@@ -1699,7 +1699,7 @@ svg.cellp-glyph .is-fill { fill: currentColor; stroke: none; }
       const empty = cell.waiting ? "Waits for data you need to supply, so there is no evidence yet."
         : cell.state === "answered" ? "No evidence recorded for this answer."
           : cell.state === "no_evidence" ? "Nothing was found for this question."
-            : cell.state === "not_run" ? "Not scored yet, so there is no evidence."
+            : cell.state === "not_run" ? "Claude hasn't read anything for this question yet."   // the heading already says "Not scored yet" (design read, 16 Nov 2026)
               : "No evidence recorded.";
       return { sections: [section("cellp-quotesec", heading("Quote"), h("p", { class: "cellp-none" }, empty))], show: () => {} };
     }

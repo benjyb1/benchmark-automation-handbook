@@ -178,6 +178,10 @@
       }, 2000);
     } else {
       const s = step();
+      // A button that would go to the tab already open says nothing: "See the results" on Results
+      // (design read, 16 Nov 2026).
+      const here = typeof HB.route === "function" ? (HB.route() || {}).tab : null;
+      if (s.label === "See the results" && here === "results") return null;
       const go = h("button", { type: "button", class: "btn btn--primary hb-next__go", id: "hb-next-go",
         disabled: !(HB.edits && HB.edits.ready) && s.label !== "Finish set-up" && s.label !== "See the results" }, s.label);
       go.addEventListener("click", s.go);

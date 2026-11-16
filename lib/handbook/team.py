@@ -437,6 +437,27 @@ def resolve_clash(project: Project, cid: str, chose: str, person: dict) -> dict:
             listed.append(side["data"])
         rules["rules"] = listed
         project.write("rules", rules)
+    elif kind in ("setup", "setting"):
+        target = _inside(project, clash["file"])
+        data = read_json(target, {}) or {}
+        if kind == "setup":
+            listed = data.get(clash["list"]) or []
+            at = next((i for i, r in enumerate(listed) if isinstance(r, dict) and r.get("id") == clash["item"]), None)
+            now = listed[at] if at is not None else None
+        else:
+            now = data.get(clash["setting"])
+        if now is not None and now not in [s.get("data") for s in clash.get("sides") or []]:
+            raise HandbookError(f"{cap_first(clash.get('title'))} has changed again since this clash. "
+                                "Look at it on the Set-up tab as it is now.")
+        if kind == "setup":
+            if at is None:
+                listed.append(side["data"])
+            else:
+                listed[at] = side["data"]
+            data[clash["list"]] = listed
+        else:
+            data[clash["setting"]] = side["data"]
+        write_json(target, data)
     elif kind == "file":
         target = _inside(project, clash["file"])
         if side.get("data") is None:
@@ -727,6 +748,11 @@ def _merge_one(project: Project, person: dict, copy: Path, base: Path, service: 
     elif rel.startswith(CLASH_DIR):
         keep = a if not a.get("open") else b if not b.get("open") else a
         write_json(base, keep)
+    elif rel in SETUP_LISTS and isinstance(a, dict) and isinstance(b, dict) \
+            and isinstance(a.get(SETUP_LISTS[rel]), list) and isinstance(b.get(SETUP_LISTS[rel]), list):
+        new.extend(_merge_setup_list(project, person, base, rel, a, b))
+    elif rel in SETUP_FILES and isinstance(a, dict) and isinstance(b, dict):
+        new.extend(_merge_setup_file(project, person, base, rel, a, b))
     else:
         new.append(add_clash(project, {
             "kind": "file", "source": "sync", "file": rel, "title": f"the file {rel}",
@@ -734,6 +760,102 @@ def _merge_one(project: Project, person: dict, copy: Path, base: Path, service: 
                       _side(None, f"{service}'s copy", None, f"the copy {service} kept", b, "b")]},
             person)["id"])
     _set_aside(project, copy)
+    return new
+
+
+# ---- Set-up files: merged item by item, and a clash said in words ------------------------------------------
+# Two people changing the set-up at once (in the chat, or the Set-up tab) used to leave a clash showing two
+# whole files side by side, which nobody can choose between (team edge cases, 16 Nov 2026). Now the items
+# both versions agree on, or that only one has, are merged, and each item changed both ways is its own
+# clash, said as what each version sets.
+
+SETUP_LISTS = {"questions.json": "questions", "units.json": "units"}
+SETUP_FILES = ("project.json", "scoresheet.json", "where_to_look.json", "needs.json")
+FIELD_WORDS = {
+    "wording": "question", "short": "short name", "answer": "answers", "rule": "how to score",
+    "evidence": "evidence asked for", "applies_to": "applies to", "section": "section", "status": "status",
+    "variants": "variants", "no_evidence_value": "answer when nothing is found", "name": "name",
+    "labels": "labels", "edition": "edition", "unit_word": "word for one row", "unit_word_plural": "word for rows",
+    "cutoff": "cut-off date", "group_labels": "group names", "group_by": "grouped by", "stage": "stage",
+    "sections": "sections", "overall": "overall score", "bands": "bands", "plan": "where to look",
+    "last_year": "last edition's sources", "needs": "what each row needs",
+}
+FILE_WORDS = {"project.json": "the benchmark's settings", "scoresheet.json": "the scoresheet",
+              "where_to_look.json": "where to look for documents", "needs.json": "what each row needs"}
+
+
+def cap_first(text) -> str:
+    text = str(text or "")
+    return text[:1].upper() + text[1:]
+
+
+def _plain(value, limit: int = 160) -> str:
+    """A setting's value in a few readable words, for a clash card."""
+    if value is None or value == "" or value == [] or value == {}:
+        text = "nothing"
+    elif isinstance(value, str):
+        text = f"“{value}”"
+    elif isinstance(value, bool):
+        text = "yes" if value else "no"
+    elif isinstance(value, (int, float)):
+        text = str(value)
+    elif isinstance(value, list):
+        text = "; ".join(_plain(v, 60).strip("“”") for v in value[:6]) + ("; …" if len(value) > 6 else "")
+    elif isinstance(value, dict):
+        text = "; ".join(f"{FIELD_WORDS.get(k, str(k).replace('_', ' '))} {_plain(v, 60)}" for k, v in list(value.items())[:6])
+    else:
+        text = str(value)
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _differs(x: dict, y: dict) -> list[str]:
+    return [k for k in list(x) + [k for k in y if k not in x] if x.get(k) != y.get(k)]
+
+
+def _version_words(rec: dict, keys: list[str]) -> str:
+    return ", ".join(f"{FIELD_WORDS.get(k, k.replace('_', ' '))} {_plain(rec.get(k))}" for k in keys[:4]) or "no change"
+
+
+def _merge_setup_list(project: Project, person: dict, base: Path, rel: str, a: dict, b: dict) -> list[str]:
+    key = SETUP_LISTS[rel]
+    one, other = _by_id(a[key]), _by_id(b[key])
+    merged = list(a[key])
+    new = []
+    for rid, rec in other.items():
+        if rid not in one:
+            # Only in one version. With no common ancestor an add and a delete look the same: keeping it
+            # means a deleted item comes back, which is seen and fixed, rather than an added one lost unseen.
+            merged.append(rec)
+        elif one[rid] != rec:
+            keys = _differs(one[rid], rec)
+            label = (one[rid].get("short") or one[rid].get("name") or rid) if key == "questions" \
+                else (one[rid].get("name") or rid)
+            what = "question" if key == "questions" else "row"
+            new.append(add_clash(project, {
+                "kind": "setup", "source": "sync", "file": rel, "list": key, "item": rid,
+                "title": f"the {what} {label}",
+                "sides": [_side(None, "One version", None, _version_words(one[rid], keys), one[rid], "a"),
+                          _side(None, "The other version", None, _version_words(rec, keys), rec, "b")]},
+                person)["id"])
+    a[key] = merged
+    write_json(base, a)
+    return new
+
+
+def _merge_setup_file(project: Project, person: dict, base: Path, rel: str, a: dict, b: dict) -> list[str]:
+    new = []
+    for k in _differs(a, b):
+        if k not in a:
+            a[k] = b[k]
+        elif k in b:
+            name = FIELD_WORDS.get(k, k.replace("_", " "))
+            new.append(add_clash(project, {
+                "kind": "setting", "source": "sync", "file": rel, "setting": k,
+                "title": f"{name} in {FILE_WORDS.get(rel, rel)}",
+                "sides": [_side(None, "One version", None, _plain(a[k]), a[k], "a"),
+                          _side(None, "The other version", None, _plain(b[k]), b[k], "b")]},
+                person)["id"])
+    write_json(base, a)
     return new
 
 
@@ -938,14 +1060,53 @@ def list_backups(project: Project) -> list[dict]:
     return out
 
 
-def restore(project: Project, name: str, person: dict) -> dict:
+# What the tool does by itself, or what a restore does not wind back: not a colleague's work to lose.
+NOT_WORK = ("joined", "renamed", "shared", "clash_found", "upgraded")
+
+
+def colleagues_since(project: Project, snapshot: Path, my_id: str) -> list[dict]:
+    """What colleagues did after a snapshot was taken, one entry per person, most active first:
+    [{"name", "count", "what": [a few of their log lines]}]. A restore would wind all of it back."""
+    since = _stamp(datetime.fromtimestamp(snapshot.stat().st_mtime, timezone.utc))
+    people: dict = {}
+    for e in reversed(read_log(project)):            # oldest first, so "what" reads in order
+        if e.get("by") == my_id or e.get("kind") in NOT_WORK or str(e.get("at") or "") <= since:
+            continue
+        who = people.setdefault(e.get("by"), {"name": e.get("name") or name_of(project, e.get("by")) or "A colleague",
+                                              "count": 0, "what": []})
+        who["count"] += 1
+        if e.get("text") and len(who["what"]) < 3:
+            who["what"].append(e["text"])
+    return sorted(people.values(), key=lambda w: -w["count"])
+
+
+def restore_warning(people: list[dict], day: str) -> str:
+    """The words the page shows before a restore that would wind back colleagues' work."""
+    def one(w):
+        return f"{w['name']} ({w['count']} change{'s' if w['count'] != 1 else ''})"
+    names_ = [one(w) for w in people]
+    listed = names_[0] if len(names_) == 1 else ", ".join(names_[:-1]) + " and " + names_[-1]
+    return (f"Going back to {day} also undoes what {listed} did since then, for everyone on the team. "
+            "Ask them first. If you go ahead, how it is now is kept as a snapshot on this computer, so it "
+            "can be brought back.")
+
+
+def restore(project: Project, name: str, person: dict, confirmed: bool = False) -> dict:
     """Put the project back as it was in a snapshot. A snapshot of how it is now is taken first, so the
-    restore can itself be undone. Documents are left alone (snapshots do not hold them)."""
+    restore can itself be undone. Documents are left alone (snapshots do not hold them).
+
+    In a team project the folder is everyone's: when colleagues changed anything after the snapshot,
+    nothing is restored until `confirmed`, and {"confirm": words, "colleagues": [...]} comes back instead."""
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}[A-Za-z0-9-]*\.zip", name or ""):
         raise HandbookError("Pick one of the snapshots listed.")
     path = backup_folder(project) / name
     if not path.is_file():
         raise HandbookError("That snapshot is not there any more.")
+    if project.is_team() and not confirmed:
+        people = colleagues_since(project, path, (person or {}).get("id"))
+        if people:
+            when = datetime.strptime(name[:10], "%Y-%m-%d")
+            return {"confirm": restore_warning(people, f"{when.day} {when:%B}"), "colleagues": people}
     import io
     chosen = io.BytesIO(path.read_bytes())    # read first: the snapshot taken next may prune this one
     take_backup(project, force=True, label="before-restore")

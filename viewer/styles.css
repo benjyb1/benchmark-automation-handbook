@@ -1946,7 +1946,7 @@ textarea.input {
     display: none !important;   /* the corner chat's button and panel */
   }
   /* Paper gets the results, not the controls: no tabs, run box, Score button, toolbars or footer. */
-  .skip-link, .hb-tabs, .hb-theme, .hb-next, .hb-banner, .hbl-top, .rb, .hbg-bar, .hbg-ov__open, .hbg-more, .hbl-foot, .drawer {
+  .skip-link, .hb-tabs, .hb-theme, .hb-next, .hb-banner, .hbl-top, .rb, .hbg-bar, .hbg-ov__open, .hbl-foot, .drawer {
     display: none !important;
   }
 }

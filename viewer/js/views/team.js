@@ -262,6 +262,7 @@
     const [a, b] = c.sides || [];
     if (c.source === "save") return (b && b.name ? b.name : "Someone") + " saved a change without having seen " + (a && a.name ? a.name + "'s" : "a colleague's") + " newer one.";
     if (c.kind === "file") return "Two computers saved this file before the sync service caught up, so it kept both versions.";
+    if (c.kind === "setup" || c.kind === "setting") return "Two people changed the set-up at the same time, before the sync service caught up. Everything else they changed was kept; this is the one thing they changed differently.";
     return "Two people changed this before the sync service caught up.";
   }
 
@@ -497,14 +498,22 @@
     const items = list.map((b) => {
       const btn = h("button", { type: "button", class: "btn btn--small btn--quiet" }, "Restore");
       btn.addEventListener("click", async () => {
-        if (btn.dataset.sure !== "yes") {
+        if (!btn.dataset.sure) {
           btn.dataset.sure = "yes";
           btn.textContent = "Yes, go back to " + b.day;
           return;
         }
         btn.disabled = true;
         try {
-          await local().post("team/restore", { name: b.name });
+          const got = await local().post("team/restore", { name: b.name, confirm: btn.dataset.sure === "anyway" });
+          if (got && got.confirm) {
+            // Colleagues changed things since this snapshot: say who, and restore only on a second, plain yes.
+            btn.dataset.sure = "anyway";
+            btn.disabled = false;
+            btn.textContent = "Go back anyway";
+            msg.replaceChildren(HB.notice("warning", got.confirm));
+            return;
+          }
           msg.replaceChildren(HB.notice("good", "Restored to " + b.day + ". How it was a moment ago is kept as a snapshot too, so this can be undone."));
           await local().refresh();
           await redo();

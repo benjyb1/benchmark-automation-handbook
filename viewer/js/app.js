@@ -438,8 +438,11 @@
     const cell = cellOf(r.parts);
     if (!cell) openedHere = false;
     else if (moved && !HB.state.openCell) openedHere = true;   // a cell link on the page added this entry: closing goes back
+    // The next step hides "See the results" on Results, so the header follows a move into or out of it.
+    const crossed = current && current.tab !== r.tab && (current.tab === "results" || r.tab === "results");
     current = r;
     HB.state.openCell = cell;
+    if (crossed) drawHead();
     const key = cell ? r.tab : [r.tab, ...r.parts].join(SEP);
     if (key === screenKey) {
       syncCell();

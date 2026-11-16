@@ -207,6 +207,46 @@ class TeamSide:
             out.append(d)
         return out
 
+    SCORING_JOBS = ("scoring", "rescore", "rerun")
+
+    def colleague_scoring(self, rows: list[str]) -> str | None:
+        """Why this person should not start scoring `rows` (all rows when empty) now, or None. A colleague
+        whose tool is scoring an overlapping set of rows right now would be paid for twice, and the later
+        save of each answer would win. Rows nobody else is scoring can go ahead side by side."""
+        if not self.on:
+            return None
+        live = {j["by"]: j for j in team.others_jobs(self.project, self.me["id"])
+                if (j.get("job") or {}).get("kind") in self.SCORING_JOBS}
+        if not live:
+            return None
+        mine = set(rows or [])
+        seen_run = set()
+        for r in self.project.runs():
+            if not isinstance(r, dict) or r.get("finished") or r.get("by") not in live:
+                continue
+            seen_run.add(r["by"])
+            theirs = set(r.get("rows") or [])
+            if theirs and mine and not theirs & mine:
+                continue                                   # different rows: both can go on
+            return self._busy_words(live[r["by"]], sorted(theirs & mine) if theirs and mine else [])
+        # A colleague is scoring, but their run has not synced here yet: which rows is not known, so wait.
+        for by, j in live.items():
+            if by not in seen_run:
+                return self._busy_words(j, [])
+        return None
+
+    def _busy_words(self, j: dict, rows: list[str]) -> str:
+        name = j.get("name") or team.name_of(self.project, j.get("by")) or "A colleague"
+        job = j.get("job") or {}
+        doing = (job.get("title") or "scoring").rstrip(".")
+        progress = f", {job['done']} of {job['total']} done" if job.get("total") else ""
+        which = ""
+        if rows:
+            names = [self._row_name(r) for r in rows[:3]]
+            which = " They are already scoring " + ", ".join(names) + (f" and {len(rows) - 3} more" if len(rows) > 3 else "") + "."
+        return (f"{name}'s tool is busy with \"{doing}\"{progress}.{which} Starting the same rows here would score "
+                "them twice, on both of your Claude plans. Wait until theirs finishes, or pick rows they are not scoring.")
+
     def _question(self, qid):
         return next((q for q in self.project.read("questions").get("questions") or [] if q.get("id") == qid), None)
 
@@ -417,7 +457,9 @@ class TeamSide:
             return 200, self.resolve(body)
         if parts == ["restore"]:
             with self.w.cmd.lock:
-                got = team.restore(p, str(body.get("name") or ""), self.person())
+                got = team.restore(p, str(body.get("name") or ""), self.person(), bool(body.get("confirm")))
+            if got.get("confirm"):
+                return 200, got                  # colleagues' work would go too: the page asks first
             self.w.build()
             self.w.note(f"The project is back as it was in the snapshot of {got['restored'][:10]}. "
                         "How it was a moment ago is kept as a snapshot too.", "good")
